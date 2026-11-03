@@ -3,7 +3,7 @@
 ## Project Identity
 
 - Project key / workspace: `gost-restreamer`.
-- Project type: Go backend for self-hosted restreaming; the OBS plugin is a separate project.
+- Project type: Go backend for personal self-hosted restreaming in the owner's local environment; the OBS plugin is a separate project.
 - Primary programming language: Go. SQL is used for Goose migrations.
 - Architecture source: `gost-restreamer-architecture.md`, revision 6.
 - Current repository state: architecture and agent workflow only; no Go module, application source, migrations, tests or CI have been created.
@@ -31,6 +31,8 @@
 
 - `go-core`
 - `go-testing`
+- `go-observability`
+- `go-security`
 - `go-huma-v2`
 - `go-local-cache`
 - `go-gorm`
@@ -43,19 +45,21 @@
 - Core rules: `source_code_hygiene.md`
 - Git rules: `git.md`
 - Documentation retrieval: `context7_documentation.md`
-- Go rules: `go_core.md`, `go_testing.md`, `go_huma_v2.md`, `go_local_cache.md`, `go_gorm.md`, `go_gorm_sqlite_goose.md`
+- Go rules: `go_core.md`, `go_testing.md`, `go_observability.md`, `go_security.md`, `go_huma_v2.md`, `go_local_cache.md`, `go_gorm.md`, `go_gorm_sqlite_goose.md`
 
 Bare rule filenames resolve under `.codex/rules/`.
 
 ## Active Skills
 
 - Code prose / language-policy skills: `comment-language-audit`
-- Go skills: `go-core`, `go-testing`, `go-huma-v2`, `go-local-cache`, `go-gorm`, `go-gorm-sqlite-goose`
+- Go skills: `go-core`, `go-testing`, `go-observability`, `go-security`, `go-huma-v2`, `go-local-cache`, `go-gorm`, `go-gorm-sqlite-goose`
 
 Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency closure:
 
 - `go_core.md` → `go-core`.
 - `go_testing.md` → `go-core`, `go-testing`; `go-testing` → `go-core`.
+- `go_observability.md` → `go-core`, `go-observability`; `go-observability` → `go-core`.
+- `go_security.md` → `go-core`, `go-security`; `go-security` → `go-core`.
 - `go_huma_v2.md` → `go-core`, `go-huma-v2`; `go-huma-v2` → `go-core`.
 - `go_local_cache.md` → `go-core`, `go-local-cache`; `go-local-cache` → `go-core`.
 - `go_gorm.md` → `go-core`, `go-gorm`; `go-gorm` → `go-core`.
@@ -128,7 +132,32 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - Dependency integrity: фиксировать выбранные версии в `go.mod` и `go.sum`.
 - Formatter/static checks: `gofmt`, `go vet`; дополнительные линтеры не выбраны.
 - Ownership: явные владельцы goroutine, очередей, соединений, файлов и остановки. Очереди и кэши ограничены; профилирование только по предметной необходимости, доступ к диагностике защищён.
+- Delve terminal debugging policy: необязательный сценарий для воспроизводимого сбоя; проверить установленный совместимый `dlv`, Go/OS/архитектуру и доступный интерактивный stdin/TTY. Установка или обновление отладчика не выполняется автоматически.
+- Delve target/attachment policy: только изолированная программа или тест, запускаемые в рамках задачи; attach к существующему процессу и удалённый/headless listener требуют отдельного разрешения.
+- Debug artifacts: временные бинарные файлы и результаты диагностики — в принадлежащем текущей задаче системном временном каталоге вне репозитория; владелец сессии учитывает созданные процессы и очищает только свои артефакты.
+- Startup/shutdown: composition root владеет общими зависимостями и освобождает их после завершения пользователей; отмена по сигналу, ограниченное ожидание workers/Publishers/FFmpeg и отдельный контекст завершения с таймаутом. Численные сроки определяются при реализации lifecycle.
+- Health/readiness: предусмотренные архитектурой `/health/live` и `/health/ready` под префиксом `/api/v1`; liveness описывает работоспособность процесса, readiness — готовность обслуживать предусмотренные операции. Точные условия проверяются вместе с реализацией. Дополнительные listeners не выбраны.
+- Module/build provenance: проверять `go.mod`, `go.sum`, возможный `go.work`, эффективный toolchain, build tags, `GOOS`/`GOARCH` и CGO. Выходные файлы сборки — в явно заданном каталоге артефактов или системном временном каталоге; генераторы и изменения модулей запускаются только в разрешённой области задачи.
+- Performance/PGO: представительные измерения по конкретному вопросу с повторениями и сопоставимыми входами, версиями и флагами. PGO не выбран; `benchstat` используется только при наличии и разрешении. Профили CPU/heap/trace хранятся во временном каталоге задачи.
 - Design/review: активные Go references, версия спецификации и release notes, соответствующая модулю.
+
+## Go Application Context And Data Disclosure Policy
+
+Это единая проектная политика, выбранная владельцем для личного приложения и применяемая при работе с `go-observability` и `go-security`. Она не пересматривается и не классифицируется заново при каждой задаче.
+
+- Policy selection and owner approval: владелец явно выбрал личный локальный контур и режим логирования приложения `full`.
+- Application role: `personal-local`; самостоятельная установка и эксплуатация в собственном локальном контуре владельца.
+- Exposure/trust boundary: OBS и управляющие клиенты работают в контуре владельца; исходящие медиасоединения идут на выбранные им стриминговые площадки. Адреса привязки и транспорт задаются конфигурацией соответствующей инсталляции.
+- Protected assets and accepted risks: ключи трансляций, токены, остальные учётные данные, конфигурация, медиаматериалы и история сессий. Их полные значения в локальных логах приложения — явно выбранное поведение.
+- Required controls: действующие контракты архитектуры по авторизации публикаций и API, границам файлов, запуску FFmpeg, хранению данных и владению ресурсами. Дополнительная инфраструктура безопасности не выбрана.
+- Application-owned log capture mode: `full`.
+- Exact log field categories: токены авторизации и публикации, ключи потоков, остальные учётные данные, заголовки, параметры и тела запросов/ответов, URL назначений, идентификаторы, ошибки, аргументы и диагностика FFmpeg — `full`.
+- Masking/omission format: не применяется. Значения записываемых диагностических полей сохраняются полностью; не добавлять маскирование, хеширование, усечение или исключение этих значений как скрытый режим безопасности.
+- Event selection: режим `full` определяет полноту значений в записываемых событиях. Уровни и набор событий выбираются по диагностической задаче; непрерывный дамп всех медиапакетов не является требованием.
+- Log sinks/readers/retention: базовый вывод приложения — структурированные записи в `stderr` внутри контура владельца. Сбор, доступ и срок хранения определяются локальным получателем этого вывода; отдельное файловое хранилище и архиватор логов в приложении не выбраны.
+- External log/trace/metric export: внешние экспортёры и получатели телеметрии не выбраны. Состояния, события и метрики управляющего API/SSE остаются частью архитектуры приложения.
+- Agent/PR/CI disclosure: режим логов приложения не переносится на ответы агента, PR, CI-артефакты и сторонние сервисы; для этих получателей действуют собственные разрешения.
+- Profile change policy: изменения этой политики выполняются по явному решению владельца. При противоречии фактической инсталляции сообщить точное расхождение; не заменять `full` другим режимом самостоятельно.
 
 ## Go Testing Profile
 
@@ -142,7 +171,31 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - Coverage: только по задаче, файлы в разрешённом временном каталоге; порог не установлен.
 - Fuzz: только именованная цель и ограниченный бюджет, определённые конкретной задачей.
 - Lifecycle: проверять отмену, завершение, освобождение ресурсов и повторный запуск для затронутых workers, streams, pools и caches; не требовать точного глобального числа goroutine или RSS.
+- Focused Delve tests: необязательный `dlv test <package> -- -test.run <regex> -test.count=1 -test.parallel=1` для изолированной цели с интерактивным вводом. Сохранить первое падение; после исправления повторить обычный тест без отладчика и затронутые проверки.
+- Benchmark regression: по конкретной задаче — представительные данные, несколько сопоставимых запусков и отдельная проверка корректности; результаты во временном каталоге задачи. Само прохождение benchmark не подтверждает SLO или отсутствие утечек.
+- Logging tests: проверять полные значения синтетических токенов, заголовков и полезной нагрузки в выводе реального handler согласно режиму `full`.
 - Новые тестовые библиотеки не выбраны.
+
+## Go Observability Profile
+
+- Go observability enabled: yes; active pair: `go_observability.md + go-observability`.
+- Logging backend: стандартный `log/slog` со структурированным JSON-выводом в `stderr`; доступность проверяется по будущей закреплённой версии Go (`slog` требует Go 1.21+).
+- Event/level/key policy: стабильные имена событий, уровень, время и компонент; `stream_id`, `session_id`, идентификаторы группы/назначения и операции — там, где они применимы. Попытка подключения, reconnect и фактический результат операции учитываются отдельно.
+- Logging data disclosure: только общий раздел Go Application Context And Data Disclosure Policy, режим `full`.
+- Metrics/tracing: предусмотренные архитектурой состояния и счётчики в `internal/monitoring/` и управляющем API. OpenTelemetry API/SDK, tracing, collectors, exporters и sampling не выбраны.
+- Metric cardinality: ограниченные измерения по компоненту, типу операции и состоянию; произвольные URL, токены и идентификаторы сессий не используются как неограниченные metric labels.
+- Telemetry ownership: composition root владеет logger и выбранными средствами наблюдения. При появлении требующего flush провайдера использовать отдельный ограниченный контекст завершения и сообщать ошибки; текущий профиль не добавляет такого провайдера.
+- Validation: после появления кода — изолированные `go test` с захватом вывода реального handler; проверка событий, уровней, корреляции, точных `full`-значений и фактических единиц/смысла метрик. Внешний collector для тестов не требуется.
+
+## Go Security Profile
+
+- Go security enabled: yes; active pair: `go_security.md + go-security`.
+- Application context/accepted risks: общий раздел Go Application Context And Data Disclosure Policy; личное приложение в собственном локальном контуре.
+- Technical controls/surfaces: существующие контракты авторизации OBS и управляющего API, входные данные, загрузка и пути fallback, SQL-параметры, отдельные аргументы `exec.CommandContext`, выбранный транспорт и освобождение ресурсов.
+- Review scope: подтверждать достижимый путь, нарушенный контракт и конкретный эффект по фактическому коду и конфигурации. Отличать дефект от принятого владельцем поведения и необязательного усиления.
+- Vulnerability/advisory review: официальная Go vulnerability database и данные для закреплённых Go/module versions. `govulncheck` не является обязательным инструментом, не установлен этим обновлением и не запускается автоматически.
+- Validation/exception procedure: после появления кода — стандартные изолированные `go test`, реальные временные SQLite/HTTP-границы по области задачи и независимое ревью по действующей политике. Изменения зависимостей и исключений требуют обычной проверки области разрешений.
+- Shared application logging contract: общий режим `full`; security review не вводит собственное маскирование или запрет полных локальных значений.
 
 ## Go Huma v2 Profile
 
@@ -232,7 +285,10 @@ Command source of truth: этот файл; будущие task runner/CI син
 - Unit/integration tests: `go test ./...`.
 - Race tests: `go test -race ./...` при поддерживаемой платформе/CGO.
 - Build: `go build ./...`.
-- Media E2E, fuzz, benchmarks и Goose runner commands определяются вместе с реальными целями и изолированной средой; текущих исполняемых команд для них нет.
+- Module consistency: `go mod tidy -diff` при поддержке закреплённым Go и разрешении на возможные cache/network effects. Обычный `go mod tidy` изменяет модули и требует разрешённой задачи на их изменение.
+- Benchmarks: `go test -run '^$' -bench '<проверенная цель>' -benchmem -count=10 <package>` только для выбранной задачи и изолированной среды; `benchstat` — если уже доступен и разрешён.
+- Delve diagnostics: `dlv version` и `dlv help test`, затем согласованная локальная цель `dlv debug`/`dlv test`/`dlv exec` с интерактивным stdin и временными артефактами. Отладчик запускает настоящий код; наблюдения не заменяют обычные тесты.
+- Конкретные цели Media E2E, fuzz и benchmarks, а также команды Goose runner определяются вместе с реальными пакетами и изолированной средой.
 
 Не запускать разрешённую команду, если её фактические побочные действия выходят за область задачи. Не представлять отсутствующие или непройденные проверки как успешные.
 
@@ -246,7 +302,7 @@ Command source of truth: этот файл; будущие task runner/CI син
 ## Material Provenance
 
 - Source: [GregoryGost/agent-projects-tools](https://github.com/GregoryGost/agent-projects-tools).
-- Source commit: `a084001df15dd6a4e0ceb3355e20d1c9ad41b296`.
-- Upstream license: `licenses/agent-projects-tools.txt`.
+- Source version: `v1.16.0`.
+- Source commit: `f7a68e48271c78bf61401c42af62ca97c918f820`.
 - Local adaptations: root `AGENTS.md` targets this project and preserves the user's evidence/review/macOS instructions; this profile and the configuration example are project-owned.
 - Обновлять переносимые материалы согласованно: bootstrap, routing, dependencies, coordination, роли, skills и этот профиль. Не заменять профиль полным шаблоном с чужими стеками.

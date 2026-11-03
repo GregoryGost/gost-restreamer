@@ -1,0 +1,5 @@
+interface:
+  display_name: "Go Observability"
+  short_description: "Structured logs, metrics, tracing and telemetry boundaries"
+  default_prompt: "Use $go-observability with $go-core to implement and review project-selected Go logging, tracing and metrics."
+

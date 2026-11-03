@@ -1,0 +1,5 @@
+interface:
+  display_name: "Go Security"
+  short_description: "Project-fixed risk context, vulnerabilities and safeguards"
+  default_prompt: "Use $go-security with $go-core to implement and review Go security under the preselected CODEX_PROJECT.md policy."
+

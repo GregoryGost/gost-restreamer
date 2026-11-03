@@ -22,6 +22,8 @@ Read `CODEX_PROJECT.md`, `go.mod`, `*_test.go`, relevant production code, build/
 - Use real router/handler boundaries in API integration tests, and reserve actual network/process E2E tests for flows that need them.
 - Use `go test -race` when supported/declared and meaningful; no claim of race freedom from a single passing run. The race detector is not a goroutine, heap or resource leak detector.
 - For tasks changing background worker, pool, stream, cache or resource ownership, test cancellation, join, cleanup and repeated lifecycle as appropriate. Use `go-testing/references/leak-regression.md`; never require brittle global goroutine-count equality or unapproved leak-test dependencies.
+- For an unresolved reproducible Go test failure, optionally use terminal `dlv test` according to `go-core/references/runtime-debugging.md` only if Delve is installed and compatible, interactive terminal input exists, and the scoped test's side effects are authorized. Debugger output is diagnostic evidence; rerun normal tests after any fix. Do not mandate or install a debugger.
+- For performance questions, use `go-testing/references/benchmark-regression.md`: representative benchmarks, repeated comparable measurements and ordinary correctness checks; don't install `benchstat` or enable PGO without target approval. A performance result does not replace regression tests.
 - Coverage is a diagnostic signal, not a substitute for behavior testing. Write coverage files only in approved output paths.
 - Fuzz security- or correctness-critical parsers/encoders with bounded time, not indefinitely by default.
 - Do not run destructive tests against production or shared user-owned systems.

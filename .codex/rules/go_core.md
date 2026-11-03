@@ -15,7 +15,7 @@ This is a framework-neutral language rule. Activate only through the exact `go_c
 
 ## Expert review workflow
 
-- Read the matching `go-core/references/` material when the task touches OOP/interfaces, package/API design, errors/lifecycle, concurrency/performance, memory/resource retention or new language features. For broad code review, start with `references/patterns-and-review.md` and load focused references as needed.
+- Read the matching `go-core/references/` material when the task touches OOP/interfaces, package/API design, errors/lifecycle, startup/shutdown, performance/PGO, module/build maintenance, memory/resource retention, terminal runtime debugging or new language features. For broad code review, start with `references/patterns-and-review.md` and load focused references as needed.
 - Treat compiler/runtime correctness, security, compatibility, design tradeoffs and style as distinct categories; evidence is required for every asserted defect.
 - Compare concrete alternatives and attempt to disprove findings against full relevant code and callers; never classify a valid context-dependent idiom as a universal anti-pattern.
 - Prefer the versioned Go specification/release notes over older articles on language changes; validate syntax/library availability against the module language level and installed build toolchain.
@@ -31,6 +31,10 @@ This is a framework-neutral language rule. Activate only through the exact `go_c
 - Do not start unbounded/background goroutines without cancellation, error observation and drain/stop behavior.
 - Protect shared mutable data by ownership, synchronization or message passing; do not infer race freedom from test success.
 - Prefer concrete types and small interfaces when substitution is real; use composition rather than simulating class inheritance. Choose value or pointer receivers by mutation, copyability and method-set requirements. Avoid **unnecessary** interfaces, generic abstractions, reflection and dependency injection frameworks, but allow justified uses.
+- For service lifecycle changes, consult `go-core/references/service-lifecycle.md`: use owned startup and independent shutdown contexts, bounded resource drain and project-declared readiness policy. Do not add health endpoints by default.
+- For performance work, consult `go-core/references/performance-engineering.md`: require comparable measurements, not optimization claims from one benchmark. PGO and extra profilers are opt-in.
+- For module/build changes, consult `go-core/references/modules-and-build.md`: distinguish read-oriented inspection from mutating commands (`go mod tidy`, `go get`, `go generate`). Do not change dependencies or toolchain without authorization.
 - Do not mutate generated files without changing their authoritative generator input.
+- When authorized runtime investigation needs breakpoints or goroutine/variable inspection, prefer the existing terminal Delve (`dlv`) following `go-core/references/runtime-debugging.md`. Verify compatible Go/Delve versions, persistent terminal input and process/build side effects; never install, attach to running services or expose remote debugger listeners by default. Debugger observations are not passing tests.
 - Validate changes with project-declared checks; report unexecuted or unavailable commands.
 

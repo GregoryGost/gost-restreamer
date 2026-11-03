@@ -47,6 +47,15 @@ Use `.codex/rules/go_testing.md` only when it is independently active; its requi
 - Contain external APIs behind project-approved fakes, local test servers or disposable infrastructure. Never point destructive tests at production.
 - Capture enough diagnostics to explain failures while preserving secret redaction.
 
+## Optional terminal debugging (Delve)
+
+When an authorized isolated Go test failure needs runtime inspection, use the terminal Delve workflow in `.agents/skills/go-core/references/runtime-debugging.md`. First preserve the failing result and confirm `go version`, an already installed compatible `dlv version`, a persistent interactive terminal with writable stdin, and the target test's actual side effects.
+
+- Prefer one package/test: `dlv test ./internal/service -- -test.run "^TestExample$" -test.count=1 -test.parallel=1` (replace paths/names based on real source). `--` is required to pass test-binary flags; the command launches real test code.
+- Within the Delve prompt, inspect only relevant breakpoints, stacks, goroutines and variables; avoid unapproved function calls, process attach, privilege changes and source breakpoints. Keep temporary binaries/profile output in approved locations.
+- If interactive input is unavailable, **do not start** a hanging debugger or bypass terminal checks; use the focused normal test, logs and existing tracebacks or report the blocker.
+- After an authorized fix, rerun `go test ./internal/service -run "^TestExample$" -count=1` **without Delve**, then applicable wider checks. A debugging session never satisfies the independent acceptance requirement.
+
 ## Race, coverage, fuzz and benchmark
 
 - Run the project-selected `go test ./...` and optionally `go test -race ./...` where the compiler/platform/CGO allow it. `-race` does **not** detect retained Go heap, leaked goroutines or open OS/SQL resources.
@@ -55,9 +64,13 @@ Use `.codex/rules/go_testing.md` only when it is independently active; its requi
 - Use bounded `go test -fuzz=FuzzName -fuzztime=<budget>` for appropriate pure functions, retaining valid regression corpus cases.
 - Benchmarks (`go test -bench=... -benchmem`) require representative input and should not be used to assert functional correctness.
 
+## Performance regression testing
+
+For a real performance question, use `references/benchmark-regression.md` with `go-core/references/performance-engineering.md`. Run representative repeatable benchmarks in approved environments, compare noise and the exact Go version/build matrix, and retest correctness. `benchstat` and PGO are optional, never installed or enabled automatically. Benchmark success does not prove a latency SLO or absence of leaks.
+
 ## Optional overlays
 
 Apply `go-huma-v2` for independently active Huma contract tests. Apply `go-gorm` and `go-gorm-sqlite-goose` for independently active DB and migrations tests. When selected, use `go-local-cache` for Otter v2 cache-hit/expiry/eviction/loading tests, or `go-nats-kv-cache` for disposable JetStream KV/CAS/TTL/watch integration tests. Do not treat a mock as proof of NATS server behavior.
 
-Load `references/test-boundaries-and-patterns.md` for general examples, `references/leak-regression.md` for lifecycle/memory regression testing when relevant, and `references/official-sources.md` for official tools.
+Load `references/test-boundaries-and-patterns.md` for general examples, `references/leak-regression.md` for lifecycle/memory regression testing when relevant, `references/benchmark-regression.md` for performance claims, `.agents/skills/go-core/references/runtime-debugging.md` for authorized terminal Delve diagnostics, and `references/official-sources.md` for official tools.
 
