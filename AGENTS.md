@@ -33,7 +33,7 @@ Read `.codex/rules/subagent_coordination.md` before any delegation. It is mandat
 - Screen data-impacting work for the selected `database_architect`. A required assessment must be `CLEAR` for the current candidate/baseline before affected downstream work. Track `db_assessment_status` separately from Architecture Gate.
 - Verify a safe pause and partial writes when gates close. Distinguish implementation defects from proven defects in the design.
 - Assign disjoint write ownership, preserve unrelated work and verify a stable snapshot for final checks. Required independent testing/review and project checks cannot be waived by passing self-tests.
-- Keep completed reports in-session. No automatic handoff files, task notes, Obsidian writes, worktrees, commits or hooks.
+- Use `local-ephemeral` handoff persistence as declared in `CODEX_PROJECT.md`: only the primary saves verified completed reports under `.agent-handoffs/<task_scope_id>/` when the current request permits those writes, following `.codex/rules/subagent_coordination.md`. Otherwise keep reports in-session. No automatic task notes, Obsidian writes, worktrees, commits or hooks.
 - After compression recover current authorization, scope, explicit gate decision, applicable handoff/assessment, active operations and verified evidence before resuming.
 
 ## Project Sources And Boundaries

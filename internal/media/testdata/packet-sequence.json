@@ -1,0 +1,33 @@
+{
+  "configs": [
+    {
+      "name": "video",
+      "info": {
+        "Track": "video", "SourceEpoch": 7, "Revision": 3,
+        "TimeBase": {"Numerator": 1, "Denominator": 90000},
+        "Video": {
+          "Codec": "av1", "Width": 2560, "Height": 1440,
+          "FrameRate": {"Numerator": 60, "Denominator": 1},
+          "CodecProfile": "main", "PixelFormat": "yuv420p", "BitDepth": 8,
+          "Color": {"Range": "limited", "Primaries": "bt709", "Transfer": "bt709", "Matrix": "bt709"}
+        }
+      },
+      "headers_hex": "010203", "stored_bytes": 3
+    },
+    {
+      "name": "audio",
+      "info": {
+        "Track": "audio", "SourceEpoch": 7, "Revision": 9,
+        "TimeBase": {"Numerator": 1, "Denominator": 48000},
+        "Audio": {"Codec": "aac", "CodecProfile": "LC", "SampleRateHz": 48000, "Channels": 2, "ChannelLayout": "stereo"}
+      },
+      "headers_hex": "1210", "stored_bytes": 2
+    }
+  ],
+  "packets": [
+    {"config_name": "video", "info": {"PTS": 0, "DTS": -3000, "DurationTicks": 1500, "Keyframe": true}, "payload_hex": "10203040", "stored_bytes": 7},
+    {"config_name": "video", "info": {"PTS": -3000, "DTS": -1500, "DurationTicks": 1500, "Keyframe": false}, "payload_hex": "aabb", "stored_bytes": 5},
+    {"config_name": "video", "info": {"PTS": 1500, "DTS": 0, "DurationTicks": 0, "Keyframe": false}, "payload_hex": "ccddff", "stored_bytes": 6},
+    {"config_name": "audio", "info": {"PTS": -1024, "DTS": -1024, "DurationTicks": 1024, "Keyframe": false}, "payload_hex": "deadbeef00", "stored_bytes": 7}
+  ]
+}

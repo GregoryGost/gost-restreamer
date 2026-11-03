@@ -6,7 +6,7 @@
 - Project type: Go backend for personal self-hosted restreaming in the owner's local environment; the OBS plugin is a separate project.
 - Primary programming language: Go. SQL is used for Goose migrations.
 - Architecture source: `gost-restreamer-architecture.md`, revision 6.
-- Current repository state: созданы Go-модуль, Makefile, конфигурация линтера и базовый workflow CI; исходников приложения, миграций и тестов пока нет.
+- Current repository state: созданы Go-модуль, Makefile, конфигурация линтера и workflow CI; в `internal/core` и `internal/media` есть общие типы, валидация и unit-тесты с синтетическими данными. Исполняемый сервис, рабочие медиакомпоненты, storage, миграции и API ещё не реализованы. Общие контракты описаны в `docs/media-contracts.md`.
 - Selected technology families are approved and active now. Go закреплён в `go.mod`, линтер — в `Makefile`; версии runtime-зависимостей и нереализованные настройки подтверждаются при появлении соответствующего кода.
 
 ## Activation Semantics
@@ -74,7 +74,7 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - Concurrent subagent threads: 4, excluding the primary, subject to the active client limit.
 - Model availability: verify against the active client/account; report unavailable combinations without silently substituting models.
 - Fresh thread policy: every assignment uses a new no-history `spawn_agent` with `fork_turns: "none"` on verified MultiAgentV2; never `followup_task`.
-- Subagent handoff persistence: `in-session-only`.
+- Subagent handoff persistence: `local-ephemeral`.
 - Selected role files: all ten exact files in the table below. Selection makes them available; only relevant roles are assigned for a task.
 
 | Role | Custom agent file | Model | Effort |
@@ -110,7 +110,9 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - Приёмка относится к стабильному снимку кода, тестов, фикстур и значимой конфигурации, включая новые файлы. Во время финальных проверок входные файлы не меняются; существенная последующая правка требует повторения затронутых проверок.
 - Для исправлений, повторного тестирования, ревью и раундов критики создаются новые потоки. Завершённые отчёты проверяются основным агентом и передаются только в актуальной относящейся к задаче части.
 - Статусы архитектуры, DBA, тестирования и ревью учитываются отдельно. Недоступная обязательная роль или среда сообщается как ограничение, без выдуманной приёмки.
-- Правила read-only у ролей являются ограничениями поведения; разрешения и среда наследуются от основного агента. Проверять владение файлами при параллельных сессиях; не создавать worktree или файлы handoff автоматически.
+- Правила read-only у ролей являются ограничениями поведения; разрешения и среда наследуются от основного агента. Проверять владение файлами при параллельных сессиях; не создавать worktree автоматически.
+- При разрешённых текущим запросом локальных записях только основной агент сохраняет проверенные завершённые отчёты в `.agent-handoffs/<task_scope_id>/`: неизменяемые версии отчётов и `index.md` с актуальными ссылками и статусами. Каталог создаётся при первом сохранении; порядок проверки и публикации задан в `.codex/rules/subagent_coordination.md`.
+- `.agent-handoffs/` исключён из Git; отчёты не коммитятся, не экспортируются и не удаляются автоматически. Режим не расширяет область текущего запроса: при запрете таких записей, в том числе в read-only и documentation-only задачах, отчёты остаются в сессии.
 
 ## Technical Documentation Profile
 
@@ -256,7 +258,7 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 
 ## Project Boundaries
 
-Планируемые пути взяты из архитектуры и ещё не означают существующих пакетов:
+Пути и обязанности взяты из архитектуры. В `internal/core` и `internal/media` реализованы общие типы и валидация; остальные перечисленные компоненты пока планируются:
 
 - `internal/api/`: Huma/Chi, DTO, авторизация, SSE.
 - `internal/core/`: домен, сервисы, repository interfaces; без импортов Huma/GORM/FFmpeg.
@@ -264,13 +266,15 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - `internal/media/`, `internal/fallback/`, `internal/monitoring/`: медиатракт, варианты заглушек и наблюдение по своим обязанностям.
 - `cmd/gost-restreamer/main.go`: сборка приложения и lifecycle.
 
-Сначала проверяется медиапрототип и переключение, затем supervisor/storage/API согласно спецификации. Не считать Enhanced RTMP, UDS/NUT или непрерывный AV1 fallback реализованными и проверенными без соответствующих интеграционных результатов.
+Сразу реализуются рабочие пакеты Go backend; отдельный прототип и последующий перенос или переписывание его кода не предусматриваются. Проверки медиаконтрактов, обмена Go ↔ FFmpeg, переключения и изоляции отказов входят в реализацию соответствующих компонентов.
+
+Аппаратная и live-приёмка выполняются отдельно в разрешённой целевой среде; отсутствие доступа к RTX A1000 не блокирует локальную реализацию и её проверки. Не считать Enhanced RTMP, UDS/NUT или непрерывный AV1 fallback реализованными и проверенными без соответствующих интеграционных результатов.
 
 ## Build And Validation Commands
 
 Command source of truth: этот профиль задаёт обязательные проверки, `Makefile` реализует их; `.github/workflows/go.yml` использует те же цели. Версия Go задаётся в `go.mod`, версия линтера — в `Makefile`. Явная команда `make tools` загружает и собирает закреплённый линтер в `bin/`; обычные проверки не устанавливают инструменты автоматически.
 
-Текущая основа проверяется через `make tools`, затем `make bootstrap-check`: версия Go, `gofmt` без правки файлов, `go mod tidy -diff`, `go mod verify` и `golangci-lint config verify`. При отсутствии Go-пакетов CI явно пропускает анализ, тесты и сборку. Полная цель `make check` в таком состоянии завершается ошибкой с пояснением; прохождение bootstrap не является проверкой приложения.
+Для подготовки инструмента используется явная команда `make tools`; установленный закреплённый линтер повторно устанавливать не требуется. `make bootstrap-check` проверяет версию Go, `gofmt` без правки файлов, `go mod tidy -diff`, `go mod verify` и `golangci-lint config verify`. Полная цель `make check` дополнительно проверяет существующие Go-пакеты, включая общие контракты. При отсутствии пакетов CI явно пропускает их анализ, тесты и сборку, а `make check` завершается ошибкой с пояснением. Прохождение bootstrap не является проверкой приложения.
 
 Для текущего слоя инструкций:
 
