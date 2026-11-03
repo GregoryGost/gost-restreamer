@@ -6,8 +6,8 @@
 - Project type: Go backend for personal self-hosted restreaming in the owner's local environment; the OBS plugin is a separate project.
 - Primary programming language: Go. SQL is used for Goose migrations.
 - Architecture source: `gost-restreamer-architecture.md`, revision 6.
-- Current repository state: architecture and agent workflow only; no Go module, application source, migrations, tests or CI have been created.
-- Selected technology families are approved and active now. Exact dependency/toolchain versions and unimplemented runtime settings remain unverified until backed by manifests and runtime evidence.
+- Current repository state: созданы Go-модуль, Makefile, конфигурация линтера и базовый workflow CI; исходников приложения, миграций и тестов пока нет.
+- Selected technology families are approved and active now. Go закреплён в `go.mod`, линтер — в `Makefile`; версии runtime-зависимостей и нереализованные настройки подтверждаются при появлении соответствующего кода.
 
 ## Activation Semantics
 
@@ -125,12 +125,12 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 ## Go Profile
 
 - Go enabled: yes; active pair: `go_core.md + go-core`.
-- Module/workspace source: будущие `go.mod` и `go.sum`; сейчас отсутствуют. `go.work` не создан.
-- Effective language/toolchain version: пока не установлена. Перед первым кодом проверить выбранные module requirements и доступный compiler/CI, затем закрепить совместимую версию. Не подменять её версией из примера или автоматически обновлять toolchain.
-- Development console: macOS. Deployment target: Debian 13 по архитектуре; целевую архитектуру CPU и матрицу сборки подтвердить до сборки.
+- Module/workspace source: `go.mod`, module path `github.com/GregoryGost/gost-restreamer`; `go.sum` создаётся после добавления зависимостей и хранится в Git. `go.work` не используется.
+- Effective language/toolchain version: Go `1.27.3` в `go.mod`; локальный compiler `go1.27.3 darwin/arm64` проверен. Make проверяет точную версию, задаёт `GOTOOLCHAIN=local` и `GOWORK=off`; совместимость будущих зависимостей проверяется по выбранным тегам без автоматического обновления SDK.
+- Development console: macOS. Deployment target: Debian 13 по архитектуре; workflow собирает для `linux/amd64` в `golang:1.27.3-trixie`. Фактическая аппаратная среда проверяется при целевой приёмке; локальное наличие Docker не предполагается.
 - CGO policy: enabled для исходного `gorm.io/driver/sqlite`; pure-Go замена требует отдельного решения и тестов.
 - Dependency integrity: фиксировать выбранные версии в `go.mod` и `go.sum`.
-- Formatter/static checks: `gofmt`, `go vet`; дополнительные линтеры не выбраны.
+- Formatter/static checks: `gofmt`, `go vet`, `golangci-lint` `2.15.0`; `.golangci.yml` включает `errcheck`, `govet`, `ineffassign`, `staticcheck`, `unused`. Версия и установка линтера заданы в `Makefile`; `make tools` устанавливает его только в `bin/` проекта. Линтер естественного языка не добавляется.
 - Ownership: явные владельцы goroutine, очередей, соединений, файлов и остановки. Очереди и кэши ограничены; профилирование только по предметной необходимости, доступ к диагностике защищён.
 - Delve terminal debugging policy: необязательный сценарий для воспроизводимого сбоя; проверить установленный совместимый `dlv`, Go/OS/архитектуру и доступный интерактивный stdin/TTY. Установка или обновление отладчика не выполняется автоматически.
 - Delve target/attachment policy: только изолированная программа или тест, запускаемые в рамках задачи; attach к существующему процессу и удалённый/headless listener требуют отдельного разрешения.
@@ -179,7 +179,7 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 ## Go Observability Profile
 
 - Go observability enabled: yes; active pair: `go_observability.md + go-observability`.
-- Logging backend: стандартный `log/slog` со структурированным JSON-выводом в `stderr`; доступность проверяется по будущей закреплённой версии Go (`slog` требует Go 1.21+).
+- Logging backend: стандартный `log/slog` со структурированным JSON-выводом в `stderr`; закреплённый Go `1.27.3` поддерживает этот API. Сам handler проверяется вместе с реализацией логирования.
 - Event/level/key policy: стабильные имена событий, уровень, время и компонент; `stream_id`, `session_id`, идентификаторы группы/назначения и операции — там, где они применимы. Попытка подключения, reconnect и фактический результат операции учитываются отдельно.
 - Logging data disclosure: только общий раздел Go Application Context And Data Disclosure Policy, режим `full`.
 - Metrics/tracing: предусмотренные архитектурой состояния и счётчики в `internal/monitoring/` и управляющем API. OpenTelemetry API/SDK, tracing, collectors, exporters и sampling не выбраны.
@@ -228,7 +228,7 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 ## Go GORM Profile
 
 - GORM enabled: yes; active pair: `go_gorm.md + go-gorm`.
-- Version source: будущие `go.mod`/`go.sum`; API style (Traditional/Generics) выбрать после проверки версии при реализации.
+- Version source: `go.mod` и создаваемый `go.sum`; GORM пока не установлен. API style (Traditional/Generics) выбрать после проверки версии при реализации.
 - Repository/model location: планируемый `internal/storage/`; repository interfaces и доменные сервисы — `internal/core/`.
 - Transaction owner: доменный сервис определяет границы операции, storage реализует их через переданную транзакцию. Короткие транзакции, без внешнего I/O под блокировкой.
 - Error translation: storage переводит ошибки драйвера/GORM в доменный контракт, API выполняет HTTP-отображение.
@@ -268,7 +268,9 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 
 ## Build And Validation Commands
 
-Command source of truth: этот файл; будущие task runner/CI синхронизируются с ним. Используются доступные инструменты выбранного проекта; установка отсутствующих инструментов не выполняется автоматически.
+Command source of truth: этот профиль задаёт обязательные проверки, `Makefile` реализует их; `.github/workflows/go.yml` использует те же цели. Версия Go задаётся в `go.mod`, версия линтера — в `Makefile`. Явная команда `make tools` загружает и собирает закреплённый линтер в `bin/`; обычные проверки не устанавливают инструменты автоматически.
+
+Текущая основа проверяется через `make tools`, затем `make bootstrap-check`: версия Go, `gofmt` без правки файлов, `go mod tidy -diff`, `go mod verify` и `golangci-lint config verify`. При отсутствии Go-пакетов CI явно пропускает анализ, тесты и сборку. Полная цель `make check` в таком состоянии завершается ошибкой с пояснением; прохождение bootstrap не является проверкой приложения.
 
 Для текущего слоя инструкций:
 
@@ -277,15 +279,16 @@ Command source of truth: этот файл; будущие task runner/CI син
 - Git: `git diff --check` для tracked изменений; новые файлы дополнительно проверяются на пробельные ошибки при сверке импорта.
 - Автоматический Markdown-lint не настроен; не устанавливать его ради проверки этого слоя.
 
-Следующие команды объявлены для этапа, когда появились `go.mod`, соответствующий код и совместимый Go toolchain; сейчас их выполнение не является проверкой этого слоя:
+Команды для Go-кода выполняются после появления соответствующих пакетов; модульные проверки и форматирование доступны уже сейчас:
 
 - Toolchain/modules: `go version`, `go env GOVERSION GOOS GOARCH CGO_ENABLED GOTOOLCHAIN`, `go list -m all`, `go mod verify`.
 - Format: `gofmt -w <изменённые Go-файлы>`; check — `gofmt -l <изменённые Go-файлы>`.
-- Static analysis: `go vet ./...`.
+- Static analysis: `make vet` → `go vet ./...`; `make lint` → закреплённый `golangci-lint run ./...`.
 - Unit/integration tests: `go test ./...`.
 - Race tests: `go test -race ./...` при поддерживаемой платформе/CGO.
-- Build: `go build ./...`.
+- Build: `make build` → `go build -o /dev/null ./...`; проверка компиляции не оставляет бинарники в корне репозитория. Выпускаемый бинарник создаётся через `make binary`.
 - Module consistency: `go mod tidy -diff` при поддержке закреплённым Go и разрешении на возможные cache/network effects. Обычный `go mod tidy` изменяет модули и требует разрешённой задачи на их изменение.
+- Make: `make fmt`, `make fmt-check`, `make tidy`, `make tidy-check`, `make mod-verify`, `make test`, `make test-race`, `make build` реализуют соответствующие команды. `make check` объединяет bootstrap, анализ, тесты, race и сборку. `make binary` после появления точки входа создаёт `bin/gost-restreamer` для текущей платформы с CGO и `-trimpath`; Linux CI дополнительно создаёт архив и SHA-256 в `dist/`.
 - Benchmarks: `go test -run '^$' -bench '<проверенная цель>' -benchmem -count=10 <package>` только для выбранной задачи и изолированной среды; `benchstat` — если уже доступен и разрешён.
 - Delve diagnostics: `dlv version` и `dlv help test`, затем согласованная локальная цель `dlv debug`/`dlv test`/`dlv exec` с интерактивным stdin и временными артефактами. Отладчик запускает настоящий код; наблюдения не заменяют обычные тесты.
 - Конкретные цели Media E2E, fuzz и benchmarks, а также команды Goose runner определяются вместе с реальными пакетами и изолированной средой.
@@ -294,7 +297,7 @@ Command source of truth: этот файл; будущие task runner/CI син
 
 ## Dependency Policy
 
-- Existing dependency source of truth: пока нет манифестов; выбранные семейства стека перечислены в этом профиле и архитектуре.
+- Existing dependency source of truth: `go.mod` и создаваемый по импортам `go.sum`; пока runtime-зависимостей нет. Выбранные семейства стека перечислены в этом профиле и архитектуре. Dev dependency `golangci-lint` `2.15.0` закреплён отдельно в `Makefile` и не входит в runtime-граф приложения.
 - Одобрены Go, Huma v2/Chi, локальный Otter v2 и GORM/SQLite/Goose. Первые совместимые версии фиксируются при отдельно запрошенной реализации соответствующего кода, с проверкой официальных требований.
 - Остальные новые runtime/dev dependencies и повышение toolchain требуют явного разрешения. Не устанавливать библиотеки, CLI, linters, контейнеры или hooks в рамках настройки инструкций.
 - Наличие active profile не запускает сервисы, миграции, публикацию, трансляции или установку зависимостей.

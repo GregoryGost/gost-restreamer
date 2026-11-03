@@ -1,0 +1,73 @@
+name: Проверки Go
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Go и сборка для Debian 13
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: golang:1.27.3-trixie
+    env:
+      CGO_ENABLED: "1"
+      GOTOOLCHAIN: local
+      GOWORK: "off"
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Получение исходников
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # Версия v7.0.1.
+        with:
+          persist-credentials: false
+
+      - name: Установка инструментов проекта
+        run: make tools
+
+      - name: Проверка основы проекта
+        run: make bootstrap-check
+
+      - name: Определение доступных Go-пакетов
+        id: source
+        run: |
+          packages="$(go list ./...)"
+          if [ -n "$packages" ]; then
+            echo 'packages=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'packages=false' >> "$GITHUB_OUTPUT"
+            echo 'Go-пакетов пока нет: vet, lint, тесты и сборка не выполнялись.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f cmd/gost-restreamer/main.go ]; then
+            echo 'binary=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'binary=false' >> "$GITHUB_OUTPUT"
+            echo 'Точки входа сервиса пока нет: бинарник и архив не создавались.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Анализ, тесты и сборка пакетов
+        if: steps.source.outputs.packages == 'true'
+        run: make vet lint test test-race build
+
+      - name: Сборка бинарника
+        if: steps.source.outputs.binary == 'true'
+        run: make binary
+
+      - name: Архив и контрольная сумма
+        if: steps.source.outputs.binary == 'true'
+        run: |
+          mkdir -p dist
+          tar -czf dist/gost-restreamer-linux-amd64.tar.gz -C bin gost-restreamer
+          cd dist
+          sha256sum gost-restreamer-linux-amd64.tar.gz > gost-restreamer-linux-amd64.tar.gz.sha256
+
+      - name: Сохранение артефактов
+        if: steps.source.outputs.binary == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # Версия v7.0.2.
+        with:
+          name: gost-restreamer-linux-amd64
+          path: dist/*
+          if-no-files-found: error
