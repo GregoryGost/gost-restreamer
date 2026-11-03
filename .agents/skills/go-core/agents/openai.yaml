@@ -1,0 +1,5 @@
+interface:
+  display_name: "Go Core"
+  short_description: "Idiomatic Go, OOP, interfaces, concurrency and expert review"
+  default_prompt: "Use $go-core for version-aware Go engineering and critical review. Read CODEX_PROJECT.md, go.mod and matching expert references; distinguish proven defects from design and style preferences."
+

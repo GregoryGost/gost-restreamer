@@ -1,0 +1,5 @@
+interface:
+  display_name: "Go GORM SQLite Goose"
+  short_description: "SQLite driver behavior and versioned Goose migrations"
+  default_prompt: "Use $go-gorm-sqlite-goose with $go-gorm and $go-core when the project explicitly selects GORM, SQLite and Goose v3."
+

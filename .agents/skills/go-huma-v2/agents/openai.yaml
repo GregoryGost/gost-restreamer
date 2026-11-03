@@ -1,0 +1,5 @@
+interface:
+  display_name: "Go Huma v2"
+  short_description: "Typed OpenAPI HTTP APIs with Huma v2"
+  default_prompt: "Use $go-huma-v2 with $go-core for Huma v2 HTTP contracts, router integration, validation and OpenAPI review."
+

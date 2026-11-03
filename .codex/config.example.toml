@@ -1,0 +1,13 @@
+model = "gpt-6.1-sol"
+model_reasoning_effort = "xhigh"
+personality = "pragmatic"
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 4
+default_subagent_model = "gpt-6.1-sol"
+default_subagent_reasoning_effort = "high"
+
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+bearer_token_env_var = "CONTEXT7_API_KEY"

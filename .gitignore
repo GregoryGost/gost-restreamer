@@ -1,0 +1,6 @@
+.DS_Store
+/.codex/config.toml
+/.agent-handoffs/
+.env
+.env.*
+!.env.example

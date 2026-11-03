@@ -1,0 +1,5 @@
+interface:
+  display_name: "Go GORM"
+  short_description: "GORM repositories, transactions and safe queries"
+  default_prompt: "Use $go-gorm with $go-core to review GORM modeling, query behavior, error mapping and transaction ownership."
+

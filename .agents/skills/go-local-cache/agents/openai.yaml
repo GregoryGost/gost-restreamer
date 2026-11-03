@@ -1,0 +1,5 @@
+interface:
+  display_name: "Go Local Cache"
+  short_description: "Otter v2 local cache, TTL and resource ownership"
+  default_prompt: "Use $go-local-cache with independently active $go-core for bounded single-process Otter v2 cache design, tests and review. Do not assume distributed caching."
+

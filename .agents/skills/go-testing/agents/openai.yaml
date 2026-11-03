@@ -1,0 +1,5 @@
+interface:
+  display_name: "Go Testing"
+  short_description: "Unit, HTTP integration, race, fuzz and coverage testing"
+  default_prompt: "Use $go-testing with $go-core for isolated, behavior-oriented Go tests and project-declared validation."
+
