@@ -6,7 +6,7 @@
 - Project type: Go backend for personal self-hosted restreaming in the owner's local environment; the OBS plugin is a separate project.
 - Primary programming language: Go. SQL is used for Goose migrations.
 - Architecture source: `gost-restreamer-architecture.md`, revision 6.
-- Current repository state: созданы Go-модуль, Makefile, линтер и workflow CI; реализованы общие медиатипы, домен, Repository-интерфейсы, транзакционные операции сессий/команд и GORM/SQLite storage со встроенной первой миграцией Goose. Есть unit-тесты и изолированные проверки файловой SQLite. Исполняемый сервис, рабочие медиакомпоненты и API ещё не реализованы. Контракты описаны в `docs/media-contracts.md` и `docs/domain-storage-contracts.md`.
+- Current repository state: созданы Go-модуль, Makefile, линтер и workflow CI; реализованы общие медиатипы, домен, Repository-интерфейсы, транзакционные операции сессий/команд, GORM/SQLite/Goose и общая runtime authority. Пакеты media содержат Router, raw Enhanced RTMP ingest, fMP4 и FFmpeg Supervisor/UDS; их приёмка относится к T03. Группы/Switcher, Publishers, API и исполняемый сервис ещё не реализованы. Контракты описаны в `docs/media-contracts.md` и `docs/domain-storage-contracts.md`.
 - Selected technology families are approved and active now. Go закреплён в `go.mod`, линтер — в `Makefile`; версии runtime-зависимостей и нереализованные настройки подтверждаются при появлении соответствующего кода.
 
 ## Activation Semantics
@@ -129,7 +129,7 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - Go enabled: yes; active pair: `go_core.md + go-core`.
 - Module/workspace source: `go.mod`, module path `github.com/GregoryGost/gost-restreamer`; `go.sum` создаётся после добавления зависимостей и хранится в Git. `go.work` не используется.
 - Effective language/toolchain version: Go `1.27.3` в `go.mod`; локальный compiler `go1.27.3 darwin/arm64` проверен. Make проверяет точную версию, задаёт `GOTOOLCHAIN=local` и `GOWORK=off`; совместимость будущих зависимостей проверяется по выбранным тегам без автоматического обновления SDK.
-- Development console: macOS. Deployment target: Debian 13 по архитектуре; workflow собирает для `linux/amd64` в `golang:1.27.3-trixie`. Фактическая аппаратная среда проверяется при целевой приёмке; локальное наличие Docker не предполагается.
+- Development console: команды выбираются по фактической ОС и shell; macOS, Windows и Linux рассматриваются как возможные среды разработки. Текущая проверенная среда — macOS/arm64; переносимость инструментов и платформозависимых проверок подтверждается при смене среды. Deployment target: Debian 13 по архитектуре; workflow собирает для `linux/amd64` в `golang:1.27.3-trixie`. Фактическая аппаратная среда проверяется при целевой приёмке; локальное наличие Docker не предполагается.
 - CGO policy: enabled для исходного `gorm.io/driver/sqlite`; pure-Go замена требует отдельного решения и тестов.
 - Dependency integrity: фиксировать выбранные версии в `go.mod` и `go.sum`.
 - Formatter/static checks: `gofmt`, `go vet`, `golangci-lint` `2.15.0`; `.golangci.yml` включает `errcheck`, `govet`, `ineffassign`, `staticcheck`, `unused`. Версия и установка линтера заданы в `Makefile`; `make tools` устанавливает его только в `bin/` проекта. Линтер естественного языка не добавляется.
@@ -142,6 +142,21 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - Module/build provenance: проверять `go.mod`, `go.sum`, возможный `go.work`, эффективный toolchain, build tags, `GOOS`/`GOARCH` и CGO. Выходные файлы сборки — в явно заданном каталоге артефактов или системном временном каталоге; генераторы и изменения модулей запускаются только в разрешённой области задачи.
 - Performance/PGO: представительные измерения по конкретному вопросу с повторениями и сопоставимыми входами, версиями и флагами. PGO не выбран; `benchstat` используется только при наличии и разрешении. Профили CPU/heap/trace хранятся во временном каталоге задачи.
 - Design/review: активные Go references, версия спецификации и release notes, соответствующая модулю.
+
+## Среды разработки и локальные медиапроверки
+
+ОС разработки не закреплена за проектом. Для выбранной macOS, Windows или Linux отдельно проверяются Go/CGO, C-компилятор, Make/shell, файловые пути, UDS, блокировки и управление процессами. Команды выполняются в соответствии с фактической средой; её выбор сам по себе не подтверждает нативную сборку или прохождение всех проверок на этой ОС. Целевая серверная среда остаётся Debian 13 / `linux/amd64` / RTX A1000.
+
+Обязательные проверки Go/CI выполняются без FFmpeg, GPU и внешних площадок. Короткий CPU round-trip Go ↔ FFmpeg проверяется отдельно при реализации медиакомпонентов. Дополнительные аппаратные интеграционные проверки используют доступный в выбранной среде API и явно заданную тестовую команду FFmpeg; проверяются те же рабочие компоненты Go и медиаконтракты. Доступность VideoToolbox или другого локального ускорителя не является требованием к машине разработчика. Эти подстановки принадлежат тестам; автоматическая замена production-пути NVDEC/NVENC ими не вводится. Параметры NVIDIA и её аппаратная/live-совместимость проверяются отдельно в целевой среде.
+
+Пример доступной среды, проверенный 4 ноября 2026 года:
+
+- macOS `27.0.1` / `arm64`, MacBook Air с Apple M4, 10-ядерными CPU и GPU, 16 ГБ памяти; установлены FFmpeg и ffprobe `7.1.5`.
+- В короткой синтетической проверке перед реализацией T03 прошли 15 кадров `640×360` при `30 FPS`: AV1/AAC → NUT/pipe → `libdav1d` на CPU → `h264_videotoolbox` с `-allow_sw 0` и копированием AAC → NUT/pipe → успешное декодирование H.264/AAC. Это подтверждает доступность локальной аппаратной H.264-подстановки; рабочая Go/UDS-интеграция проверяется отдельно.
+- Apple заявляет аппаратное декодирование AV1 в [Media Engine M4](https://support.apple.com/en-us/122209), однако попытка использовать его через VideoToolbox в проверенной связке FFmpeg/macOS завершилась ошибкой. Для этой локальной проверки AV1 декодировался через `libdav1d`; аппаратное декодирование не считается подтверждённым.
+- Аппаратная H.264-проверка внутри sandbox Codex завершилась ошибкой создания сессии `-12908`; тот же запуск вне sandbox прошёл. Доступ к ускорителю проверяется в контексте запуска тестового процесса с соблюдением действующих разрешений.
+
+Эти наблюдения относятся только к указанной среде и короткому тесту. Они не подтверждают 1440p60, длительную устойчивость, CUDA/NVDEC/NVENC, целевые площадки или переносимость на другую ОС. Другая машина разработки использует собственную проверенную конфигурацию; macOS и VideoToolbox остаются одним из возможных вариантов.
 
 ## Go Application Context And Data Disclosure Policy
 
@@ -168,7 +183,7 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - Runner: стандартный `go test`; unit-тесты рядом с кодом в `*_test.go`.
 - HTTP: реальный router/middleware через `net/http/httptest`; проверять ответы и генерируемый OpenAPI.
 - Storage: временная файловая SQLite через `t.TempDir`, настоящий runner Goose, реальные ограничения, транзакции, PRAGMA, WAL и блокировки.
-- Media integration / E2E: планируемый `tests/integration/`; FFmpeg/GPU и реальные площадки только в явно разрешённой тестовой среде. Успешная сборка не подтверждает live fallback.
+- Media integration / E2E: `tests/integration/`; FFmpeg/GPU и реальные площадки только в явно разрешённой тестовой среде. CPU round-trip и дополнительные аппаратные проверки разделяются по [профилю среды разработки](#среды-разработки-и-локальные-медиапроверки); macOS/VideoToolbox не становятся обязательными зависимостями CI. Успешная сборка не подтверждает live fallback.
 - Race: `go test -race ./...` при поддерживаемой платформе/toolchain/CGO; не считать проверкой утечек.
 - Parallel/shuffle: только при доказанной изоляции БД, окружения, портов и глобального состояния. `t.Setenv` используется в последовательных тестах.
 - Coverage: только по задаче, файлы в разрешённом временном каталоге; порог не установлен.
@@ -260,7 +275,7 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 
 ## Project Boundaries
 
-Пути и обязанности взяты из архитектуры. Реализованы домен/общие типы и storage; API, рабочий медиатракт и composition root ещё планируются:
+Пути и обязанности взяты из архитектуры. Реализованы домен, storage и компоненты медиатракта T03; группы/Switcher, Publishers, API и composition root остаются следующими задачами:
 
 - `internal/api/`: Huma/Chi, DTO, SSE; управляющий API без авторизации и токенов доступа.
 - `internal/core/`: домен, сервисы, repository interfaces; без импортов Huma/GORM/FFmpeg.
@@ -270,7 +285,7 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 
 Сразу реализуются рабочие пакеты Go backend; отдельный прототип и последующий перенос или переписывание его кода не предусматриваются. Проверки медиаконтрактов, обмена Go ↔ FFmpeg, переключения и изоляции отказов входят в реализацию соответствующих компонентов.
 
-Аппаратная и live-приёмка выполняются отдельно в разрешённой целевой среде; отсутствие доступа к RTX A1000 не блокирует локальную реализацию и её проверки. Не считать Enhanced RTMP, UDS/NUT или непрерывный AV1 fallback реализованными и проверенными без соответствующих интеграционных результатов.
+Аппаратная и live-приёмка выполняются отдельно в разрешённой целевой среде; отсутствие доступа к RTX A1000 не блокирует локальную реализацию и её проверки. В T03 владелец выбрал raw-адаптер `gortmplib v1.0.1` и, после контрпримера NUT, fMP4 через UDS. [Границы AV1, fMP4 и конкретного FFmpeg CLI-порта](docs/media-contracts.md#контейнер-и-конкретная-граница-ffmpeg) применяются вместе с общими signed Packet. Не считать Enhanced RTMP, UDS/fMP4 или непрерывный AV1 fallback реализованными и проверенными без соответствующих интеграционных результатов.
 
 ## Build And Validation Commands
 
@@ -303,7 +318,7 @@ Command source of truth: этот профиль задаёт обязатель
 
 ## Dependency Policy
 
-- Existing dependency source of truth: `go.mod` и `go.sum`; закреплены GORM `v1.31.2`, SQLite dialect `v1.6.0`, CGO driver `v1.14.22` и Goose `v3.27.0`. Выбранные семейства остальных слоёв перечислены в этом профиле и архитектуре. Dev dependency `golangci-lint` `2.15.0` закреплён отдельно в `Makefile` и не входит в runtime-граф приложения.
+- Existing dependency source of truth: `go.mod` и `go.sum`; закреплены GORM `v1.31.2`, SQLite dialect `v1.6.0`, CGO driver `v1.14.22`, Goose `v3.27.0`, выбранный владельцем `gortmplib v1.0.1` и необходимые codec/box API его графа `mediacommon/v2 v2.9.3`, `go-mp4 v1.7.1`. Выбранные семейства остальных слоёв перечислены в этом профиле и архитектуре. Dev dependency `golangci-lint` `2.15.0` закреплён отдельно в `Makefile` и не входит в runtime-граф приложения.
 - Одобрены Go, Huma v2/Chi, локальный Otter v2 и GORM/SQLite/Goose. Первые совместимые версии ещё не подключённых слоёв фиксируются при реализации использующего их кода, с проверкой официальных требований.
 - Остальные новые runtime/dev dependencies и повышение toolchain требуют явного разрешения. Не устанавливать библиотеки, CLI, linters, контейнеры или hooks в рамках настройки инструкций.
 - Наличие active profile не запускает сервисы, миграции, публикацию, трансляции или установку зависимостей.
@@ -313,5 +328,5 @@ Command source of truth: этот профиль задаёт обязатель
 - Source: [GregoryGost/agent-projects-tools](https://github.com/GregoryGost/agent-projects-tools).
 - Source version: `v1.16.0`.
 - Source commit: `f7a68e48271c78bf61401c42af62ca97c918f820`.
-- Local adaptations: root `AGENTS.md` targets this project and preserves the user's evidence/review/macOS instructions; this profile and the configuration example are project-owned.
+- Local adaptations: root `AGENTS.md` targets this project and preserves the user's evidence/review and platform-specific console instructions; this profile and the configuration example are project-owned.
 - Обновлять переносимые материалы согласованно: bootstrap, routing, dependencies, coordination, роли, skills и этот профиль. Не заменять профиль полным шаблоном с чужими стеками.

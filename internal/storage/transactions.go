@@ -86,32 +86,41 @@ func (s *Store) Write(ctx context.Context, callback func(core.Repositories) erro
 	}
 	budget, cancel := context.WithTimeout(ctx, s.options.RetryTimeout)
 	defer cancel()
+	return s.authority.GuardWrite(budget, s, func() (bool, error) {
+		return s.writeWithBudget(budget, callback)
+	})
+}
+
+func (s *Store) writeWithBudget(budget context.Context, callback func(core.Repositories) error) (bool, error) {
+	if s.closed.Load() {
+		return false, core.ErrClosed
+	}
 	for attempt := 0; attempt < s.options.RetryAttempts; attempt++ {
-		err, retry := s.writeAttempt(budget, callback)
+		retry, uncertain, err := s.writeAttempt(budget, callback)
 		if err == nil {
-			return nil
+			return uncertain, nil
 		}
 		if budget.Err() != nil {
-			return budget.Err()
+			return uncertain, budget.Err()
 		}
 		if !retry || attempt+1 == s.options.RetryAttempts {
-			return translate(err)
+			return uncertain, translate(err)
 		}
 		timer := time.NewTimer(s.options.RetryDelay)
 		select {
 		case <-budget.Done():
 			timer.Stop()
-			return budget.Err()
+			return false, budget.Err()
 		case <-timer.C:
 		}
 	}
-	return core.ErrBusy
+	return false, core.ErrBusy
 }
 
-func (s *Store) writeAttempt(ctx context.Context, callback func(core.Repositories) error) (retErr error, retry bool) {
+func (s *Store) writeAttempt(ctx context.Context, callback func(core.Repositories) error) (retry bool, uncertain bool, retErr error) {
 	tx, err := s.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
-		return err, isLock(err)
+		return isLock(err), false, err
 	}
 	committed := false
 	defer func() {
@@ -120,6 +129,7 @@ func (s *Store) writeAttempt(ctx context.Context, callback func(core.Repositorie
 			if err != nil && !errors.Is(err, sql.ErrTxDone) {
 				retErr = errors.Join(retErr, err)
 				retry = false
+				uncertain = true
 			}
 		}
 	}()
@@ -129,12 +139,12 @@ func (s *Store) writeAttempt(ctx context.Context, callback func(core.Repositorie
 	r.active.Store(true)
 	defer r.active.Store(false)
 	if err = callback(r.contracts()); err != nil {
-		return err, isLock(err)
+		return isLock(err), false, err
 	}
 	// Неоднозначный результат COMMIT не повторяется: сервис сверяет сохранённую квитанцию.
 	err = tx.Commit()
 	committed = err == nil
-	return err, false
+	return false, true, err
 }
 
 func isLock(err error) bool {
@@ -195,6 +205,7 @@ func translate(err error) error {
 }
 
 var _ core.UnitOfWork = (*Store)(nil)
+var _ core.RuntimeAuthorityProvider = (*Store)(nil)
 var _ core.ConfigRepository = (*repositories)(nil)
 var _ core.RuntimeRepository = (*repositories)(nil)
 var _ core.ArtifactRepository = (*repositories)(nil)

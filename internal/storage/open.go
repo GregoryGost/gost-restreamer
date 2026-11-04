@@ -57,6 +57,7 @@ type Store struct {
 	lock        *os.File
 	options     Options
 	incarnation string
+	authority   *core.RuntimeAuthority
 	provider    *goose.Provider
 	closeOnce   sync.Once
 	closeErr    error
@@ -86,6 +87,10 @@ func Open(ctx context.Context, path string, options Options) (_ *Store, retErr e
 		return nil, fmt.Errorf("создать идентификатор владельца: %w", err)
 	}
 	s.incarnation = hex.EncodeToString(token[:])
+	s.authority, err = core.NewRuntimeAuthority(s.incarnation)
+	if err != nil {
+		return nil, err
+	}
 	dsn := url.URL{Scheme: "file", Path: canonical}
 	q := url.Values{"mode": {"rw"}, "cache": {"private"}, "_foreign_keys": {"on"}, "_journal_mode": {"WAL"}, "_synchronous": {"FULL"}, "_txlock": {"immediate"}, "_busy_timeout": {strconv.FormatInt(int64(options.BusyTimeout/time.Millisecond), 10)}}
 	dsn.RawQuery = q.Encode()
@@ -190,6 +195,9 @@ func lockDatabase(path string) (string, *os.File, error) {
 // Incarnation возвращает идентификатор текущего владельца исполнения.
 func (s *Store) Incarnation() string { return s.incarnation }
 
+// RuntimeAuthority возвращает общий допуск всех экземпляров Service и записей этого Store.
+func (s *Store) RuntimeAuthority() *core.RuntimeAuthority { return s.authority }
+
 // Migrate повторно применяет только ещё не выполненные встроенные миграции.
 func (s *Store) Migrate(ctx context.Context) error {
 	if s.closed.Load() {
@@ -205,6 +213,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
+		if s.authority != nil {
+			s.authority.Close()
+		}
 		if s.sqlDB != nil {
 			s.closeErr = s.sqlDB.Close()
 		}

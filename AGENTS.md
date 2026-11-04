@@ -20,7 +20,7 @@ All materials selected in `CODEX_PROJECT.md` are active by default, including be
 - After exploring an idea or implementation, actively try to refute it: inspect counterexamples, failure paths and simpler alternatives. Resolve supported objections before recommending or accepting a solution.
 - Think deeply and double-check conclusions for every user command.
 - Always locate and read the root `AGENTS.md`; reread it, request routing and the applicable project profile after context compression or resumption.
-- Use macOS-compatible terminal commands in the development workspace. Deployment commands target Debian only when the task explicitly concerns that environment.
+- Use terminal commands compatible with the verified development OS. macOS is one development-environment option; Windows/Linux development requires verification of platform-specific tools and checks. Deployment commands target Debian only when the task explicitly concerns that environment.
 
 ## Subagents For Executable Code And Tests
 
