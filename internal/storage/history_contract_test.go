@@ -105,6 +105,8 @@ func TestHistoryServiceListsAndGetsRespectTypedFiltersAndExactRows(t *testing.T)
 			a := f.asset
 			a.Record, a.OriginalPath, a.Incarnation = record, "originals/history-"+suffix+".png", "history-owner"
 			a.ID = core.ID("asset-" + suffix)
+			a.CurrentGenerationID = ""
+			a.PendingGenerationID = ""
 			if suffix == "b" {
 				a.State, a.Incarnation = core.AssetPreparing, f.store.Incarnation()
 				a.SourceHash, a.SizeBytes, a.SourceFormat = "", 0, core.SourceFormat{}
@@ -118,11 +120,23 @@ func TestHistoryServiceListsAndGetsRespectTypedFiltersAndExactRows(t *testing.T)
 			}
 			assets = append(assets, a)
 			v := f.variant
-			v.Record, v.ManagedPath, v.Incarnation = record, "variants/history-"+suffix+".mp4", a.Incarnation
+			v.Record, v.ManagedPath, v.Incarnation = record, core.GenerationDirectory(f.variant.GenerationID)+"/history-"+suffix+".mp4", a.Incarnation
 			v.ID = core.ID("variant-" + suffix)
 			v.State = core.VariantState(a.State)
 			if suffix != "a" {
 				v.ContentHash, v.SizeBytes = "", 0
+			}
+			v.Profile.VideoEncoding.GOPFrames += uint32(suffix[0])
+			key, canonical, e := core.ProfileIdentity(v.Profile)
+			if e != nil {
+				return e
+			}
+			v.ProfileKey = key
+			v.CanonicalProfile = canonical
+			fileRecord := record
+			fileRecord.ID = core.ID("file-" + suffix)
+			if err := r.Artifacts.InsertOwnedFile(ctx, core.OwnedFile{Record: fileRecord, AssetID: v.AssetID, GenerationID: v.GenerationID, ManagedPath: v.ManagedPath, Kind: core.OwnedVariant}); err != nil {
+				return err
 			}
 			if err := r.Artifacts.InsertVariant(ctx, v); err != nil {
 				return err
@@ -152,10 +166,10 @@ func TestHistoryServiceListsAndGetsRespectTypedFiltersAndExactRows(t *testing.T)
 			}
 			outputs = append(outputs, o)
 			if o.CleanupPending {
-				if err := r.Runtime.InsertHold(ctx, core.ReferenceHold{SessionID: sess.ID, StreamID: sess.StreamID, AssetID: f.asset.ID}); err != nil {
+				if err := r.Runtime.InsertHold(ctx, core.ReferenceHold{SessionID: sess.ID, StreamID: sess.StreamID, AssetID: f.asset.ID, GenerationID: f.variant.GenerationID}); err != nil {
 					return err
 				}
-				if err := r.Runtime.InsertHold(ctx, core.ReferenceHold{SessionID: sess.ID, OutputID: o.ID, StreamID: sess.StreamID, GroupID: o.Snapshot.Group.ID, ProfileID: o.Snapshot.Profile.ID, DestinationID: o.Snapshot.Destination.ID, AssetID: o.Snapshot.Artifact.AssetID, VariantID: o.Snapshot.Artifact.VariantID}); err != nil {
+				if err := r.Runtime.InsertHold(ctx, core.ReferenceHold{SessionID: sess.ID, OutputID: o.ID, StreamID: sess.StreamID, GroupID: o.Snapshot.Group.ID, ProfileID: o.Snapshot.Profile.ID, DestinationID: o.Snapshot.Destination.ID, AssetID: o.Snapshot.Artifact.AssetID, VariantID: o.Snapshot.Artifact.VariantID, GenerationID: o.Snapshot.Artifact.GenerationID}); err != nil {
 					return err
 				}
 			}
@@ -223,7 +237,7 @@ func TestHistoryServiceListsAndGetsRespectTypedFiltersAndExactRows(t *testing.T)
 	groupKind.filters = []historyContractFilter{{core.ListQuery{StreamID: "a", ProfileID: f.profile.ID}, []core.ID{"a"}}, {core.ListQuery{ProfileID: f.profile.ID}, all}}
 	destinationKind.filters = []historyContractFilter{{core.ListQuery{StreamID: "a", GroupID: "a"}, []core.ID{"a"}}, {core.ListQuery{StreamID: "b"}, []core.ID{"b"}}}
 	assetKind.filters = []historyContractFilter{{core.ListQuery{State: "READY"}, []core.ID{"a"}}, {core.ListQuery{Incarnation: "history-owner"}, []core.ID{"a", "c"}}, {core.ListQuery{ExcludeIncarnation: "history-owner"}, []core.ID{"b"}}}
-	variantKind.filters = []historyContractFilter{{core.ListQuery{AssetID: f.asset.ID}, all}, {core.ListQuery{State: "PREPARING", Incarnation: f.store.Incarnation()}, []core.ID{"b"}}, {core.ListQuery{ExcludeIncarnation: f.store.Incarnation()}, []core.ID{"a", "c"}}}
+	variantKind.filters = []historyContractFilter{{core.ListQuery{AssetID: f.asset.ID, GenerationID: f.variant.GenerationID}, all}, {core.ListQuery{State: "PREPARING", Incarnation: f.store.Incarnation()}, []core.ID{"b"}}, {core.ListQuery{ExcludeIncarnation: f.store.Incarnation()}, []core.ID{"a", "c"}}}
 	sessionKind.filters = []historyContractFilter{{core.ListQuery{StreamID: "a", State: "STOPPED"}, []core.ID{"a"}}, {core.ListQuery{State: "STOPPED"}, []core.ID{"a", "b"}}, {core.ListQuery{StreamID: "c", State: "FAILED"}, []core.ID{"c"}}, {core.ListQuery{PendingOnly: true}, []core.ID{"a", "b"}}, {core.ListQuery{Incarnation: "history-owner"}, []core.ID{"a", "c"}}, {core.ListQuery{ExcludeIncarnation: "history-owner"}, []core.ID{"b"}}}
 	outputKind.filters = []historyContractFilter{{core.ListQuery{SessionID: "a"}, []core.ID{"a"}}, {core.ListQuery{PendingOnly: true}, []core.ID{"a", "b"}}}
 	receiptKind.filters = []historyContractFilter{{core.ListQuery{SessionID: "a", OutputID: "a"}, []core.ID{"a"}}, {core.ListQuery{PendingOnly: true}, []core.ID{"a", "b"}}, {core.ListQuery{State: "SUCCEEDED", Incarnation: "history-owner"}, []core.ID{"c"}}, {core.ListQuery{ExcludeIncarnation: "history-owner"}, []core.ID{"b"}}}

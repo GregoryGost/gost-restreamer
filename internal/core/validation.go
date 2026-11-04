@@ -64,6 +64,15 @@ func (s SessionSnapshot) Validate() error {
 	return nil
 }
 func (m ArtifactManifest) Validate() error {
+	if err := m.GenerationID.Validate(); err != nil {
+		return err
+	}
+	if err := m.VerifiedFormat.Validate(); err != nil {
+		return err
+	}
+	if CompatibleFormat(m.VerifiedFormat, m.Profile.Format) != nil {
+		return ErrInvalid
+	}
 	if err := m.VariantID.Validate(); err != nil {
 		return err
 	}
@@ -229,7 +238,10 @@ func (i CleanupIntent) Validate() error {
 	}
 	switch i.Kind {
 	case CleanupFile:
-		return ValidateManagedPath(i.ManagedPath)
+		if i.ArtifactGenerationID == "" || i.FileID == "" {
+			return ErrInvalid
+		}
+		return (OwnedFile{AssetID: "asset", GenerationID: i.ArtifactGenerationID, ManagedPath: i.ManagedPath, Kind: i.FileKind, ContentHash: i.ContentHash, SizeBytes: i.SizeBytes}).Validate()
 	case CleanupRuntime:
 		if err := i.StreamID.Validate(); err != nil {
 			return err
@@ -252,6 +264,9 @@ func (i CleanupIntent) Validate() error {
 	}
 }
 func (h ReferenceHold) Validate() error {
+	if err := h.GenerationID.Validate(); err != nil {
+		return err
+	}
 	if err := h.SessionID.Validate(); err != nil {
 		return err
 	}

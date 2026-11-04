@@ -43,6 +43,7 @@ func TestCompletionRequiresIssuanceAndFailureReasonWithoutPartialWrites(t *testi
 			t.Fatal("отклонённое завершение изменило принятую работу")
 		}
 	}
+	requireOutputVariantHolds(t, f.store, f.variant.ID, true)
 	requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
 	if err := f.service.MarkIssued(ctx, fence); err != nil {
 		t.Fatal(err)
@@ -103,15 +104,14 @@ func TestFailedSessionStopSettlesEveryPendingStopAndRetainsCleanupHolds(t *testi
 	if !reflect.DeepEqual(cleanups, pendingCleanups(t, f.store, start.SessionID)) || len(cleanups) != 2 {
 		t.Fatal("отказ stop освободил или продублировал cleanup")
 	}
+	requireOutputVariantHolds(t, f.store, f.variant.ID, true)
 	requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
 	for _, intent := range cleanups {
 		if err := f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(intent)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision); err != nil {
-		t.Fatalf("подтверждённая очистка не освободила поколение: %v", err)
-	}
+	requireOutputVariantHolds(t, f.store, f.variant.ID, false)
 }
 
 func TestStartSessionLateAcceptanceFailureRollsBackAllControlState(t *testing.T) {

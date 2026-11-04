@@ -46,10 +46,6 @@ func newDomainFixture(t *testing.T, outputs int) domainFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err = svc.PublishAsset(ctx, a.ID, a.Revision, a.AttemptToken, "synthetic-source-hash", 1024, core.SourceFormat{ImageFormat: "png"})
-	if err != nil {
-		t.Fatal(err)
-	}
 	stream, err := svc.CreateStream(ctx, core.Stream{Name: "Поток", PublicationKey: "synthetic-publication-key", Fallback: core.FallbackPolicy{AssetID: a.ID, Watchdog: core.WatchdogPolicy{VideoTimeout: time.Second, AudioTimeout: time.Second, RecoveryWindow: time.Second, KeyframeTimeout: time.Second}}})
 	if err != nil {
 		t.Fatal(err)
@@ -62,14 +58,7 @@ func newDomainFixture(t *testing.T, outputs int) domainFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := svc.ReserveVariant(ctx, core.FallbackVariant{AssetID: a.ID, SourceHash: a.SourceHash, Profile: p.Profile, GeneratorVersion: "generator-v1", ManagedPath: "variants/generation-1.nut"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	v, err = svc.PublishVariant(ctx, v.ID, v.Revision, v.AttemptToken, "synthetic-content-hash", 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	a, v := publishFixtureGeneration(t, svc, a, "synthetic-source-hash", "synthetic-content-hash")
 	f := domainFixture{store: s, service: svc, asset: a, stream: stream, profile: p, group: g, variant: v}
 	for i := 0; i < outputs; i++ {
 		d, err := svc.CreateDestination(ctx, core.Destination{StreamID: stream.ID, GroupID: g.ID, Name: "Назначение", Platform: "custom", Endpoint: "rtmps://example.invalid/live", StreamKey: "synthetic-destination-key", Enabled: true})
@@ -203,5 +192,61 @@ func TestAssetDeletionFailureRollsBackVariantAndCleanup(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func publishFixtureGeneration(t *testing.T, svc *core.Service, a core.FallbackAsset, sourceHash, contentHash string) (core.FallbackAsset, core.FallbackVariant) {
+	t.Helper()
+	ctx := context.Background()
+	g, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: a.ID, ExpectedRevision: a.Revision, Kind: core.AssetImage, GeneratorVersion: "generator-v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := svc.ClaimPreparation(ctx, g.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.MarkPreparationIssued(ctx, fence); err != nil {
+		t.Fatal(err)
+	}
+	publication := core.GenerationPublication{SourceHash: sourceHash, SizeBytes: 1024, SourceFormat: core.SourceFormat{ImageFormat: "png"}}
+	for _, p := range g.RequiredProfiles {
+		publication.Variants = append(publication.Variants, core.FallbackVariant{Record: core.Record{ID: p.VariantID}, GenerationID: g.ID, AssetID: a.ID, SourceHash: sourceHash, Profile: p.Profile, GeneratorVersion: g.GeneratorVersion, ManagedPath: p.ManagedPath, SizeBytes: 2048, ContentHash: contentHash, VerifiedFormat: p.Profile.Format})
+	}
+	if _, err = svc.PublishPreparation(ctx, fence, publication); err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.AcknowledgePreparationCleanup(ctx, fence); err != nil {
+		t.Fatal(err)
+	}
+	a, err = svc.GetAsset(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v core.FallbackVariant
+	if len(g.RequiredProfiles) > 0 {
+		v, err = svc.GetVariant(ctx, g.RequiredProfiles[0].VariantID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return a, v
+}
+
+func fixturePublication(g core.FallbackGeneration, sourceHash, contentHash string) core.GenerationPublication {
+	p := core.GenerationPublication{SourceHash: sourceHash, SizeBytes: 1024, SourceFormat: core.SourceFormat{ImageFormat: "png"}}
+	for _, r := range g.RequiredProfiles {
+		p.Variants = append(p.Variants, core.FallbackVariant{Record: core.Record{ID: r.VariantID}, GenerationID: g.ID, AssetID: g.AssetID, SourceHash: sourceHash, Profile: r.Profile, GeneratorVersion: g.GeneratorVersion, ManagedPath: r.ManagedPath, SizeBytes: 2048, ContentHash: contentHash, VerifiedFormat: r.Profile.Format})
+	}
+	return p
+}
+func requireOutputVariantHolds(t *testing.T, s *Store, id core.ID, want bool) {
+	t.Helper()
+	var count int
+	if err := s.sqlDB.QueryRowContext(context.Background(), "SELECT count(*) FROM output_holds WHERE variant_id = ?", id).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if (count != 0) != want {
+		t.Fatalf("удержания output для %s: %d, ожидается наличие %t", id, count, want)
 	}
 }

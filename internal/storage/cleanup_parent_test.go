@@ -44,11 +44,13 @@ func TestFailedStartupReleasesPinsOnlyAfterIssuedParentCleanup(t *testing.T) {
 				if len(cleanups) != 1 || cleanups[0].OutputID != "" {
 					t.Fatalf("нужна отдельная очистка родительской попытки: %+v", cleanups)
 				}
+				requireOutputVariantHolds(t, f.store, f.variant.ID, true)
 				requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
 				requireDomainError(t, f.service.DeleteDestination(ctx, f.destinations[0].ID, f.destinations[0].Revision), core.ErrInUse)
 				wrong := core.CleanupFenceFor(cleanups[0])
 				wrong.Lifecycle++
 				requireDomainError(t, f.service.AcknowledgeCleanup(ctx, wrong), core.ErrStale)
+				requireOutputVariantHolds(t, f.store, f.variant.ID, true)
 				requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
 				if err := f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(cleanups[0])); err != nil {
 					t.Fatal(err)
@@ -56,9 +58,7 @@ func TestFailedStartupReleasesPinsOnlyAfterIssuedParentCleanup(t *testing.T) {
 			} else if len(cleanups) != 0 {
 				t.Fatalf("невыданная попытка требует очистки: %+v", cleanups)
 			}
-			if err := f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision); err != nil {
-				t.Fatalf("освобождённый запуск удерживает поколение: %v", err)
-			}
+			requireOutputVariantHolds(t, f.store, f.variant.ID, false)
 			if err := f.service.DeleteDestination(ctx, f.destinations[0].ID, f.destinations[0].Revision); err != nil {
 				t.Fatal(err)
 			}
@@ -100,10 +100,12 @@ func TestParentAndPublisherCleanupRetainPinsInEitherAcknowledgementOrder(t *test
 			if len(remaining) != 1 || remaining[0].ID != cleanups[1].ID {
 				t.Fatalf("первый ack поглотил чужую очистку: %+v", remaining)
 			}
+			requireOutputVariantHolds(t, f.store, f.variant.ID, true)
 			requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
 			if err := f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(cleanups[0])); err != nil {
 				t.Fatal(err)
 			}
+			requireOutputVariantHolds(t, f.store, f.variant.ID, true)
 			requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
 			if err := f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(cleanups[1])); err != nil {
 				t.Fatal(err)
@@ -111,14 +113,12 @@ func TestParentAndPublisherCleanupRetainPinsInEitherAcknowledgementOrder(t *test
 			if session := readSession(t, f.store, start.SessionID); session.CleanupPending || session.State != core.SessionInterrupted {
 				t.Fatalf("оба ack не завершили очистку прерванного запуска: %+v", session)
 			}
-			if err := f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision); err != nil {
-				t.Fatalf("после обоих ack остался pin: %v", err)
-			}
+			requireOutputVariantHolds(t, f.store, f.variant.ID, false)
 		})
 	}
 }
 
-func isolatedOutputDependency(t *testing.T, f domainFixture) (core.TranscodeProfile, core.TranscodeGroup, core.FallbackVariant, core.Destination) {
+func isolatedOutputDependency(t *testing.T, f *domainFixture) (core.TranscodeProfile, core.TranscodeGroup, core.FallbackVariant, core.Destination) {
 	t.Helper()
 	ctx := context.Background()
 	profile := storageProfile()
@@ -131,13 +131,22 @@ func isolatedOutputDependency(t *testing.T, f domainFixture) (core.TranscodeProf
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := f.service.ReserveVariant(ctx, core.FallbackVariant{AssetID: f.asset.ID, SourceHash: f.asset.SourceHash, Profile: profile, GeneratorVersion: f.variant.GeneratorVersion, ManagedPath: "variants/isolated-group.nut"})
+	a, _ := publishFixtureGeneration(t, f.service, f.asset, "replacement-source", "replacement-content")
+	f.asset = a
+	page, err := f.service.ListVariants(ctx, core.PageRequest{Query: core.ListQuery{Limit: 20, GenerationID: a.CurrentGenerationID}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err = f.service.PublishVariant(ctx, v.ID, v.Revision, v.AttemptToken, "isolated-content-hash", 4096)
-	if err != nil {
-		t.Fatal(err)
+	var v core.FallbackVariant
+	for _, candidate := range page.Items {
+		if candidate.Profile.Equal(profile) {
+			v = candidate
+		} else if candidate.Profile.Equal(f.profile.Profile) {
+			f.variant = candidate
+		}
+	}
+	if v.ID == "" {
+		t.Fatal("не подготовлен отдельный профиль")
 	}
 	d, err := f.service.CreateDestination(ctx, core.Destination{StreamID: f.stream.ID, GroupID: g.ID, Name: "Отдельный выход", Platform: "custom", Endpoint: "rtmps://example.invalid/isolated", Enabled: true})
 	if err != nil {
@@ -155,10 +164,10 @@ func TestDetachUnissuedPublisherCleansOnlyItsGroupUnderLiveIssuedParent(t *testi
 		t.Run(name, func(t *testing.T) {
 			f := newDomainFixture(t, 1)
 			ctx := context.Background()
-			p, g, variant, destination := isolatedOutputDependency(t, f)
+			p, g, variant, destination := isolatedOutputDependency(t, &f)
 			request := f.startRequest("start-with-independent-groups")
 			request.DestinationIDs = append(request.DestinationIDs, destination.ID)
-			request.Bindings = append(request.Bindings, core.PreparedBinding{GroupID: g.ID, VariantID: variant.ID, GeneratorVersion: variant.GeneratorVersion})
+			request.Bindings = append(request.Bindings, core.PreparedBinding{GenerationID: variant.GenerationID, GroupID: g.ID, VariantID: variant.ID, GeneratorVersion: variant.GeneratorVersion})
 			start, err := f.service.StartSession(ctx, request)
 			if err != nil {
 				t.Fatal(err)
@@ -200,6 +209,7 @@ func TestDetachUnissuedPublisherCleansOnlyItsGroupUnderLiveIssuedParent(t *testi
 			wrong := core.CleanupFenceFor(cleanups[0])
 			wrong.OutputID = neighbor.ID
 			requireDomainError(t, f.service.AcknowledgeCleanup(ctx, wrong), core.ErrStale)
+			requireOutputVariantHolds(t, f.store, variant.ID, true)
 			requireDomainError(t, f.service.DeleteVariant(ctx, variant.ID, variant.Revision), core.ErrInUse)
 			if err := f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(cleanups[0])); err != nil {
 				t.Fatal(err)
@@ -211,7 +221,7 @@ func TestDetachUnissuedPublisherCleansOnlyItsGroupUnderLiveIssuedParent(t *testi
 			if session := readSession(t, f.store, start.SessionID); session.State != core.SessionRunning || !session.Issued || session.CleanupPending {
 				t.Fatalf("очистка группы затронула живого родителя: %+v", session)
 			}
-			replacement, err := f.service.AddOutput(ctx, core.AddOutputRequest{RequestID: "attach-new-output", SessionID: start.SessionID, DestinationID: destination.ID, Binding: core.PreparedBinding{GroupID: g.ID, VariantID: variant.ID, GeneratorVersion: variant.GeneratorVersion}})
+			replacement, err := f.service.AddOutput(ctx, core.AddOutputRequest{RequestID: "attach-new-output", SessionID: start.SessionID, DestinationID: destination.ID, Binding: core.PreparedBinding{GenerationID: variant.GenerationID, GroupID: g.ID, VariantID: variant.ID, GeneratorVersion: variant.GeneratorVersion}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -219,6 +229,7 @@ func TestDetachUnissuedPublisherCleansOnlyItsGroupUnderLiveIssuedParent(t *testi
 			if err := f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(cleanups[0])); err != nil {
 				t.Fatal(err)
 			}
+			requireOutputVariantHolds(t, f.store, variant.ID, true)
 			requireDomainError(t, f.service.DeleteVariant(ctx, variant.ID, variant.Revision), core.ErrInUse)
 			if _, err := f.service.DetachOutput(ctx, core.OutputCommand{RequestID: "detach-replacement", OutputID: replacement.OutputID}); err != nil {
 				t.Fatal(err)
@@ -230,13 +241,12 @@ func TestDetachUnissuedPublisherCleansOnlyItsGroupUnderLiveIssuedParent(t *testi
 			if err := f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(cleanups[0])); err != nil {
 				t.Fatal(err)
 			}
+			requireOutputVariantHolds(t, f.store, variant.ID, true)
 			requireDomainError(t, f.service.DeleteVariant(ctx, variant.ID, variant.Revision), core.ErrInUse)
 			if err := f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(pending[0])); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.DeleteVariant(ctx, variant.ID, variant.Revision); err != nil {
-				t.Fatalf("подтверждённый detach удерживает собственный artifact: %v", err)
-			}
+			requireOutputVariantHolds(t, f.store, variant.ID, false)
 			if err := f.service.DeleteDestination(ctx, destination.ID, destination.Revision); err != nil {
 				t.Fatal(err)
 			}
@@ -249,6 +259,7 @@ func TestDetachUnissuedPublisherCleansOnlyItsGroupUnderLiveIssuedParent(t *testi
 			if err := f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(cleanups[0])); err != nil {
 				t.Fatal(err)
 			}
+			requireOutputVariantHolds(t, f.store, f.variant.ID, true)
 			requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
 			if err := neighborObserver.Observe(ctx, core.OutputObservation{State: core.OutputRetrying, Error: "Временный отказ сети"}); err != nil {
 				t.Fatalf("очистка группы отозвала допуск здорового соседа: %v", err)

@@ -151,7 +151,7 @@ func allOutputs(ctx context.Context, r Repositories, sessionID ID) ([]SessionOut
 func bindingMap(bindings []PreparedBinding) (map[ID]PreparedBinding, error) {
 	result := make(map[ID]PreparedBinding, len(bindings))
 	for _, b := range bindings {
-		if b.GroupID == "" || b.VariantID == "" || b.GeneratorVersion == "" {
+		if b.GenerationID == "" || b.GroupID == "" || b.VariantID == "" || b.GeneratorVersion == "" {
 			return nil, ErrInvalid
 		}
 		if _, ok := result[b.GroupID]; ok {
@@ -190,7 +190,7 @@ func insertOutput(ctx context.Context, r Repositories, session Session, o Sessio
 	if err := r.Runtime.InsertOutput(ctx, o); err != nil {
 		return err
 	}
-	return r.Runtime.InsertHold(ctx, ReferenceHold{SessionID: session.ID, OutputID: o.ID, StreamID: session.StreamID, GroupID: o.Snapshot.Group.ID, ProfileID: o.Snapshot.Profile.ID, DestinationID: o.Snapshot.Destination.ID, AssetID: o.Snapshot.Artifact.AssetID, VariantID: o.Snapshot.Artifact.VariantID})
+	return r.Runtime.InsertHold(ctx, ReferenceHold{SessionID: session.ID, OutputID: o.ID, StreamID: session.StreamID, GroupID: o.Snapshot.Group.ID, ProfileID: o.Snapshot.Profile.ID, DestinationID: o.Snapshot.Destination.ID, AssetID: o.Snapshot.Artifact.AssetID, VariantID: o.Snapshot.Artifact.VariantID, GenerationID: o.Snapshot.Artifact.GenerationID})
 }
 func (s *Service) initialOutputIntent(ctx context.Context, r Repositories, session Session, o SessionOutput) error {
 	id, err := newID()
@@ -223,6 +223,9 @@ func (s *Service) StartSession(ctx context.Context, request StartSessionRequest)
 			result = prior
 			return nil
 		}
+		if err = preparationIdleForRuntime(ctx, r); err != nil {
+			return err
+		}
 		stream, err := r.Config.Stream(ctx, request.StreamID)
 		if err != nil {
 			return err
@@ -246,7 +249,14 @@ func (s *Service) StartSession(ctx context.Context, request StartSessionRequest)
 		if err != nil {
 			return err
 		}
-		if asset.State != AssetReady {
+		if asset.CurrentGenerationID == "" {
+			return ErrNotReady
+		}
+		currentGeneration, err := r.Artifacts.Generation(ctx, asset.CurrentGenerationID)
+		if err != nil {
+			return err
+		}
+		if currentGeneration.AssetID != asset.ID || currentGeneration.State != PreparationPublished {
 			return ErrNotReady
 		}
 		groups, err := allGroups(ctx, r, stream.ID)
@@ -269,7 +279,7 @@ func (s *Service) StartSession(ctx context.Context, request StartSessionRequest)
 		if err = r.Runtime.InsertSession(ctx, session); err != nil {
 			return err
 		}
-		if err = r.Runtime.InsertHold(ctx, ReferenceHold{SessionID: session.ID, StreamID: stream.ID, AssetID: asset.ID}); err != nil {
+		if err = r.Runtime.InsertHold(ctx, ReferenceHold{SessionID: session.ID, StreamID: stream.ID, AssetID: asset.ID, GenerationID: asset.CurrentGenerationID}); err != nil {
 			return err
 		}
 		destinations, err := allDestinations(ctx, r, stream.ID)

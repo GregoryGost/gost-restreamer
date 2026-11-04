@@ -16,7 +16,7 @@ func (f domainFixture) startRequest(requestID string) core.StartSessionRequest {
 	for _, d := range f.destinations {
 		ids = append(ids, d.ID)
 	}
-	return core.StartSessionRequest{RequestID: requestID, StreamID: f.stream.ID, DestinationIDs: ids, Bindings: []core.PreparedBinding{{GroupID: f.group.ID, VariantID: f.variant.ID, GeneratorVersion: f.variant.GeneratorVersion}}}
+	return core.StartSessionRequest{RequestID: requestID, StreamID: f.stream.ID, DestinationIDs: ids, Bindings: []core.PreparedBinding{{GenerationID: f.variant.GenerationID, GroupID: f.group.ID, VariantID: f.variant.ID, GeneratorVersion: f.variant.GeneratorVersion}}}
 }
 
 func startDomainSession(t *testing.T, f domainFixture) core.CommandReceipt {
@@ -212,13 +212,8 @@ func TestCurrentConfigEditsLeaveLiveSnapshotsAndPinnedGeneration(t *testing.T) {
 	if _, err := f.service.UpdateDestination(ctx, d, d.Revision); err != nil {
 		t.Fatalf("правка назначения должна сохранять live-снимок: %v", err)
 	}
-	newVariant, err := f.service.ReserveVariant(ctx, core.FallbackVariant{AssetID: f.asset.ID, SourceHash: f.asset.SourceHash, Profile: f.profile.Profile, GeneratorVersion: f.variant.GeneratorVersion, ManagedPath: "variants/generation-2.nut"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.PublishVariant(ctx, newVariant.ID, newVariant.Revision, newVariant.AttemptToken, "new-content-hash", 4096); err != nil {
-		t.Fatal(err)
-	}
+	_, err = f.service.ReservePreparation(ctx, core.PreparationRequest{AssetID: f.asset.ID, ExpectedRevision: f.asset.Revision, Kind: core.AssetImage, GeneratorVersion: f.variant.GeneratorVersion, Rebuild: true})
+	requireDomainError(t, err, core.ErrInUse)
 	after := readSession(t, f.store, receipt.SessionID)
 	afterOutput := readOutputs(t, f.store, receipt.SessionID)[0]
 	if !reflect.DeepEqual(before.Snapshot, after.Snapshot) || !reflect.DeepEqual(output.Snapshot, afterOutput.Snapshot) {
@@ -227,6 +222,7 @@ func TestCurrentConfigEditsLeaveLiveSnapshotsAndPinnedGeneration(t *testing.T) {
 	if afterOutput.Snapshot.Artifact.VariantID != f.variant.ID || afterOutput.Snapshot.Artifact.ManagedPath != f.variant.ManagedPath {
 		t.Fatal("rebuild подменил удерживаемое поколение")
 	}
+	requireOutputVariantHolds(t, f.store, f.variant.ID, true)
 	requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
 }
 
@@ -377,6 +373,7 @@ func TestOldCleanupAckCannotReleaseNewAttemptOnSameOutput(t *testing.T) {
 	if len(remaining) != 1 || remaining[0].ID != newCleanup.ID {
 		t.Fatal("старый ack освободил новое cleanup намерение")
 	}
+	requireOutputVariantHolds(t, f.store, f.variant.ID, true)
 	requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
 	if current := readOutputs(t, f.store, start.SessionID)[0]; !current.CleanupPending || !current.Issued {
 		t.Fatal("старый ack снял владение новой попытки")
@@ -396,10 +393,6 @@ func TestAddOutputUsesSessionPolicyAndPreservesNeighborAndReceipt(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err = f.service.PublishAsset(ctx, a.ID, a.Revision, a.AttemptToken, "next-source-hash", 10, core.SourceFormat{ImageFormat: "png"})
-	if err != nil {
-		t.Fatal(err)
-	}
 	stream := f.stream
 	stream.Fallback.AssetID = a.ID
 	if _, err := f.service.UpdateStream(ctx, stream, stream.Revision); err != nil {
@@ -409,7 +402,7 @@ func TestAddOutputUsesSessionPolicyAndPreservesNeighborAndReceipt(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := core.AddOutputRequest{RequestID: "add-current-output", SessionID: start.SessionID, DestinationID: d.ID, Binding: core.PreparedBinding{GroupID: f.group.ID, VariantID: f.variant.ID, GeneratorVersion: f.variant.GeneratorVersion}}
+	request := core.AddOutputRequest{RequestID: "add-current-output", SessionID: start.SessionID, DestinationID: d.ID, Binding: core.PreparedBinding{GenerationID: f.variant.GenerationID, GroupID: f.group.ID, VariantID: f.variant.ID, GeneratorVersion: f.variant.GeneratorVersion}}
 	accepted, err := f.service.AddOutput(ctx, request)
 	if err != nil {
 		t.Fatalf("AddOutput должен использовать сохранённую policy Session: %v", err)
@@ -521,9 +514,7 @@ func TestFailedUnissuedStartupReleasesHoldsAndCancelsIntents(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision); err != nil {
-		t.Fatalf("невыданный отказ оставил pin: %v", err)
-	}
+	requireOutputVariantHolds(t, f.store, f.variant.ID, false)
 }
 
 func openOutputObserver(t *testing.T, service *core.Service, fence core.ExecutionFence) *core.OutputObserver {

@@ -27,7 +27,7 @@ func (u *runtimeSnapshotUOW) View(_ context.Context, fn func(Repositories) error
 	if u.viewErr != nil {
 		return u.viewErr
 	}
-	return fn(Repositories{Runtime: u.repository})
+	return fn(Repositories{Runtime: u.repository, Artifacts: emptyPreparationRepository{}})
 }
 func (*runtimeSnapshotUOW) Write(context.Context, func(Repositories) error) error { return nil }
 

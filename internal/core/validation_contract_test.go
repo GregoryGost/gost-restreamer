@@ -27,7 +27,7 @@ func contractSnapshots(t *testing.T) (core.SessionSnapshot, core.OutputSnapshot)
 	stream := core.Stream{Record: contractRecord("stream"), Name: "Поток", PublicationKey: "synthetic-key", Fallback: policy}
 	group := core.TranscodeGroup{Record: contractRecord("group"), StreamID: stream.ID, ProfileID: "profile", Name: "Группа"}
 	profile := core.TranscodeProfile{Record: contractRecord(group.ProfileID), Name: "Профиль", Profile: p}
-	manifest := core.ArtifactManifest{VariantID: "variant", AssetID: policy.AssetID, SourceHash: "synthetic-source-hash", Profile: p, ProfileKey: key, CanonicalProfile: canonical, GeneratorVersion: "generator-1", ManagedPath: "variants/generation.mp4", SizeBytes: 512, ContentHash: "synthetic-content-hash"}
+	manifest := core.ArtifactManifest{GenerationID: "generation", VerifiedFormat: p.Format, VariantID: "variant", AssetID: policy.AssetID, SourceHash: "synthetic-source-hash", Profile: p, ProfileKey: key, CanonicalProfile: canonical, GeneratorVersion: "generator-1", ManagedPath: "variants/generation.mp4", SizeBytes: 512, ContentHash: "synthetic-content-hash"}
 	output := core.OutputSnapshot{
 		Destination: core.Destination{Record: contractRecord("destination"), StreamID: stream.ID, GroupID: group.ID, Name: "Назначение", Platform: "custom", Endpoint: "rtmps://example.invalid/live", StreamKey: "synthetic-output-key", Enabled: true},
 		Group:       group, Profile: profile, Fallback: policy, Artifact: manifest,
@@ -307,7 +307,7 @@ func TestSessionAndOutputRequireValidSavedIntent(t *testing.T) {
 }
 
 func TestCleanupAndReferenceHoldsRequireOwnedDependencies(t *testing.T) {
-	file := core.CleanupIntent{Record: contractRecord("cleanup"), Kind: core.CleanupFile, ManagedPath: "variants/retired.mp4"}
+	file := core.CleanupIntent{Record: contractRecord("cleanup"), Kind: core.CleanupFile, ArtifactGenerationID: "generation", FileID: "file", FileKind: core.OwnedVariant, ManagedPath: "fallback/generation/retired.mp4"}
 	runtime := core.CleanupIntent{Record: contractRecord("runtime-cleanup"), Kind: core.CleanupRuntime, StreamID: "stream", SessionID: "session", Incarnation: "owner", Lifecycle: 1}
 	for _, value := range []core.CleanupIntent{file, runtime} {
 		if err := value.Validate(); err != nil {
@@ -337,7 +337,7 @@ func TestCleanupAndReferenceHoldsRequireOwnedDependencies(t *testing.T) {
 	if err := runtime.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	hold := core.ReferenceHold{SessionID: "session", StreamID: "stream", AssetID: "asset"}
+	hold := core.ReferenceHold{GenerationID: "generation", SessionID: "session", StreamID: "stream", AssetID: "asset"}
 	if err := hold.Validate(); err != nil {
 		t.Fatalf("удержание исходника Session отклонено: %v", err)
 	}
@@ -383,64 +383,24 @@ func TestExecutionFenceRequiresExactSessionAndOutputGeneration(t *testing.T) {
 	}
 }
 
-func TestFallbackAssetSeparatesPreparingAndReadyOriginalMetadata(t *testing.T) {
-	base := core.FallbackAsset{Record: contractRecord("asset"), Incarnation: "owner", Name: "Исходник", Kind: core.AssetImage, State: core.AssetPreparing, AttemptToken: "attempt", OriginalPath: "originals/source.png"}
-	for _, state := range []core.AssetState{core.AssetPreparing, core.AssetFailed} {
-		value := base
-		value.State = state
-		if err := value.Validate(); err != nil {
-			t.Fatalf("неготовый исходник обязан допускать отсутствие probe: %v", err)
-		}
-	}
-	base.State, base.SourceHash, base.SizeBytes, base.SourceFormat = core.AssetReady, "synthetic-source-hash", 1, core.SourceFormat{ImageFormat: "png"}
+func TestFallbackAssetSeparatesStableIdentityFromGenerationMetadata(t *testing.T) {
+	base := core.FallbackAsset{Record: contractRecord("asset"), Name: "Заглушка", State: core.AssetPreparing}
 	if err := base.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	jpeg := base
-	jpeg.SourceFormat.ImageFormat = "jpeg"
-	if err := jpeg.Validate(); err != nil {
-		t.Fatalf("JPEG отклонён: %v", err)
-	}
-	video := base
-	video.Kind, video.OriginalPath = core.AssetVideo, "originals/source.webm"
-	video.SourceFormat = core.SourceFormat{
-		Video: &core.VideoFormat{Codec: "vp9", Width: 1280, Height: 720, FrameRate: core.FrameRate{Numerator: 30, Denominator: 1}, CodecProfile: "0", Level: "3.1", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "tv", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}},
-		Audio: &core.AudioFormat{Codec: "opus", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"},
-	}
-	if err := video.Validate(); err != nil {
-		t.Fatalf("описание видео-оригинала подменено ограничениями выходного профиля: %v", err)
-	}
-	for _, tc := range []struct {
-		name string
-		edit func(*core.FallbackAsset)
-	}{
-		{"owner", func(v *core.FallbackAsset) { v.Incarnation = "" }},
-		{"name", func(v *core.FallbackAsset) { v.Name = "" }},
-		{"path", func(v *core.FallbackAsset) { v.OriginalPath = "../other" }},
-		{"attempt", func(v *core.FallbackAsset) { v.AttemptToken = "" }},
-		{"kind", func(v *core.FallbackAsset) { v.Kind = "unknown" }},
-		{"state", func(v *core.FallbackAsset) { v.State = "unknown" }},
-		{"hash", func(v *core.FallbackAsset) { v.SourceHash = "" }},
-		{"size", func(v *core.FallbackAsset) { v.SizeBytes = 0 }},
-		{"image_type", func(v *core.FallbackAsset) { v.SourceFormat.ImageFormat = "gif" }},
-		{"image_description", func(v *core.FallbackAsset) { v.SourceFormat.ImageFormat = "\x00" }},
-		{"video_description", func(v *core.FallbackAsset) { v.SourceFormat.Video = &core.VideoFormat{Codec: ""} }},
-		{"audio_description", func(v *core.FallbackAsset) { v.SourceFormat.Audio = &core.AudioFormat{Codec: ""} }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			value := base
-			tc.edit(&value)
-			if err := value.Validate(); !errors.Is(err, core.ErrInvalid) {
-				t.Fatalf("некорректный исходник принят: %v", err)
-			}
-		})
+	for _, edit := range []func(*core.FallbackAsset){func(v *core.FallbackAsset) { v.Name = "" }, func(v *core.FallbackAsset) { v.State = "unknown" }, func(v *core.FallbackAsset) { v.CurrentGenerationID = "\x00" }, func(v *core.FallbackAsset) { v.CurrentGenerationID = "same"; v.PendingGenerationID = "same" }} {
+		v := base
+		edit(&v)
+		if err := v.Validate(); !errors.Is(err, core.ErrInvalid) {
+			t.Fatalf("невалидный стабильный объект принят: %v", err)
+		}
 	}
 }
 
 func TestFallbackVariantRequiresExactProfileForEveryPreparationState(t *testing.T) {
 	_, output := contractSnapshots(t)
 	m := output.Artifact
-	base := core.FallbackVariant{Record: contractRecord(m.VariantID), Incarnation: "owner", AssetID: m.AssetID, SourceHash: m.SourceHash, Profile: m.Profile, ProfileKey: m.ProfileKey, CanonicalProfile: m.CanonicalProfile, GeneratorVersion: m.GeneratorVersion, ManagedPath: m.ManagedPath, SizeBytes: m.SizeBytes, ContentHash: m.ContentHash, State: core.VariantReady, AttemptToken: "attempt"}
+	base := core.FallbackVariant{GenerationID: m.GenerationID, VerifiedFormat: m.VerifiedFormat, Record: contractRecord(m.VariantID), Incarnation: "owner", AssetID: m.AssetID, SourceHash: m.SourceHash, Profile: m.Profile, ProfileKey: m.ProfileKey, CanonicalProfile: m.CanonicalProfile, GeneratorVersion: m.GeneratorVersion, ManagedPath: m.ManagedPath, SizeBytes: m.SizeBytes, ContentHash: m.ContentHash, State: core.VariantReady, AttemptToken: "attempt"}
 	if err := base.Validate(); err != nil {
 		t.Fatal(err)
 	}

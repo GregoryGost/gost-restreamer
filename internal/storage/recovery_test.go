@@ -77,7 +77,7 @@ func TestRestartInterruptsUnissuedWorkWithoutReplay(t *testing.T) {
 		t.Fatalf("прерванная команда доступна для replay: %v", err)
 	}
 	_, err = f.service.PublishAsset(ctx, pending.ID, pending.Revision, pending.AttemptToken, "late-hash", 10, core.SourceFormat{ImageFormat: "png"})
-	requireDomainError(t, err, core.ErrStale)
+	requireDomainError(t, err, core.ErrInvalid)
 	if err := f.service.Recover(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +124,7 @@ func TestIssuedWorkKeepsHoldsUntilCorrectCleanupAfterRestart(t *testing.T) {
 	if _, err := f.service.StartSession(ctx, f.startRequest("blocked-before-cleanup")); !errors.Is(err, core.ErrNotReady) && !errors.Is(err, core.ErrInUse) {
 		t.Fatalf("новый start до cleanup должен отклоняться: %v", err)
 	}
+	requireOutputVariantHolds(t, f.store, f.variant.ID, true)
 	requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
 	cleanups := pendingCleanups(t, f.store, session.ID)
 	if len(cleanups) != 2 {
@@ -152,6 +153,7 @@ func TestIssuedWorkKeepsHoldsUntilCorrectCleanupAfterRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	requireOutputVariantHolds(t, f.store, f.variant.ID, true)
 	requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
 	if current := readSession(t, f.store, newStart.SessionID); current.State != core.SessionStarting {
 		t.Fatal("старый ack изменил новый запуск")
@@ -173,6 +175,7 @@ func TestIssuedSessionStartupKeepsPinnedVariantUntilCleanup(t *testing.T) {
 	if session := readSession(t, f.store, start.SessionID); session.State != core.SessionInterrupted || !session.CleanupPending {
 		t.Fatalf("не сохранена очистка выданного запуска: %+v", session)
 	}
+	requireOutputVariantHolds(t, f.store, f.variant.ID, true)
 	requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
 	cleanups := pendingCleanups(t, f.store, start.SessionID)
 	if len(cleanups) != 1 || cleanups[0].OutputID != "" {
@@ -181,9 +184,7 @@ func TestIssuedSessionStartupKeepsPinnedVariantUntilCleanup(t *testing.T) {
 	if err := f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(cleanups[0])); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision); err != nil {
-		t.Fatalf("подтверждённая Session cleanup не освободила pin: %v", err)
-	}
+	requireOutputVariantHolds(t, f.store, f.variant.ID, false)
 }
 
 func TestStoppedAttachedOutputRestartsSavedSnapshotAndDetachReleasesOnlyOwnHold(t *testing.T) {
@@ -289,7 +290,7 @@ func TestHardDeletePreservesStandaloneSessionHistory(t *testing.T) {
 				paths[cleanup.ManagedPath] = true
 			}
 		}
-		if len(paths) != 2 || !paths[f.asset.OriginalPath] || !paths[f.variant.ManagedPath] {
+		if len(paths) != 5 || !paths[f.asset.OriginalPath] || !paths[f.variant.ManagedPath] {
 			t.Fatalf("потеряны owned paths для cleanup: %+v", paths)
 		}
 		return nil

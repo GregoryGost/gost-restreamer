@@ -49,7 +49,7 @@ func (u *observationAcceptanceUOW) View(ctx context.Context, fn func(Repositorie
 	if u.viewErr != nil {
 		return u.viewErr
 	}
-	return fn(Repositories{Runtime: &u.repository})
+	return fn(Repositories{Runtime: &u.repository, Artifacts: emptyPreparationRepository{}})
 }
 func (u *observationAcceptanceUOW) Write(context.Context, func(Repositories) error) error {
 	u.writes++
@@ -449,4 +449,10 @@ func TestAcceptanceExecutionFailureEventRequiresMatchingCompleteFence(t *testing
 			t.Fatal("неполный или чужой fence принят в истории отказа", candidate, err)
 		}
 	}
+}
+
+type emptyPreparationRepository struct{ ArtifactRepository }
+
+func (emptyPreparationRepository) Generations(context.Context, ListQuery) ([]FallbackGeneration, error) {
+	return nil, nil
 }

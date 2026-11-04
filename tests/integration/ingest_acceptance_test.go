@@ -38,7 +38,7 @@ func TestAcceptanceCPUEncodedAV1ThroughRealIngestAndFMP4(t *testing.T) {
 	assertProbePackets(t, oracle, packets)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "ingest.sqlite"), storage.Options{ObservationLimits: core.ObservationLimits{MaxSessions: 16, MaxGroups: 64, MaxOutputs: 128, MaxFFmpegWorkers: 64, MaxIdentifierBytes: 1024, MaxErrorBytes: 65536, MaxBytes: 4 << 20}, MaxOpenConns: 4, MaxIdleConns: 4, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute, BusyTimeout: 10 * time.Millisecond, RetryAttempts: 3, RetryTimeout: time.Second, RetryDelay: time.Millisecond})
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "ingest.sqlite"), storage.Options{PreparationLimits: core.PreparationLimits{MaxQueued: 16, MaxProfiles: 64}, ObservationLimits: core.ObservationLimits{MaxSessions: 16, MaxGroups: 64, MaxOutputs: 128, MaxFFmpegWorkers: 64, MaxIdentifierBytes: 1024, MaxErrorBytes: 65536, MaxBytes: 4 << 20}, MaxOpenConns: 4, MaxIdleConns: 4, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute, BusyTimeout: 10 * time.Millisecond, RetryAttempts: 3, RetryTimeout: time.Second, RetryDelay: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,16 +51,30 @@ func TestAcceptanceCPUEncodedAV1ThroughRealIngestAndFMP4(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	asset, err := svc.ReserveAsset(ctx, core.FallbackAsset{Name: "Оригинал", Kind: core.AssetImage, OriginalPath: "originals/test.png"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	asset, err = svc.PublishAsset(ctx, asset.ID, asset.Revision, asset.AttemptToken, "synthetic-source", 10, core.SourceFormat{ImageFormat: "png"})
+	asset, err := svc.CreateAsset(ctx, "Оригинал")
 	if err != nil {
 		t.Fatal(err)
 	}
 	stream, err := svc.CreateStream(ctx, core.Stream{Name: "Вход", PublicationKey: "synthetic-key", Fallback: core.FallbackPolicy{AssetID: asset.ID, Watchdog: core.WatchdogPolicy{VideoTimeout: time.Second, AudioTimeout: time.Second, RecoveryWindow: time.Second, KeyframeTimeout: time.Second}}})
 	if err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: "fixture-generator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparationFence, err := svc.ClaimPreparation(ctx, preparation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.MarkPreparationIssued(ctx, preparationFence); err != nil {
+		t.Fatal(err)
+	}
+	// Фикстура задаёт только метаданные заглушки без групп; медиабайты здесь проверяются на границе ingest.
+	if _, err := svc.PublishPreparation(ctx, preparationFence, core.GenerationPublication{SourceHash: "synthetic-source", SizeBytes: 10, SourceFormat: core.SourceFormat{ImageFormat: "png"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AcknowledgePreparationCleanup(ctx, preparationFence); err != nil {
 		t.Fatal(err)
 	}
 	start, err := svc.StartSession(ctx, core.StartSessionRequest{RequestID: "start-cpu-source", StreamID: stream.ID})

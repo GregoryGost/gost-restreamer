@@ -9,17 +9,19 @@ import (
 )
 
 var listColumns = map[string]map[string]bool{
-	"streams":           {"asset_id": true},
-	"profiles":          {},
-	"groups":            {"stream_id": true, "profile_id": true},
-	"destinations":      {"stream_id": true, "group_id": true},
-	"fallback_assets":   {"state": true, "incarnation": true},
-	"fallback_variants": {"asset_id": true, "state": true, "incarnation": true},
-	"sessions":          {"stream_id": true, "state": true, "incarnation": true},
-	"outputs":           {"session_id": true},
-	"command_receipts":  {"session_id": true, "output_id": true, "state": true, "incarnation": true},
-	"cleanup_intents":   {"stream_id": true, "session_id": true, "output_id": true, "incarnation": true},
-	"events":            {"session_id": true, "output_id": true},
+	"streams":              {"asset_id": true},
+	"profiles":             {},
+	"groups":               {"stream_id": true, "profile_id": true},
+	"destinations":         {"stream_id": true, "group_id": true},
+	"fallback_generations": {"asset_id": true, "state": true, "incarnation": true},
+	"owned_paths":          {"asset_id": true, "generation_id": true},
+	"fallback_assets":      {"state": true, "incarnation": true},
+	"fallback_variants":    {"generation_id": true, "asset_id": true, "state": true, "incarnation": true},
+	"sessions":             {"stream_id": true, "state": true, "incarnation": true},
+	"outputs":              {"session_id": true},
+	"command_receipts":     {"session_id": true, "output_id": true, "state": true, "incarnation": true},
+	"cleanup_intents":      {"artifact_generation_id": true, "stream_id": true, "session_id": true, "output_id": true, "incarnation": true},
+	"events":               {"session_id": true, "output_id": true},
 }
 
 func listValues[T any](ctx context.Context, r *repositories, table string, q core.ListQuery) ([]T, error) {
@@ -51,12 +53,16 @@ func listValues[T any](ctx context.Context, r *repositories, table string, q cor
 
 func applyList(db *gorm.DB, table string, q core.ListQuery) (*gorm.DB, error) {
 	columns := listColumns[table]
+	generationColumn := "generation_id"
+	if table == "cleanup_intents" {
+		generationColumn = "artifact_generation_id"
+	}
 	for _, filter := range []struct {
 		column string
 		value  string
 	}{
 		{"stream_id", string(q.StreamID)}, {"session_id", string(q.SessionID)},
-		{"output_id", string(q.OutputID)}, {"asset_id", string(q.AssetID)},
+		{generationColumn, string(q.GenerationID)}, {"output_id", string(q.OutputID)}, {"asset_id", string(q.AssetID)},
 		{"group_id", string(q.GroupID)}, {"profile_id", string(q.ProfileID)},
 		{"state", q.State}, {"incarnation", q.Incarnation},
 	} {
@@ -75,6 +81,8 @@ func applyList(db *gorm.DB, table string, q core.ListQuery) (*gorm.DB, error) {
 	}
 	if q.PendingOnly {
 		switch table {
+		case "fallback_generations":
+			db = db.Where("state IN ? OR issued = ? OR cleanup_pending = ?", []string{"QUEUED", "CLAIMED", "ISSUED"}, true, true)
 		case "sessions", "outputs":
 			db = db.Where("cleanup_pending = ?", true)
 		case "command_receipts":

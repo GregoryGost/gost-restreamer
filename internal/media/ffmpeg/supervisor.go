@@ -35,7 +35,7 @@ func New(config Config) (*Supervisor, error) {
 // Start регистрирует учитываемую работу под Owner.Do, затем запускает её вне authority.
 // ctx задаёт lifetime worker, а не lifetime публикации OBS.
 func (s *Supervisor) Start(ctx context.Context, w Worker) error {
-	if w.Owner == nil || w.Command == nil || w.Input == nil || w.Output == nil || w.SessionID == "" || w.GroupID == "" || len(w.SessionID) > 256 || len(w.GroupID) > 256 {
+	if w.Owner == nil || w.Command == nil || (w.Topology == Duplex && w.Input == nil) || w.Topology > FileInput || w.Output == nil || w.SessionID == "" || w.GroupID == "" || len(w.SessionID) > 256 || len(w.GroupID) > 256 {
 		return fmt.Errorf("%w: неполный Worker", ErrInvalidSupervisor)
 	}
 	var runCtx context.Context
@@ -223,7 +223,7 @@ func (s *Supervisor) runAttempt(parent context.Context, w Worker, id uint64) (re
 	cancel := func() { cancelCause(context.Canceled) }
 	defer cancel()
 	sessionHash := fmt.Sprintf("%x", sha256.Sum256([]byte(w.SessionID)))[:16]
-	n, err := NewNamespace(s.config.BaseDir, sessionHash)
+	n, err := newNamespace(s.config.BaseDir, sessionHash, w.Topology == FileInput)
 	if err != nil {
 		var partial *namespaceCreationError
 		if errors.As(err, &partial) {
@@ -270,8 +270,11 @@ func (s *Supervisor) runAttempt(parent context.Context, w Worker, id uint64) (re
 		handlerErrors[index] = acceptErr
 		ioResults <- handlerResult{output: output, err: acceptErr}
 	}
-	ioWG.Add(2)
-	go handler(n.AcceptInput, w.Input, func(Track, int64) bool { return false }, false)
+	if w.Topology == Duplex {
+		ioWG.Add(1)
+		go handler(n.AcceptInput, w.Input, func(Track, int64) bool { return false }, false)
+	}
+	ioWG.Add(1)
 	go handler(n.AcceptOutput, w.Output, func(t Track, dts int64) bool {
 		if ctx.Err() != nil {
 			return false
@@ -298,11 +301,37 @@ func (s *Supervisor) runAttempt(parent context.Context, w Worker, id uint64) (re
 		return context.Cause(ctx), nil
 	}
 	command, err := w.Command(ctx, Attempt{ID: id, InputPath: n.InputPath, OutputPath: n.OutputPath})
+	defer func() {
+		for _, f := range command.ExtraFiles {
+			if f != nil {
+				cleanupErr = errors.Join(cleanupErr, f.Close())
+			}
+		}
+	}()
 	if err != nil {
 		return errors.Join(err, context.Cause(ctx)), nil
 	}
 	if ctx.Err() != nil {
 		return context.Cause(ctx), nil
+	}
+	if (w.Topology == FileInput && len(command.ExtraFiles) != 1) || (w.Topology == Duplex && len(command.ExtraFiles) != 0) {
+		return fmt.Errorf("%w: несогласованное владение ExtraFiles", ErrInvalidSupervisor), nil
+	}
+	if w.Topology == FileInput {
+		file := command.ExtraFiles[0]
+		if file == nil {
+			return fmt.Errorf("%w: отсутствует дескриптор файла", ErrInvalidSupervisor), nil
+		}
+		info, err := file.Stat()
+		if err != nil {
+			return err, nil
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: требуется обычный файл", ErrInvalidSupervisor), nil
+		}
+		if _, err = file.Seek(0, io.SeekStart); err != nil {
+			return err, nil
+		}
 	}
 	if len(command.Args) > s.config.MaxCommandArgs || !validCommand(command.Binary, command.Args, s.config.MaxCommandBytes) {
 		return fmt.Errorf("%w: команда превышает бюджет", ErrInvalidSupervisor), nil
@@ -311,6 +340,7 @@ func (s *Supervisor) runAttempt(parent context.Context, w Worker, id uint64) (re
 	command.Args = append([]string(nil), command.Args...)
 	s.queue.push(Diagnostic{Time: time.Now(), Attempt: id, Kind: "command", Args: append([]string{command.Binary}, command.Args...)})
 	cmd := exec.CommandContext(ctx, command.Binary, command.Args...)
+	cmd.ExtraFiles = append([]*os.File(nil), command.ExtraFiles...)
 	cmd.Cancel = func() error {
 		err := cmd.Process.Signal(os.Interrupt)
 		if errors.Is(err, os.ErrProcessDone) {

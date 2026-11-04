@@ -197,51 +197,37 @@ type SourceFormat struct {
 }
 type FallbackAsset struct {
 	Record
-	Incarnation  string
-	Name         string
-	Kind         AssetKind
-	State        AssetState
-	AttemptToken string
-	OriginalPath string
-	SourceHash   string
-	SizeBytes    uint64
-	SourceFormat SourceFormat
+	CurrentGenerationID ID
+	PendingGenerationID ID
+	Incarnation         string
+	Name                string
+	Kind                AssetKind
+	State               AssetState
+	AttemptToken        string
+	OriginalPath        string
+	SourceHash          string
+	SizeBytes           uint64
+	SourceFormat        SourceFormat
 }
 
 func (a FallbackAsset) Validate() error {
-	if err := validText("FallbackAsset.Incarnation", a.Incarnation); err != nil {
-		return err
-	}
 	if err := validText("FallbackAsset.Name", a.Name); err != nil {
 		return err
 	}
-	if err := ValidateManagedPath(a.OriginalPath); err != nil {
-		return err
+	for _, id := range []ID{a.CurrentGenerationID, a.PendingGenerationID} {
+		if id != "" {
+			if err := id.Validate(); err != nil {
+				return err
+			}
+		}
 	}
-	if err := validText("FallbackAsset.AttemptToken", a.AttemptToken); err != nil {
-		return err
-	}
-	if a.Kind != AssetImage && a.Kind != AssetVideo {
-		return fmt.Errorf("%w: вид оригинала", ErrInvalid)
+	if a.CurrentGenerationID != "" && a.CurrentGenerationID == a.PendingGenerationID {
+		return ErrInvalid
 	}
 	if a.State != AssetPreparing && a.State != AssetReady && a.State != AssetFailed {
-		return fmt.Errorf("%w: состояние оригинала", ErrInvalid)
+		return ErrInvalid
 	}
-	if err := a.SourceFormat.Validate(); err != nil {
-		return err
-	}
-	if a.State == AssetReady {
-		if err := validText("FallbackAsset.SourceHash", a.SourceHash); err != nil {
-			return err
-		}
-		if a.SizeBytes == 0 {
-			return fmt.Errorf("%w: пустой оригинал", ErrInvalid)
-		}
-		if a.Kind == AssetImage && a.SourceFormat.ImageFormat != "jpeg" && a.SourceFormat.ImageFormat != "png" {
-			return fmt.Errorf("%w: формат изображения", ErrInvalid)
-		}
-	}
-	return nil
+	return a.SourceFormat.Validate()
 }
 
 type VariantState string
@@ -254,6 +240,8 @@ const (
 
 type FallbackVariant struct {
 	Record
+	GenerationID     ID
+	VerifiedFormat   MediaFormat
 	Incarnation      string
 	AssetID          ID
 	SourceHash       string
@@ -275,8 +263,11 @@ func (v FallbackVariant) Validate() error {
 	if err := v.AssetID.Validate(); err != nil {
 		return err
 	}
-	if err := validText("FallbackVariant.SourceHash", v.SourceHash); err != nil {
-		return err
+	if v.GenerationID == "" {
+		return ErrInvalid
+	}
+	if v.State == VariantReady && v.SourceHash == "" {
+		return ErrInvalid
 	}
 	if err := v.Profile.Validate(); err != nil {
 		return err
@@ -301,6 +292,9 @@ func (v FallbackVariant) Validate() error {
 		return fmt.Errorf("%w: идентичность профиля варианта", ErrInvalid)
 	}
 	if v.State == VariantReady {
+		if err := CompatibleFormat(v.VerifiedFormat, v.Profile.Format); err != nil {
+			return fmt.Errorf("%w: фактический формат варианта", ErrInvalid)
+		}
 		if v.SizeBytes == 0 {
 			return fmt.Errorf("%w: пустой вариант", ErrInvalid)
 		}
@@ -346,6 +340,8 @@ type SessionSnapshot struct {
 	Groups []GroupSnapshot
 }
 type ArtifactManifest struct {
+	GenerationID     ID
+	VerifiedFormat   MediaFormat
 	VariantID        ID
 	AssetID          ID
 	SourceHash       string
@@ -461,6 +457,7 @@ type ExecutionFence struct {
 }
 
 type ReferenceHold struct {
+	GenerationID  ID
 	SessionID     ID
 	OutputID      ID
 	StreamID      ID
@@ -479,6 +476,11 @@ const (
 )
 
 type CleanupIntent struct {
+	ContentHash          string
+	SizeBytes            uint64
+	ArtifactGenerationID ID
+	FileID               ID
+	FileKind             OwnedFileKind
 	Record
 	Kind         CleanupKind
 	StreamID     ID
@@ -493,6 +495,7 @@ type CleanupIntent struct {
 }
 
 type PreparedBinding struct {
+	GenerationID     ID
 	GroupID          ID
 	VariantID        ID
 	GeneratorVersion string

@@ -42,6 +42,15 @@ type ConfigRepository interface {
 }
 
 type ArtifactRepository interface {
+	Generation(context.Context, ID) (FallbackGeneration, error)
+	Generations(context.Context, ListQuery) ([]FallbackGeneration, error)
+	InsertGeneration(context.Context, FallbackGeneration) error
+	UpdateGeneration(context.Context, FallbackGeneration, uint64) error
+	DeleteGeneration(context.Context, ID, uint64) error
+	InsertOwnedFile(context.Context, OwnedFile) error
+	UpdateOwnedFile(context.Context, OwnedFile, uint64) error
+	OwnedFiles(context.Context, ListQuery) ([]OwnedFile, error)
+
 	Asset(context.Context, ID) (FallbackAsset, error)
 	Assets(context.Context, ListQuery) ([]FallbackAsset, error)
 	InsertAsset(context.Context, FallbackAsset) error
@@ -59,6 +68,7 @@ type ArtifactRepository interface {
 }
 
 type RuntimeRepository interface {
+	GenerationHeld(context.Context, ID) (bool, error)
 	Session(context.Context, ID) (Session, error)
 	Sessions(context.Context, ListQuery) ([]Session, error)
 	ActiveSession(context.Context, ID) (Session, error)
@@ -88,6 +98,7 @@ type ListQuery struct {
 	SessionID          ID
 	OutputID           ID
 	AssetID            ID
+	GenerationID       ID
 	GroupID            ID
 	ProfileID          ID
 	State              string
@@ -106,7 +117,7 @@ type ListBoundary struct {
 const MaxListLimit = 500
 
 func (q ListQuery) Validate() error {
-	for _, id := range []ID{q.StreamID, q.SessionID, q.OutputID, q.AssetID, q.GroupID, q.ProfileID} {
+	for _, id := range []ID{q.StreamID, q.SessionID, q.OutputID, q.AssetID, q.GenerationID, q.GroupID, q.ProfileID} {
 		if id != "" {
 			if err := id.Validate(); err != nil {
 				return err

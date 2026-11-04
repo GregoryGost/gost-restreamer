@@ -171,3 +171,37 @@ func (f MediaFormat) Equal(other MediaFormat) bool {
 	other.Video.FrameRate = f.Video.FrameRate
 	return f == other
 }
+
+// CompatibleFormat сверяет измеренные параметры с заданными ограничениями профиля.
+// Незаданные level/tier не требуют совпадения конкретного значения кодера.
+func CompatibleFormat(actual, desired MediaFormat) error {
+	if actual.Validate() != nil || desired.Validate() != nil {
+		return ErrInvalidFormat
+	}
+	a, d := actual.Video, desired.Video
+	if !a.FrameRate.Equal(d.FrameRate) {
+		return ErrInvalidFormat
+	}
+	a.FrameRate = d.FrameRate
+	normalize := func(c ColorInfo) ColorInfo {
+		switch c.Range {
+		case "tv":
+			c.Range = "limited"
+		case "pc":
+			c.Range = "full"
+		}
+		return c
+	}
+	a.Color = normalize(a.Color)
+	d.Color = normalize(d.Color)
+	if d.Level == "" || d.Level == "auto" {
+		a.Level = d.Level
+	}
+	if d.Tier == "" {
+		a.Tier = ""
+	}
+	if a != d || actual.Audio != desired.Audio || a.PixelFormat != "yuv420p" || a.BitDepth != 8 || a.Color.Transfer == "smpte2084" || a.Color.Transfer == "arib-std-b67" {
+		return ErrInvalidFormat
+	}
+	return nil
+}

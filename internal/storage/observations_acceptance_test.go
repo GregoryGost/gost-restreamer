@@ -427,7 +427,7 @@ func TestAcceptanceUnsupportedFormatRefusesBeforeRecovery(t *testing.T) {
 	for _, mutation := range []string{
 		"DROP TABLE storage_format",
 		"DELETE FROM storage_format",
-		"UPDATE storage_format SET version=2",
+		"UPDATE storage_format SET version=1",
 		"DROP TABLE storage_format; CREATE TABLE storage_format(singleton INTEGER,version INTEGER); INSERT INTO storage_format VALUES(1,1),(2,1)",
 	} {
 		t.Run(mutation, func(t *testing.T) {

@@ -3,14 +3,15 @@ package rtmp
 
 import (
 	"errors"
+	"github.com/GregoryGost/gost-restreamer/internal/media/codec"
 	"time"
 )
 
 var (
-	ErrLimit   = errors.New("превышен бюджет RTMP")
+	ErrLimit   = codec.ErrLimit
 	ErrFraming = errors.New("некорректное обрамление RTMP")
-	ErrCodec   = errors.New("неподдерживаемый поток AV1/AAC")
-	ErrUnready = errors.New("формат источника ещё не определён")
+	ErrCodec   = codec.ErrCodec
+	ErrUnready = codec.ErrUnready
 )
 
 // Limits задаёт положительные бюджеты на одно соединение, включая память читателя библиотеки.

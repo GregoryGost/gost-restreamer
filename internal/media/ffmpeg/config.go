@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"time"
 )
@@ -74,9 +75,18 @@ type Attempt struct {
 	ID                    uint64
 	InputPath, OutputPath string
 }
+type Topology uint8
+
+const (
+	Duplex Topology = iota
+	FileInput
+)
+
 type Command struct {
 	Binary string
 	Args   []string
+	// ExtraFiles передаются во владение попытки сразу после возврата построителя команды.
+	ExtraFiles []*os.File
 }
 type CommandBuilder func(context.Context, Attempt) (Command, error)
 
@@ -102,6 +112,7 @@ type Worker struct {
 	SessionID string
 	GroupID   string
 	Owner     OwnerPermit
+	Topology  Topology
 	Command   CommandBuilder
 	Input     IOHandler
 	Output    IOHandler

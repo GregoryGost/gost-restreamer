@@ -32,6 +32,7 @@ type RuntimeAuthority struct {
 	limits          ObservationLimits
 	observations    map[uint64]*observationNode
 	nextObservation uint64
+	preparations    map[ID]*PreparationOwner
 }
 
 func NewRuntimeAuthority(incarnation string, limits ObservationLimits) (*RuntimeAuthority, error) {
@@ -41,7 +42,7 @@ func NewRuntimeAuthority(incarnation string, limits ObservationLimits) (*Runtime
 	if err := limits.Validate(); err != nil {
 		return nil, err
 	}
-	a := &RuntimeAuthority{limits: limits, observations: make(map[uint64]*observationNode), gate: make(chan struct{}, 1), incarnation: incarnation, leases: make(map[ID]*RuntimeLease), publications: make(map[ID]*RuntimeLease)}
+	a := &RuntimeAuthority{preparations: make(map[ID]*PreparationOwner), limits: limits, observations: make(map[uint64]*observationNode), gate: make(chan struct{}, 1), incarnation: incarnation, leases: make(map[ID]*RuntimeLease), publications: make(map[ID]*RuntimeLease)}
 	a.gate <- struct{}{}
 	return a, nil
 }
@@ -91,6 +92,7 @@ func (a *RuntimeAuthority) GuardWrite(ctx context.Context, uow UnitOfWork, write
 }
 
 func (a *RuntimeAuthority) reconcile(ctx context.Context, uow UnitOfWork) {
+	a.reconcilePreparations(ctx, uow)
 	if len(a.leases) == 0 {
 		return
 	}
@@ -139,6 +141,9 @@ func (a *RuntimeAuthority) Close() {
 	<-a.gate
 	defer a.release()
 	a.closed = true
+	for _, o := range a.preparations {
+		a.revokePreparation(o)
+	}
 	for _, lease := range a.leases {
 		a.revoke(lease)
 	}
@@ -326,6 +331,9 @@ func (s *Service) BindExecution(ctx context.Context, fence ExecutionFence) (*Run
 }
 
 func (l *RuntimeLease) authorized(ctx context.Context, r Repositories) error {
+	if err := preparationIdleForRuntime(ctx, r); err != nil {
+		return err
+	}
 	session, err := r.Runtime.Session(ctx, l.session.SessionID)
 	if err != nil {
 		return err

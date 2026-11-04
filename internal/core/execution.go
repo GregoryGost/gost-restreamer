@@ -11,18 +11,23 @@ type Completion struct {
 	Failure string
 }
 type CleanupFence struct {
-	IntentID    ID
-	Incarnation string
-	SessionID   ID
-	OutputID    ID
-	Lifecycle   uint64
-	Generation  uint64
-	Attempt     uint64
-	ManagedPath string
+	ContentHash          string
+	SizeBytes            uint64
+	ArtifactGenerationID ID
+	FileID               ID
+	FileKind             OwnedFileKind
+	IntentID             ID
+	Incarnation          string
+	SessionID            ID
+	OutputID             ID
+	Lifecycle            uint64
+	Generation           uint64
+	Attempt              uint64
+	ManagedPath          string
 }
 
 func CleanupFenceFor(intent CleanupIntent) CleanupFence {
-	return CleanupFence{IntentID: intent.ID, Incarnation: intent.Incarnation, SessionID: intent.SessionID, OutputID: intent.OutputID, Lifecycle: intent.Lifecycle, Generation: intent.Generation, Attempt: intent.Attempt, ManagedPath: intent.ManagedPath}
+	return CleanupFence{ContentHash: intent.ContentHash, SizeBytes: intent.SizeBytes, ArtifactGenerationID: intent.ArtifactGenerationID, FileID: intent.FileID, FileKind: intent.FileKind, IntentID: intent.ID, Incarnation: intent.Incarnation, SessionID: intent.SessionID, OutputID: intent.OutputID, Lifecycle: intent.Lifecycle, Generation: intent.Generation, Attempt: intent.Attempt, ManagedPath: intent.ManagedPath}
 }
 func executionFence(c CommandReceipt) ExecutionFence {
 	return ExecutionFence{CommandID: c.ID, Incarnation: c.Incarnation, SessionID: c.SessionID, Lifecycle: c.Lifecycle, OutputID: c.OutputID, OutputGeneration: c.OutputGeneration, Attempt: c.Attempt}
@@ -116,6 +121,11 @@ func (s *Service) Claim(ctx context.Context, requestID string) (ExecutionFence, 
 				return err
 			}
 		}
+		if c.Kind == CommandStartSession || c.Kind == CommandStartOutput || c.Kind == CommandAddOutput {
+			if err = preparationIdleForRuntime(ctx, r); err != nil {
+				return err
+			}
+		}
 		c.Status = CommandClaimed
 		c.Record, err = revise(c.Record)
 		if err != nil {
@@ -135,6 +145,11 @@ func (s *Service) MarkIssued(ctx context.Context, f ExecutionFence) error {
 		c, session, o, err := s.fenced(ctx, r, f)
 		if err != nil {
 			return err
+		}
+		if c.Kind == CommandStartSession || c.Kind == CommandStartOutput || c.Kind == CommandAddOutput {
+			if err = preparationIdleForRuntime(ctx, r); err != nil {
+				return err
+			}
 		}
 		if c.Status != CommandClaimed {
 			return ErrStale
@@ -337,8 +352,10 @@ func (s *Service) AcknowledgeCleanup(ctx context.Context, f CleanupFence) error 
 			return err
 		}
 		if intent.Kind == CleanupFile {
-			return nil
+			_, err = authorizeFileCleanup(ctx, r, intent)
+			return err
 		}
+
 		session, err := r.Runtime.Session(ctx, intent.SessionID)
 		if err != nil {
 			return err
@@ -406,6 +423,9 @@ func (s *Service) AcknowledgeCleanup(ctx context.Context, f CleanupFence) error 
 // команда не исполняется автоматически и подтверждение внешней остановки не выдумывается.
 func (s *Service) Recover(ctx context.Context) error {
 	return s.uow.Write(ctx, func(r Repositories) error {
+		if err := recoverPreparations(ctx, r, s.incarnation); err != nil {
+			return err
+		}
 		q := ListQuery{Limit: MaxListLimit, ExcludeIncarnation: s.incarnation}
 		for {
 			sessions, err := r.Runtime.Sessions(ctx, q)
@@ -466,58 +486,6 @@ func (s *Service) Recover(ctx context.Context) error {
 				break
 			}
 			last := commands[len(commands)-1]
-			q.After = &ListBoundary{last.CreatedAt, last.ID}
-		}
-		q = ListQuery{Limit: MaxListLimit, State: string(AssetPreparing), ExcludeIncarnation: s.incarnation}
-		for {
-			assets, err := r.Artifacts.Assets(ctx, q)
-			if err != nil {
-				return err
-			}
-			for _, a := range assets {
-				old := a.Revision
-				a.State = AssetFailed
-				a.Record, err = revise(a.Record)
-				if err != nil {
-					return err
-				}
-				if err = r.Artifacts.UpdateAsset(ctx, a, old); err != nil {
-					return err
-				}
-				if err = insertFileCleanup(ctx, r, a.OriginalPath); err != nil {
-					return err
-				}
-			}
-			if len(assets) < q.Limit {
-				break
-			}
-			last := assets[len(assets)-1]
-			q.After = &ListBoundary{last.CreatedAt, last.ID}
-		}
-		q = ListQuery{Limit: MaxListLimit, State: string(VariantPreparing), ExcludeIncarnation: s.incarnation}
-		for {
-			variants, err := r.Artifacts.Variants(ctx, q)
-			if err != nil {
-				return err
-			}
-			for _, v := range variants {
-				old := v.Revision
-				v.State = VariantFailed
-				v.Record, err = revise(v.Record)
-				if err != nil {
-					return err
-				}
-				if err = r.Artifacts.UpdateVariant(ctx, v, old); err != nil {
-					return err
-				}
-				if err = insertFileCleanup(ctx, r, v.ManagedPath); err != nil {
-					return err
-				}
-			}
-			if len(variants) < q.Limit {
-				break
-			}
-			last := variants[len(variants)-1]
 			q.After = &ListBoundary{last.CreatedAt, last.ID}
 		}
 		return nil

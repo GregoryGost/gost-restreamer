@@ -5,9 +5,10 @@
 - Project key / workspace: `gost-restreamer`.
 - Project type: Go backend for personal self-hosted restreaming in the owner's local environment; the OBS plugin is a separate project.
 - Primary programming language: Go. SQL is used for Goose migrations.
-- Architecture source: `gost-restreamer-architecture.md`, revision 8.
-- Current repository state: созданы Go-модуль, Makefile, линтер и workflow CI; реализованы общие медиатипы, домен, Repository-интерфейсы, транзакционные операции сессий/команд, GORM/SQLite/Goose и общая runtime authority. Пакеты media содержат Router, raw Enhanced RTMP ingest, fMP4 и FFmpeg Supervisor/UDS; их приёмка относится к T03. Группы/Switcher, Publishers, API и исполняемый сервис ещё не реализованы. Контракты описаны в `docs/media-contracts.md` и `docs/domain-storage-contracts.md`.
+- Architecture source: `gost-restreamer-architecture.md`, revision 9.
+- Current repository state: созданы Go-модуль, Makefile, линтер и workflow CI; реализованы общие медиатипы, домен, Repository-интерфейсы, транзакционные операции сессий/команд, GORM/SQLite/Goose и общая runtime authority. Пакеты media содержат Router, raw Enhanced RTMP ingest, fMP4 и FFmpeg Supervisor/UDS; их приёмка относится к T03. Добавлены поколения и файловая подготовка fallback, группы/Switcher; их контракты и границы проверки описаны в документации. Publishers, API и исполняемый сервис ещё не реализованы. Контракты описаны в `docs/media-contracts.md` и `docs/domain-storage-contracts.md`.
 - Адаптация основы к редакции 8: T01–T03 сохраняют результаты прежней приёмки. Реализованы ограниченные RAM-наблюдения под общей runtime authority, отделённые от долговечного управления, и преобразование FPS/размеров по профилю. `SessionOutput` больше не сохраняет наблюдаемые состояния/ошибки; окончательный отказ проходит отдельную транзакцию с точным владельцем и событием управления. `BuildNVIDIACommand` использует явную FPS-сетку, фактические шкалы обеих дорожек и проверку точности рациональной частоты. Сбор FFmpeg `-progress`, GPU и полных оперативных метрик относится к T07; аппаратная приёмка NVIDIA остаётся T11.
+- Требования редакции 9 для T04: новая загрузка без сравнения содержимого заменяет явно выбранную заглушку, остальные сохраняются; варианты подготавливаются заново, прежняя рабочая версия сохраняется при ошибке. Генерация и rebuild запрещены во время эфира, включая ручную паузу. Эти требования согласованы владельцем; прежние результаты приёмки не подтверждают их реализацию.
 - Selected technology families are approved and active now. Go закреплён в `go.mod`, линтер — в `Makefile`; версии runtime-зависимостей и нереализованные настройки подтверждаются при появлении соответствующего кода.
 
 ## Activation Semantics
@@ -286,7 +287,7 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 
 ## Project Boundaries
 
-Пути и обязанности взяты из архитектуры. Реализованы домен, storage и компоненты медиатракта T03; группы/Switcher, Publishers, API и composition root остаются следующими задачами:
+Пути и обязанности взяты из архитектуры. Реализованы домен, storage и компоненты медиатракта T03; добавлены поколения fallback и группы/Switcher с контрактами T04. Publishers, API и composition root остаются следующими задачами:
 
 - `internal/api/`: Huma/Chi, DTO, SSE; управляющий API без авторизации и токенов доступа.
 - `internal/core/`: домен, сервисы, repository interfaces; без импортов Huma/GORM/FFmpeg.

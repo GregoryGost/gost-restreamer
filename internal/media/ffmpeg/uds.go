@@ -65,7 +65,11 @@ func verifyDirectory(path string) (os.FileInfo, error) {
 }
 
 // NewNamespace создаёт listeners до запуска процесса; SessionID используется как проверенный сегмент пути.
-func NewNamespace(base, sessionID string) (_ *Namespace, retErr error) {
+func NewNamespace(base, sessionID string) (*Namespace, error) {
+	return newNamespace(base, sessionID, false)
+}
+
+func newNamespace(base, sessionID string, fileInput bool) (_ *Namespace, retErr error) {
 	if !filepath.IsAbs(base) || !safeSegment(sessionID) {
 		return nil, fmt.Errorf("%w: абсолютный base и безопасный SessionID обязательны", ErrInvalidSupervisor)
 	}
@@ -110,8 +114,12 @@ func NewNamespace(base, sessionID string) (_ *Namespace, retErr error) {
 	if len(n.InputPath) > maxPath || len(n.OutputPath) > maxPath {
 		return nil, fmt.Errorf("%w: слишком длинный путь UDS", ErrInvalidSupervisor)
 	}
-	if n.input, n.inputInfo, err = listenOwned(n.InputPath); err != nil {
-		return nil, err
+	if !fileInput {
+		if n.input, n.inputInfo, err = listenOwned(n.InputPath); err != nil {
+			return nil, err
+		}
+	} else {
+		n.InputPath = ""
 	}
 	if n.output, n.outputInfo, err = listenOwned(n.OutputPath); err != nil {
 		return nil, err

@@ -10,92 +10,86 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
-func TestAssetAndVariantPreparationRequireCurrentAttempt(t *testing.T) {
-	f := newDomainFixture(t, 0)
+func TestPreparationRequiresExactAttemptAndPreservesCurrentOnFailure(t *testing.T) {
+	f := newDomainFixture(t, 1)
 	ctx := context.Background()
-	a, err := f.service.ReserveAsset(ctx, core.FallbackAsset{Name: "Изображение", Kind: core.AssetImage, OriginalPath: "originals/second.png", SourceHash: "unverified", SizeBytes: 100, State: core.AssetReady})
+	g, err := f.service.ReservePreparation(ctx, core.PreparationRequest{AssetID: f.asset.ID, ExpectedRevision: f.asset.Revision, Kind: core.AssetImage, GeneratorVersion: "generator-v2"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.State != core.AssetPreparing || a.SizeBytes != 0 || a.SourceHash != "" || a.AttemptToken == "" {
-		t.Fatalf("резервирование опубликовало непроверенный файл: %+v", a)
+	fence, err := f.service.ClaimPreparation(ctx, g.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, err = f.service.PublishAsset(ctx, a.ID, a.Revision, "old-attempt", "hash", 10, core.SourceFormat{ImageFormat: "png"})
+	if err = f.service.MarkPreparationIssued(ctx, fence); err != nil {
+		t.Fatal(err)
+	}
+	wrong := fence
+	wrong.AttemptToken = "old-attempt"
+	_, err = f.service.PublishPreparation(ctx, wrong, core.GenerationPublication{SourceHash: "hash", SizeBytes: 10, SourceFormat: core.SourceFormat{ImageFormat: "png"}})
 	requireDomainError(t, err, core.ErrStale)
-	_, err = f.service.PublishAsset(ctx, a.ID, a.Revision, a.AttemptToken, "hash", 0, core.SourceFormat{ImageFormat: "png"})
+	p := fixturePublication(g, "hash", "result")
+	p.SizeBytes = 0
+	_, err = f.service.PublishPreparation(ctx, fence, p)
 	requireDomainError(t, err, core.ErrInvalid)
-	if got, err := f.service.GetAsset(ctx, a.ID); err != nil || !reflect.DeepEqual(got, a) {
-		t.Fatalf("ошибка публикации изменила reservation: %+v, %v", got, err)
+	current, err := f.service.GetAsset(ctx, f.asset.ID)
+	if err != nil || current.CurrentGenerationID != f.asset.CurrentGenerationID || current.SourceHash != f.asset.SourceHash {
+		t.Fatalf("ошибка публикации изменила current: %+v, %v", current, err)
 	}
-	if err := f.service.FailAsset(ctx, a.ID, a.Revision, a.AttemptToken); err != nil {
+	if err = f.service.CancelPreparation(ctx, fence, "Подготовка отменена"); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.service.PublishAsset(ctx, a.ID, a.Revision, a.AttemptToken, "late-hash", 10, core.SourceFormat{ImageFormat: "png"})
+	_, err = f.service.PublishPreparation(ctx, fence, fixturePublication(g, "late", "late"))
 	requireDomainError(t, err, core.ErrStale)
-	video, err := f.service.ReserveAsset(ctx, core.FallbackAsset{Name: "Видео без аудио", Kind: core.AssetVideo, OriginalPath: "originals/no-audio.mp4"})
-	if err != nil {
+	if err = f.service.AcknowledgePreparationCleanup(ctx, fence); err != nil {
 		t.Fatal(err)
 	}
-	inputVideo := storageProfile().Format.Video
-	video, err = f.service.PublishAsset(ctx, video.ID, video.Revision, video.AttemptToken, "video-source-hash", 100, core.SourceFormat{Video: &inputVideo})
-	if err != nil || video.SourceFormat.Audio != nil {
-		t.Fatalf("оригинал без AAC ошибочно отклонён: %+v, %v", video, err)
-	}
-	v, err := f.service.ReserveVariant(ctx, core.FallbackVariant{AssetID: f.asset.ID, SourceHash: f.asset.SourceHash, Profile: f.profile.Profile, GeneratorVersion: "generator-v1", ManagedPath: "variants/preparing.nut"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.service.PublishVariant(ctx, v.ID, v.Revision, "old-attempt", "hash", 100)
-	requireDomainError(t, err, core.ErrStale)
-	if err := f.service.FailVariant(ctx, v.ID, v.Revision, v.AttemptToken); err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.service.PublishVariant(ctx, v.ID, v.Revision, v.AttemptToken, "hash", 100)
-	requireDomainError(t, err, core.ErrStale)
+	_, err = f.service.PublishAsset(ctx, f.asset.ID, f.asset.Revision, f.asset.AttemptToken, "bypass", 10, core.SourceFormat{ImageFormat: "png"})
+	requireDomainError(t, err, core.ErrInvalid)
+	_, err = f.service.ReserveVariant(ctx, f.variant)
+	requireDomainError(t, err, core.ErrInvalid)
+	_, err = f.service.PublishVariant(ctx, f.variant.ID, f.variant.Revision, f.variant.AttemptToken, "bypass", 10)
+	requireDomainError(t, err, core.ErrInvalid)
+	requireDomainError(t, f.service.FailAsset(ctx, f.asset.ID, f.asset.Revision, f.asset.AttemptToken), core.ErrInvalid)
+	requireDomainError(t, f.service.FailVariant(ctx, f.variant.ID, f.variant.Revision, f.variant.AttemptToken), core.ErrInvalid)
 }
 
 func TestStartRejectsEveryNonmatchingPreparedBindingAtomically(t *testing.T) {
-	for _, mismatch := range []string{"generator", "profile", "preparing", "failed"} {
+	for _, mismatch := range []string{"generator", "profile", "generation", "variant"} {
 		t.Run(mismatch, func(t *testing.T) {
 			f := newDomainFixture(t, 1)
 			ctx := context.Background()
 			request := f.startRequest("start-with-binding")
-			if mismatch == "generator" {
+			switch mismatch {
+			case "generator":
 				request.Bindings[0].GeneratorVersion = "other-generator"
-			} else {
-				v := core.FallbackVariant{AssetID: f.asset.ID, SourceHash: f.asset.SourceHash, Profile: f.profile.Profile, GeneratorVersion: f.variant.GeneratorVersion, ManagedPath: "variants/binding.nut"}
-				if mismatch == "profile" {
-					v.Profile.Format.Video.Width++
-				}
-				var err error
-				v, err = f.service.ReserveVariant(ctx, v)
-				if err != nil {
+			case "generation":
+				request.Bindings[0].GenerationID = "other-generation"
+			case "variant":
+				request.Bindings[0].VariantID = "missing-variant"
+			case "profile":
+				p := f.profile
+				p.Profile.Format.Video.Width++
+				if _, err := f.service.UpdateProfile(ctx, p, p.Revision); err != nil {
 					t.Fatal(err)
 				}
-				if mismatch == "failed" {
-					if err := f.service.FailVariant(ctx, v.ID, v.Revision, v.AttemptToken); err != nil {
-						t.Fatal(err)
-					}
-				} else if mismatch != "preparing" {
-					v, err = f.service.PublishVariant(ctx, v.ID, v.Revision, v.AttemptToken, "other-content", 100)
-					if err != nil {
-						t.Fatal(err)
-					}
-				}
-				request.Bindings[0].VariantID = v.ID
 			}
 			_, err := f.service.StartSession(ctx, request)
-			requireDomainError(t, err, core.ErrNotReady)
-			if err := f.store.View(ctx, func(r core.Repositories) error {
-				sessions, err := r.Runtime.Sessions(ctx, core.ListQuery{Limit: core.MaxListLimit, StreamID: f.stream.ID})
-				if err != nil {
-					return err
+			if mismatch == "variant" {
+				requireDomainError(t, err, core.ErrNotFound)
+			} else {
+				requireDomainError(t, err, core.ErrNotReady)
+			}
+			if err = f.store.View(ctx, func(r core.Repositories) error {
+				ss, e := r.Runtime.Sessions(ctx, core.ListQuery{Limit: 10, StreamID: f.stream.ID})
+				if e != nil {
+					return e
 				}
-				if len(sessions) != 0 {
+				if len(ss) != 0 {
 					t.Fatal("отклонённый binding оставил частичную Session")
 				}
-				_, err = r.Runtime.Receipt(ctx, request.RequestID)
-				requireDomainError(t, err, core.ErrNotFound)
+				_, e = r.Runtime.Receipt(ctx, request.RequestID)
+				requireDomainError(t, e, core.ErrNotFound)
 				return nil
 			}); err != nil {
 				t.Fatal(err)
@@ -103,63 +97,65 @@ func TestStartRejectsEveryNonmatchingPreparedBindingAtomically(t *testing.T) {
 		})
 	}
 }
-
-func TestVariantSourceIdentityCannotDivergeFromAsset(t *testing.T) {
+func TestVariantSourceIdentityCannotDivergeFromGeneration(t *testing.T) {
 	f := newDomainFixture(t, 0)
 	ctx := context.Background()
-	_, err := f.service.ReserveVariant(ctx, core.FallbackVariant{AssetID: f.asset.ID, SourceHash: "wrong-source-hash", Profile: f.profile.Profile, GeneratorVersion: f.variant.GeneratorVersion, ManagedPath: "variants/wrong-source.nut"})
-	requireDomainError(t, err, core.ErrNotReady)
-	_, err = f.store.sqlDB.ExecContext(ctx, "UPDATE fallback_variants SET source_hash = ? WHERE id = ?", "wrong-source-hash", f.variant.ID)
+	_, err := f.store.sqlDB.ExecContext(ctx, "UPDATE fallback_variants SET source_hash = ? WHERE id = ?", "wrong-source-hash", f.variant.ID)
 	requireDomainError(t, translate(err), core.ErrInUse)
 	got, err := f.service.GetVariant(ctx, f.variant.ID)
 	if err != nil || !reflect.DeepEqual(got, f.variant) {
-		t.Fatalf("неудачная смена источника изменила вариант: %+v, %v", got, err)
+		t.Fatalf("смена источника изменила вариант: %+v, %v", got, err)
 	}
 }
-
-func TestExactBindingPinsRequestedGenerationRatherThanNewest(t *testing.T) {
+func TestFreshStartRejectsRetiredGenerationWithoutSelectingNewest(t *testing.T) {
 	f := newDomainFixture(t, 1)
 	ctx := context.Background()
-	p := f.profile.Profile
-	p.Format.Video.FrameRate = core.FrameRate{Numerator: 120, Denominator: 2}
-	v, err := f.service.ReserveVariant(ctx, core.FallbackVariant{AssetID: f.asset.ID, SourceHash: f.asset.SourceHash, Profile: p, GeneratorVersion: f.variant.GeneratorVersion, ManagedPath: "variants/newest.nut"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.PublishVariant(ctx, v.ID, v.Revision, v.AttemptToken, "newest-hash", 500); err != nil {
-		t.Fatal(err)
-	}
+	old := f.startRequest("old-binding")
+	a, v := publishFixtureGeneration(t, f.service, f.asset, f.asset.SourceHash, "new-content")
+	_, err := f.service.StartSession(ctx, old)
+	requireDomainError(t, err, core.ErrNotReady)
+	f.asset, f.variant = a, v
 	start := startDomainSession(t, f)
-	o := readOutputs(t, f.store, start.SessionID)[0]
-	if o.Snapshot.Artifact.VariantID != f.variant.ID || o.Snapshot.Artifact.ContentHash != f.variant.ContentHash {
-		t.Fatalf("start сам выбрал latest READY: %+v", o.Snapshot.Artifact)
+	output := readOutputs(t, f.store, start.SessionID)[0]
+	if output.Snapshot.Artifact.GenerationID != v.GenerationID || output.Snapshot.Artifact.VariantID != v.ID {
+		t.Fatal("start не сохранил точный запрошенный комплект")
 	}
 }
-
 func TestDeletedGenerationPathCannotBeReusedAndCleanupIsImmutable(t *testing.T) {
 	f := newDomainFixture(t, 0)
 	ctx := context.Background()
-	if err := f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision); err != nil {
+	old, err := f.service.GetGeneration(ctx, f.variant.GenerationID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	cleanups, err := f.service.ListCleanups(ctx, core.PageRequest{Query: core.ListQuery{Limit: 10, PendingOnly: true}})
-	if err != nil || len(cleanups.Items) != 1 {
-		t.Fatalf("намерение файловой очистки: %+v, %v", cleanups, err)
+	a, _ := publishFixtureGeneration(t, f.service, f.asset, "new-source", "new-content")
+	if a.CurrentGenerationID == old.ID {
+		t.Fatal("замена переиспользовала поколение")
+	}
+	if err = f.service.DeleteGeneration(ctx, old.ID, old.Revision); err != nil {
+		t.Fatal(err)
+	}
+	cleanups, err := f.service.ListCleanups(ctx, core.PageRequest{Query: core.ListQuery{Limit: 20, PendingOnly: true}})
+	if err != nil || len(cleanups.Items) != 5 {
+		t.Fatalf("намерения файловой очистки: %+v, %v", cleanups, err)
 	}
 	intent := cleanups.Items[0]
-	if intent.Kind != core.CleanupFile || intent.ManagedPath != f.variant.ManagedPath {
-		t.Fatalf("очистка потеряла неизменяемый путь: %+v", intent)
-	}
-	fence := core.CleanupFenceFor(intent)
-	fence.ManagedPath = "variants/foreign.nut"
-	requireDomainError(t, f.service.AcknowledgeCleanup(ctx, fence), core.ErrStale)
-	if err := f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(intent)); err != nil {
+	wrong := core.CleanupFenceFor(intent)
+	wrong.ManagedPath = "variants/foreign.mp4"
+	requireDomainError(t, f.service.AcknowledgeCleanup(ctx, wrong), core.ErrStale)
+	if err = f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(intent)); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.service.ReserveVariant(ctx, core.FallbackVariant{AssetID: f.asset.ID, SourceHash: f.asset.SourceHash, Profile: f.profile.Profile, GeneratorVersion: "generator-v2", ManagedPath: f.variant.ManagedPath})
+	files, err := f.service.ListGenerationFiles(ctx, core.PageRequest{Query: core.ListQuery{Limit: 20, GenerationID: old.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate := files.Items[0]
+	duplicate.ID = "new-file-id"
+	err = f.store.Write(ctx, func(r core.Repositories) error { return r.Artifacts.InsertOwnedFile(ctx, duplicate) })
 	requireDomainError(t, err, core.ErrConflict)
-	if _, err := f.service.GetVariant(ctx, f.variant.ID); !errors.Is(err, core.ErrNotFound) {
-		t.Fatalf("удалённый metadata row сохранился: %v", err)
+	if _, err = f.service.GetVariant(ctx, f.variant.ID); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("удалённые метаданные сохранились: %v", err)
 	}
 }
 

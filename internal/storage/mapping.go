@@ -53,6 +53,10 @@ func recordOf(value any) core.Record {
 		return v.Record
 	case core.FallbackVariant:
 		return v.Record
+	case core.FallbackGeneration:
+		return v.Record
+	case core.OwnedFile:
+		return v.Record
 	case core.Session:
 		return v.Record
 	case core.SessionOutput:
@@ -98,6 +102,12 @@ func normalize(value any) (any, error) {
 	case core.Destination:
 		v.Record = record
 		return v, v.Validate()
+	case core.FallbackGeneration:
+		v.Record = record
+		return v, v.Validate()
+	case core.OwnedFile:
+		v.Record = record
+		return v, v.Validate()
 	case core.FallbackAsset:
 		v.Record = record
 		return v, v.Validate()
@@ -132,6 +142,9 @@ func normalize(value any) (any, error) {
 		return v, nil
 	case core.CleanupIntent:
 		v.Record = record
+		if err = v.Validate(); err != nil {
+			return nil, err
+		}
 		if v.Kind == core.CleanupFile {
 			if err = core.ValidateManagedPath(v.ManagedPath); err != nil {
 				return nil, err
@@ -163,16 +176,29 @@ func fields(value any) (map[string]any, error) {
 		f["stream_id"] = v.StreamID
 		f["group_id"] = v.GroupID
 	case core.FallbackAsset:
+		f["current_generation_id"] = nullable(v.CurrentGenerationID)
+		f["pending_generation_id"] = nullable(v.PendingGenerationID)
 		f["incarnation"] = v.Incarnation
-		f["source_hash"] = v.SourceHash
-		f["managed_path"] = v.OriginalPath
-		f["size_bytes"] = decimal(v.SizeBytes)
 		f["state"] = v.State
+	case core.FallbackGeneration:
+		f["asset_id"] = v.AssetID
+		f["incarnation"] = v.Incarnation
+		f["state"] = v.State
+		f["issued"] = v.Issued
+		f["cleanup_pending"] = v.CleanupPending
+		f["source_hash"] = v.SourceHash
+	case core.OwnedFile:
+		f["asset_id"] = v.AssetID
+		f["generation_id"] = v.GenerationID
+		f["managed_path"] = v.ManagedPath
+		f["kind"] = v.Kind
 	case core.FallbackVariant:
+		f["generation_id"] = v.GenerationID
 		f["asset_id"] = v.AssetID
 		f["incarnation"] = v.Incarnation
 		f["source_hash"] = v.SourceHash
 		f["profile_key"] = v.ProfileKey
+		f["canonical_profile"] = v.CanonicalProfile
 		f["generator_version"] = v.GeneratorVersion
 		f["managed_path"] = v.ManagedPath
 		f["size_bytes"] = decimal(v.SizeBytes)
@@ -200,6 +226,8 @@ func fields(value any) (map[string]any, error) {
 		f["generation"] = decimal(v.OutputGeneration)
 		f["attempt"] = decimal(v.Attempt)
 	case core.CleanupIntent:
+		f["artifact_generation_id"] = nullable(v.ArtifactGenerationID)
+		f["file_id"] = nullable(v.FileID)
 		f["kind"] = v.Kind
 		f["stream_id"] = nullable(v.StreamID)
 		f["session_id"] = nullable(v.SessionID)
@@ -270,18 +298,7 @@ func insertValue(ctx context.Context, r *repositories, table string, value any) 
 	if err = db.Table(table).Create(f).Error; err != nil {
 		return translate(err)
 	}
-	var path, kind string
-	switch v := value.(type) {
-	case core.FallbackAsset:
-		path = v.OriginalPath
-		kind = "asset"
-	case core.FallbackVariant:
-		path = v.ManagedPath
-		kind = "variant"
-	}
-	if path != "" {
-		return translate(db.Table("owned_paths").Create(map[string]any{"managed_path": path, "owner_id": recordOf(value).ID, "owner_kind": kind}).Error)
-	}
+
 	return nil
 }
 
@@ -370,18 +387,36 @@ func immutable(data []byte, value any) error {
 		if err := core.DecodeMetadata(data, &old); err != nil {
 			return errors.Join(core.ErrCorrupt, err)
 		}
-		bad = old.OriginalPath != v.OriginalPath || old.AttemptToken != v.AttemptToken || old.Kind != v.Kind || old.Incarnation != v.Incarnation
-		if old.State != core.AssetPreparing {
-			old.Record = v.Record
-			old.Name = v.Name
-			bad = bad || !same(old, v)
+	case core.OwnedFile:
+		var old core.OwnedFile
+		if err := core.DecodeMetadata(data, &old); err != nil {
+			return errors.Join(core.ErrCorrupt, err)
+		}
+		old.Record = v.Record
+		if old.ContentHash == "" && old.SizeBytes == 0 {
+			old.ContentHash = v.ContentHash
+			old.SizeBytes = v.SizeBytes
+		}
+		bad = !same(old, v)
+	case core.FallbackGeneration:
+		var old core.FallbackGeneration
+		if err := core.DecodeMetadata(data, &old); err != nil {
+			return errors.Join(core.ErrCorrupt, err)
+		}
+		bad = old.AssetID != v.AssetID || old.OriginalPath != v.OriginalPath || old.StagingPath != v.StagingPath || old.Kind != v.Kind || old.Incarnation != v.Incarnation || old.AttemptToken != v.AttemptToken || old.GeneratorVersion != v.GeneratorVersion || !same(old.RequiredProfiles, v.RequiredProfiles) || old.RebuildFromGenerationID != v.RebuildFromGenerationID
+		if old.State.Terminal() {
+			copy := old
+			copy.Record = v.Record
+			copy.Issued = v.Issued
+			copy.CleanupPending = v.CleanupPending
+			bad = bad || !same(copy, v)
 		}
 	case core.FallbackVariant:
 		var old core.FallbackVariant
 		if err := core.DecodeMetadata(data, &old); err != nil {
 			return errors.Join(core.ErrCorrupt, err)
 		}
-		bad = old.AssetID != v.AssetID || old.SourceHash != v.SourceHash || old.ManagedPath != v.ManagedPath || old.AttemptToken != v.AttemptToken || old.GeneratorVersion != v.GeneratorVersion || old.ProfileKey != v.ProfileKey || !same(old.Profile, v.Profile) || !bytes.Equal(old.CanonicalProfile, v.CanonicalProfile) || old.Incarnation != v.Incarnation
+		bad = old.GenerationID != v.GenerationID || old.AssetID != v.AssetID || old.SourceHash != v.SourceHash || old.ManagedPath != v.ManagedPath || old.AttemptToken != v.AttemptToken || old.GeneratorVersion != v.GeneratorVersion || old.ProfileKey != v.ProfileKey || !same(old.Profile, v.Profile) || !bytes.Equal(old.CanonicalProfile, v.CanonicalProfile) || old.Incarnation != v.Incarnation
 		if old.State != core.VariantPreparing {
 			old.Record = v.Record
 			bad = bad || !same(old, v)

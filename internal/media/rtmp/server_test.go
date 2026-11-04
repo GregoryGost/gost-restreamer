@@ -32,7 +32,7 @@ type ingestFixture struct {
 func newIngestFixture(t *testing.T) ingestFixture {
 	t.Helper()
 	ctx := context.Background()
-	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "ingest.sqlite"), storage.Options{ObservationLimits: core.ObservationLimits{MaxSessions: 16, MaxGroups: 64, MaxOutputs: 128, MaxFFmpegWorkers: 64, MaxIdentifierBytes: 1024, MaxErrorBytes: 65536, MaxBytes: 4 << 20}, MaxOpenConns: 4, MaxIdleConns: 4, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute, BusyTimeout: 10 * time.Millisecond, RetryAttempts: 3, RetryTimeout: time.Second, RetryDelay: time.Millisecond})
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "ingest.sqlite"), storage.Options{PreparationLimits: core.PreparationLimits{MaxQueued: 8, MaxProfiles: 64}, ObservationLimits: core.ObservationLimits{MaxSessions: 16, MaxGroups: 64, MaxOutputs: 128, MaxFFmpegWorkers: 64, MaxIdentifierBytes: 1024, MaxErrorBytes: 65536, MaxBytes: 4 << 20}, MaxOpenConns: 4, MaxIdleConns: 4, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute, BusyTimeout: 10 * time.Millisecond, RetryAttempts: 3, RetryTimeout: time.Second, RetryDelay: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,12 +45,25 @@ func newIngestFixture(t *testing.T) ingestFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	asset, err := svc.ReserveAsset(ctx, core.FallbackAsset{Name: "Оригинал", Kind: core.AssetImage, OriginalPath: "originals/synthetic.png"})
+	asset, err := svc.CreateAsset(ctx, "Оригинал")
 	if err != nil {
 		t.Fatal(err)
 	}
-	asset, err = svc.PublishAsset(ctx, asset.ID, asset.Revision, asset.AttemptToken, "synthetic-content", 10, core.SourceFormat{ImageFormat: "png"})
+	generation, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: "synthetic"})
 	if err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := svc.ClaimPreparation(ctx, generation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.MarkPreparationIssued(ctx, preparation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.PublishPreparation(ctx, preparation, core.GenerationPublication{SourceHash: "synthetic-content", SizeBytes: 10, SourceFormat: core.SourceFormat{ImageFormat: "png"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.AcknowledgePreparationCleanup(ctx, preparation); err != nil {
 		t.Fatal(err)
 	}
 	stream, err := svc.CreateStream(ctx, core.Stream{Name: "Вход", PublicationKey: "synthetic-ingest-key", Fallback: core.FallbackPolicy{AssetID: asset.ID, Watchdog: core.WatchdogPolicy{VideoTimeout: time.Second, AudioTimeout: time.Second, RecoveryWindow: time.Second, KeyframeTimeout: time.Second}}})

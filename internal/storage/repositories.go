@@ -182,11 +182,14 @@ func (r *repositories) Events(ctx context.Context, q core.ListQuery) ([]core.Eve
 	return listValues[core.Event](ctx, r, "events", q)
 }
 func (r *repositories) InsertHold(ctx context.Context, v core.ReferenceHold) error {
+	if err := v.Validate(); err != nil {
+		return err
+	}
 	db, err := r.access(ctx, true)
 	if err != nil {
 		return err
 	}
-	fields := map[string]any{"session_id": v.SessionID, "stream_id": v.StreamID, "asset_id": v.AssetID}
+	fields := map[string]any{"session_id": v.SessionID, "stream_id": v.StreamID, "asset_id": v.AssetID, "generation_id": v.GenerationID}
 	table := "session_holds"
 	if v.OutputID != "" {
 		table = "output_holds"
@@ -214,4 +217,43 @@ func (r *repositories) ReleaseHolds(ctx context.Context, sessionID, outputID cor
 		return translate(err)
 	}
 	return translate(db.Table("session_holds").Where("session_id = ?", sessionID).Delete(map[string]any{}).Error)
+}
+
+func (r *repositories) Generation(ctx context.Context, id core.ID) (core.FallbackGeneration, error) {
+	return getValue[core.FallbackGeneration](ctx, r, "fallback_generations", "id", id)
+}
+func (r *repositories) Generations(ctx context.Context, q core.ListQuery) ([]core.FallbackGeneration, error) {
+	return listValues[core.FallbackGeneration](ctx, r, "fallback_generations", q)
+}
+func (r *repositories) InsertGeneration(ctx context.Context, v core.FallbackGeneration) error {
+	return insertValue(ctx, r, "fallback_generations", v)
+}
+func (r *repositories) UpdateGeneration(ctx context.Context, v core.FallbackGeneration, e uint64) error {
+	return updateValue(ctx, r, "fallback_generations", v, e)
+}
+func (r *repositories) DeleteGeneration(ctx context.Context, id core.ID, e uint64) error {
+	return deleteValue(ctx, r, "fallback_generations", id, e)
+}
+func (r *repositories) InsertOwnedFile(ctx context.Context, v core.OwnedFile) error {
+	return insertValue(ctx, r, "owned_paths", v)
+}
+func (r *repositories) OwnedFiles(ctx context.Context, q core.ListQuery) ([]core.OwnedFile, error) {
+	return listValues[core.OwnedFile](ctx, r, "owned_paths", q)
+}
+
+func (r *repositories) UpdateOwnedFile(ctx context.Context, v core.OwnedFile, expected uint64) error {
+	return updateValue(ctx, r, "owned_paths", v, expected)
+}
+
+func (r *repositories) GenerationHeld(ctx context.Context, id core.ID) (bool, error) {
+	if err := id.Validate(); err != nil {
+		return false, err
+	}
+	db, err := r.access(ctx, false)
+	if err != nil {
+		return false, err
+	}
+	var held bool
+	err = db.Raw("SELECT EXISTS(SELECT 1 FROM session_holds WHERE generation_id = ? UNION ALL SELECT 1 FROM output_holds WHERE generation_id = ?)", id, id).Scan(&held).Error
+	return held, translate(err)
 }

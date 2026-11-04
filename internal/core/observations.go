@@ -707,3 +707,11 @@ func (s *Service) FailOutput(ctx context.Context, owner *OutputObserver, reason 
 		return r.Runtime.InsertEvent(ctx, Event{ID: id, SessionID: session.ID, OutputID: o.ID, Kind: "output_execution_failed", Message: reason, Execution: &execution, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)})
 	})
 }
+
+// SessionFence возвращает неизменяемого владельца родительского запуска.
+func (o *SessionObserver) SessionFence() RuntimeSessionFence {
+	if o == nil || o.node == nil {
+		return RuntimeSessionFence{}
+	}
+	return o.node.session
+}
