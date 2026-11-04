@@ -121,12 +121,15 @@ func parseAV1Config(raw []byte) (av1Description, error) {
 	if _, err := mp4.Unmarshal(bytes.NewReader(raw), uint64(len(raw)), &c, mp4.Context{}); err != nil {
 		return av1Description{}, fmt.Errorf("%w: av1C: %v", ErrCodec, err)
 	}
-	if c.Marker != 1 || c.Version != 1 || c.Reserved != 0 || c.InitialPresentationDelayPresent != 0 {
+	if c.Marker != 1 || c.Version != 1 || c.Reserved != 0 || c.InitialPresentationDelayPresent != 0 || c.InitialPresentationDelayMinusOne != 0 {
 		return av1Description{}, ErrCodec
 	}
 	obus, err := splitOBUs(c.ConfigOBUs)
 	if err != nil {
 		return av1Description{}, err
+	}
+	if len(obus) == 0 || obus[0].typ != 1 {
+		return av1Description{}, ErrCodec
 	}
 	var d av1Description
 	found := false
@@ -371,7 +374,7 @@ func (d *av1Description) inspect(tu []byte, fps core.FrameRate) (core.VideoForma
 	if err != nil {
 		return core.VideoFormat{}, false, err
 	}
-	sequence, key, frame, shown := false, false, false, false
+	sequence, firstFrameKey, frame, shown := false, false, false, false
 	for _, o := range list {
 		switch o.typ {
 		case 1:
@@ -387,9 +390,11 @@ func (d *av1Description) inspect(tu []byte, fps core.FrameRate) (core.VideoForma
 			if e != nil {
 				return core.VideoFormat{}, false, e
 			}
+			if !frame {
+				firstFrameKey = k
+			}
 			frame = true
 			shown = shown || show
-			key = key || k
 		case 2:
 			if frame || len(o.payload) != 0 {
 				return core.VideoFormat{}, false, ErrCodec
@@ -426,7 +431,7 @@ func (d *av1Description) inspect(tu []byte, fps core.FrameRate) (core.VideoForma
 		tier = "high"
 	}
 	f := core.VideoFormat{Codec: core.CodecAV1, Width: d.width, Height: d.height, FrameRate: d.fps, CodecProfile: "main", Level: level, Tier: tier, PixelFormat: "yuv420p", BitDepth: 8, Color: color}
-	return f, sequence && key, nil
+	return f, sequence && firstFrameKey, nil
 }
 
 func colorName(v uint8) string {
