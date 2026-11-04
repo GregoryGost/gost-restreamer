@@ -60,9 +60,17 @@ When an authorized isolated Go test failure needs runtime inspection, use the te
 
 - Run the project-selected `go test ./...` and optionally `go test -race ./...` where the compiler/platform/CGO allow it. `-race` does **not** detect retained Go heap, leaked goroutines or open OS/SQL resources.
 - Use `-count=1` to avoid test cache for reproducibility investigations and `-shuffle=on` to expose test-order coupling when fixtures are independent.
-- Use `go test -coverprofile=<declared output> ./...` when coverage is requested/configured; avoid dumping extra artifacts in the repository root.
+- When the active project's Go Testing Profile enables coverage, generate a fresh statement-coverage profile on the **declared full package scope**, evaluate its explicitly configured minimum (85% default for new Go projects), and report the exact measured ratio, pass/fail, skipped packages and unexecuted gates. Follow `references/coverage-policy.md`. Coverage is not a substitute for behavior, race or security tests.
 - Use bounded `go test -fuzz=FuzzName -fuzztime=<budget>` for appropriate pure functions, retaining valid regression corpus cases.
 - Benchmarks (`go test -bench=... -benchmem`) require representative input and should not be used to assert functional correctness.
+
+## Coverage policy and reporting
+
+Coverage is configured **once** when integrating `go-testing` in a target project's `CODEX_PROJECT.md`, not inferred anew on every task. New projects should configure a **minimum 85% statement coverage** for the declared production package scope. A higher limit is allowed; a lower limit or disabled gate requires an explicit owner-approved exception documented in that project profile. Do not retroactively rewrite existing projects' profiles.
+
+If coverage is enabled, run the project-authorized complete suite and evaluate the **current successful run**, not an old or filtered profile. Use `go tool cover -func=<profile>` for per-function and displayed total results; enforcement at the threshold must use the **Go-normalized, deduplicated** statement counts rather than a raw profile-line sum or rounded display. Confirm that the profile belongs to the successful current run. Do not claim the gate passed when tests failed, the profile is missing/empty, relevant packages are silently excluded, or the configured verification command was not executed.
+
+See `references/coverage-policy.md` for version-aware commands, a weighted statement-count threshold, exclusions and the reporting contract.
 
 ## Performance regression testing
 
@@ -72,5 +80,5 @@ For a real performance question, use `references/benchmark-regression.md` with `
 
 Apply `go-huma-v2` for independently active Huma contract tests. Apply `go-gorm` and `go-gorm-sqlite-goose` for independently active DB and migrations tests. When selected, use `go-local-cache` for Otter v2 cache-hit/expiry/eviction/loading tests, or `go-nats-kv-cache` for disposable JetStream KV/CAS/TTL/watch integration tests. Do not treat a mock as proof of NATS server behavior.
 
-Load `references/test-boundaries-and-patterns.md` for general examples, `references/leak-regression.md` for lifecycle/memory regression testing when relevant, `references/benchmark-regression.md` for performance claims, `.agents/skills/go-core/references/runtime-debugging.md` for authorized terminal Delve diagnostics, and `references/official-sources.md` for official tools.
+Load `references/test-boundaries-and-patterns.md` for general examples, `references/leak-regression.md` for lifecycle/memory regression testing when relevant, `references/coverage-policy.md` for project-defined 85%-baseline coverage gates, `references/benchmark-regression.md` for performance claims, `.agents/skills/go-core/references/runtime-debugging.md` for authorized terminal Delve diagnostics, and `references/official-sources.md` for official tools.
 

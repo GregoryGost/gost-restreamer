@@ -52,7 +52,7 @@ jobs:
 
       - name: Анализ, тесты и сборка пакетов
         if: steps.source.outputs.packages == 'true'
-        run: make vet lint test test-race build
+        run: make vet lint coverage test-race build
 
       - name: Сборка бинарника
         if: steps.source.outputs.binary == 'true'

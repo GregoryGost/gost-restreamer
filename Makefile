@@ -11,7 +11,7 @@ export CGO_ENABLED := 1
 export GOFLAGS ?= -mod=readonly
 
 .PHONY: help toolchain-check tools require-linter require-packages fmt fmt-check \
-	tidy tidy-check mod-verify vet test test-race lint-config lint build binary \
+	tidy tidy-check mod-verify vet test coverage test-race lint-config lint build binary \
 	bootstrap-check check
 
 help:
@@ -19,6 +19,7 @@ help:
 		'make tools            — установить закреплённый golangci-lint в ./bin.' \
 		'make bootstrap-check  — проверить модуль, форматирование и конфигурацию линтера.' \
 		'make check            — выполнить все проверки Go-пакетов и сборку.' \
+		'make coverage         — выполнить тесты и проверить суммарное покрытие не ниже 85%.' \
 		'make fmt              — отформатировать Go-файлы.' \
 		'make tidy             — обновить go.mod и go.sum по импортам.' \
 		'make binary           — собрать сервис в ./bin/gost-restreamer.'
@@ -74,6 +75,18 @@ vet: require-packages
 test: require-packages
 	$(GO) test ./...
 
+coverage: require-packages
+	@coverage_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/gost-restreamer-coverage.XXXXXXXX")" || exit $$?; \
+		trap 'coverage_status=$$?; trap - EXIT HUP INT TERM; rm -rf "$$coverage_dir"; exit "$$coverage_status"' EXIT; \
+		trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+		profile="$$coverage_dir/coverage.out"; \
+		printf '%s\n' 'Покрытие всех пакетов ./...; исключений нет; порог 85%.' "Профиль текущего запуска: $$profile"; \
+		GOST_MEDIA_FFMPEG= GOST_FMP4_FFMPEG= GOST_MEDIA_VIDEOTOOLBOX= $(GO) test -count=1 -covermode=atomic -coverpkg=./... -coverprofile="$$profile" ./... || exit $$?; \
+		test -s "$$profile" || { printf '%s\n' 'NOT VERIFIED: профиль покрытия отсутствует или пуст.' >&2; exit 1; }; \
+		$(GO) tool cover -func="$$profile" || exit $$?; \
+		$(GO) build -o "$$coverage_dir/coveragecheck" ./tools/coveragecheck || exit $$?; \
+		"$$coverage_dir/coveragecheck" -profile "$$profile" -min 85
+
 test-race: require-packages
 	$(GO) test -race ./...
 
@@ -92,4 +105,4 @@ binary: require-packages
 
 bootstrap-check: toolchain-check fmt-check tidy-check mod-verify lint-config
 
-check: bootstrap-check vet test test-race lint build
+check: bootstrap-check vet coverage test-race lint build

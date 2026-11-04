@@ -189,7 +189,13 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - Media integration / E2E: `tests/integration/`; FFmpeg/GPU и реальные площадки только в явно разрешённой тестовой среде. CPU round-trip и дополнительные аппаратные проверки разделяются по [профилю среды разработки](#среды-разработки-и-локальные-медиапроверки); macOS/VideoToolbox не становятся обязательными зависимостями CI. Успешная сборка не подтверждает live fallback.
 - Race: `go test -race ./...` при поддерживаемой платформе/toolchain/CGO; не считать проверкой утечек.
 - Parallel/shuffle: только при доказанной изоляции БД, окружения, портов и глобального состояния. `t.Setenv` используется в последовательных тестах.
-- Coverage: только по задаче, файлы в разрешённом временном каталоге; порог не установлен.
+- Statement coverage enabled: yes; владелец явно выбрал обязательный порог 85% при обновлении материалов до `v1.16.1`.
+- Statement coverage minimum: 85% суммарного покрытия инструкций, взвешенного по числу инструкций; `100 * coveredStatements >= 85 * totalStatements`, без сравнения округлённого процента.
+- Covered production package set and exclusions: все пакеты текущего Go-модуля `./...`, включая инструмент проверки покрытия; исключений нет. Используются фактические GOOS/GOARCH и CGO, без дополнительных build tags. Отдельные FFmpeg/GPU/live-проверки не входят в обязательный запуск; их отсутствие и платформенно недоступные пути указываются как непроверенные, без исключения доступного медиакода из покрытия.
+- Coverage execution command and environment: `make coverage` выполняет `go test -count=1 -covermode=atomic -coverpkg=./... -coverprofile=<fresh-profile> ./...` с закреплённым Go, `CGO_ENABLED=1`, `GOTOOLCHAIN=local`, `GOWORK=off` и штатным `GOFLAGS=-mod=readonly` по Makefile. Для этого запуска `GOST_MEDIA_FFMPEG`, `GOST_FMP4_FFMPEG` и `GOST_MEDIA_VIDEOTOOLBOX` явно пусты; отдельные проверки включаются другими тестовыми командами. Успешное завершение полного запуска обязательно до оценки покрытия.
+- Coverage profile artifact path and retention: новый отдельный системный временный каталог для каждого запуска; профиль и текстовый отчёт удаляются владельцем команды после её завершения. Профили не хранятся в исходниках, не коммитятся и не отправляются внешним сервисам.
+- Coverage gate implementation: `tools/coveragecheck`, только стандартная библиотека Go; нормализация повторяющихся блоков по правилам Go, проверка формата и точное сравнение порога. `make coverage`, `make check` и CI используют одну проверку. Ошибка тестов или недостаточное покрытие завершают команду с ошибкой; отсутствующий, пустой, некорректный профиль или отсутствие исполняемых инструкций не дают `PASS`.
+- Coverage reporting and comparison baseline: команда, версия Go, область пакетов, результат тестов, расположение профиля, числитель/знаменатель, процент, порог и фактически выполненная проверка отражаются в результате. Пропуски и недоступные проверки указываются отдельно. Историческая база пока не закреплена; сравнение допускается только для проверенных сопоставимых запусков. Порядок проверки задан в `.agents/skills/go-testing/references/coverage-policy.md`.
 - Fuzz: только именованная цель и ограниченный бюджет, определённые конкретной задачей.
 - Lifecycle: проверять отмену, завершение, освобождение ресурсов и повторный запуск для затронутых workers, streams, pools и caches; не требовать точного глобального числа goroutine или RSS.
 - Focused Delve tests: необязательный `dlv test <package> -- -test.run <regex> -test.count=1 -test.parallel=1` для изолированной цели с интерактивным вводом. Сохранить первое падение; после исправления повторить обычный тест без отладчика и затронутые проверки.
@@ -311,10 +317,11 @@ Command source of truth: этот профиль задаёт обязатель
 - Format: `gofmt -w <изменённые Go-файлы>`; check — `gofmt -l <изменённые Go-файлы>`.
 - Static analysis: `make vet` → `go vet ./...`; `make lint` → закреплённый `golangci-lint run ./...`.
 - Unit/integration tests: `go test ./...`.
+- Coverage: `make coverage`; полный запуск тестов, свежий профиль, `go tool cover -func=<profile>` и точная проверка минимума 85% через `tools/coveragecheck`.
 - Race tests: `go test -race ./...` при поддерживаемой платформе/CGO.
 - Build: `make build` → `go build -o /dev/null ./...`; проверка компиляции не оставляет бинарники в корне репозитория. Выпускаемый бинарник создаётся через `make binary`.
 - Module consistency: `go mod tidy -diff` при поддержке закреплённым Go и разрешении на возможные cache/network effects. Обычный `go mod tidy` изменяет модули и требует разрешённой задачи на их изменение.
-- Make: `make fmt`, `make fmt-check`, `make tidy`, `make tidy-check`, `make mod-verify`, `make test`, `make test-race`, `make build` реализуют соответствующие команды. `make check` объединяет bootstrap, анализ, тесты, race и сборку. `make binary` после появления точки входа создаёт `bin/gost-restreamer` для текущей платформы с CGO и `-trimpath`; Linux CI дополнительно создаёт архив и SHA-256 в `dist/`.
+- Make: `make fmt`, `make fmt-check`, `make tidy`, `make tidy-check`, `make mod-verify`, `make test`, `make coverage`, `make test-race`, `make build` реализуют соответствующие команды. `make check` объединяет bootstrap, анализ, полный запуск тестов с порогом покрытия 85%, race и сборку; CI использует ту же цель `coverage`. `make binary` после появления точки входа создаёт `bin/gost-restreamer` для текущей платформы с CGO и `-trimpath`; Linux CI дополнительно создаёт архив и SHA-256 в `dist/`.
 - Benchmarks: `go test -run '^$' -bench '<проверенная цель>' -benchmem -count=10 <package>` только для выбранной задачи и изолированной среды; `benchstat` — если уже доступен и разрешён.
 - Delve diagnostics: `dlv version` и `dlv help test`, затем согласованная локальная цель `dlv debug`/`dlv test`/`dlv exec` с интерактивным stdin и временными артефактами. Отладчик запускает настоящий код; наблюдения не заменяют обычные тесты.
 - Конкретные цели Media E2E, fuzz и benchmarks, а также команды Goose runner определяются вместе с реальными пакетами и изолированной средой.
@@ -331,7 +338,7 @@ Command source of truth: этот профиль задаёт обязатель
 ## Material Provenance
 
 - Source: [GregoryGost/agent-projects-tools](https://github.com/GregoryGost/agent-projects-tools).
-- Source version: `v1.16.0`.
-- Source commit: `f7a68e48271c78bf61401c42af62ca97c918f820`.
+- Source version: `v1.16.1`.
+- Source commit: `b3fa6c24e3f12ca2337100d21f74081862daeb12`.
 - Local adaptations: root `AGENTS.md` targets this project and preserves the user's evidence/review and platform-specific console instructions; this profile and the configuration example are project-owned.
 - Обновлять переносимые материалы согласованно: bootstrap, routing, dependencies, coordination, роли, skills и этот профиль. Не заменять профиль полным шаблоном с чужими стеками.
