@@ -6,7 +6,7 @@
 - Project type: Go backend for personal self-hosted restreaming in the owner's local environment; the OBS plugin is a separate project.
 - Primary programming language: Go. SQL is used for Goose migrations.
 - Architecture source: `gost-restreamer-architecture.md`, revision 6.
-- Current repository state: созданы Go-модуль, Makefile, конфигурация линтера и workflow CI; в `internal/core` и `internal/media` есть общие типы, валидация и unit-тесты с синтетическими данными. Исполняемый сервис, рабочие медиакомпоненты, storage, миграции и API ещё не реализованы. Общие контракты описаны в `docs/media-contracts.md`.
+- Current repository state: созданы Go-модуль, Makefile, линтер и workflow CI; реализованы общие медиатипы, домен, Repository-интерфейсы, транзакционные операции сессий/команд и GORM/SQLite storage со встроенной первой миграцией Goose. Есть unit-тесты и изолированные проверки файловой SQLite. Исполняемый сервис, рабочие медиакомпоненты и API ещё не реализованы. Контракты описаны в `docs/media-contracts.md` и `docs/domain-storage-contracts.md`.
 - Selected technology families are approved and active now. Go закреплён в `go.mod`, линтер — в `Makefile`; версии runtime-зависимостей и нереализованные настройки подтверждаются при появлении соответствующего кода.
 
 ## Activation Semantics
@@ -150,8 +150,9 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - Policy selection and owner approval: владелец явно выбрал личный локальный контур и режим логирования приложения `full`.
 - Application role: `personal-local`; самостоятельная установка и эксплуатация в собственном локальном контуре владельца.
 - Exposure/trust boundary: OBS и управляющие клиенты работают в контуре владельца; исходящие медиасоединения идут на выбранные им стриминговые площадки. Адреса привязки и транспорт задаются конфигурацией соответствующей инсталляции.
+- Management API access: по решению владельца управляющий API в локальной сети работает без авторизации и токенов доступа; это относится к REST, SSE, OpenAPI/docs/schema и health.
 - Protected assets and accepted risks: ключи трансляций, токены, остальные учётные данные, конфигурация, медиаматериалы и история сессий. Их полные значения в локальных логах приложения — явно выбранное поведение.
-- Required controls: действующие контракты архитектуры по авторизации публикаций и API, границам файлов, запуску FFmpeg, хранению данных и владению ресурсами. Дополнительная инфраструктура безопасности не выбрана.
+- Required controls: проверка постоянного ключа Stream при публикации OBS и привязка к активной Session, валидация входных данных API, границы файлов, запуск FFmpeg, хранение данных и владение ресурсами. Дополнительная инфраструктура безопасности не выбрана.
 - Application-owned log capture mode: `full`.
 - Exact log field categories: токены авторизации и публикации, ключи потоков, остальные учётные данные, заголовки, параметры и тела запросов/ответов, URL назначений, идентификаторы, ошибки, аргументы и диагностика FFmpeg — `full`.
 - Masking/omission format: не применяется. Значения записываемых диагностических полей сохраняются полностью; не добавлять маскирование, хеширование, усечение или исключение этих значений как скрытый режим безопасности.
@@ -193,7 +194,7 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 
 - Go security enabled: yes; active pair: `go_security.md + go-security`.
 - Application context/accepted risks: общий раздел Go Application Context And Data Disclosure Policy; личное приложение в собственном локальном контуре.
-- Technical controls/surfaces: существующие контракты авторизации OBS и управляющего API, входные данные, загрузка и пути fallback, SQL-параметры, отдельные аргументы `exec.CommandContext`, выбранный транспорт и освобождение ресурсов.
+- Technical controls/surfaces: проверка постоянного ключа Stream и активной Session для OBS, входные данные управляющего API, загрузка и пути fallback, SQL-параметры, отдельные аргументы `exec.CommandContext`, выбранный транспорт и освобождение ресурсов. Управляющий API и SSE работают без авторизации и токенов доступа по общей политике проекта.
 - Review scope: подтверждать достижимый путь, нарушенный контракт и конкретный эффект по фактическому коду и конфигурации. Отличать дефект от принятого владельцем поведения и необязательного усиления.
 - Vulnerability/advisory review: официальная Go vulnerability database и данные для закреплённых Go/module versions. `govulncheck` не является обязательным инструментом, не установлен этим обновлением и не запускается автоматически.
 - Validation/exception procedure: после появления кода — стандартные изолированные `go test`, реальные временные SQLite/HTTP-границы по области задачи и независимое ревью по действующей политике. Изменения зависимостей и исключений требуют обычной проверки области разрешений.
@@ -207,8 +208,9 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - Planned registration: `internal/api/`, composition root `cmd/gost-restreamer/main.go`.
 - API prefix: `/api/v1`; operation IDs стабильные и уникальные. Маршруты спецификации пока являются проектным контрактом.
 - DTO: типизированные отдельные API-структуры, явные правила обязательности/nullable/validation. ORM-модели и доменные структуры не используются как одна общая DTO.
-- Errors/auth: доменные ошибки переводятся на HTTP-границе; поведение Problem Details сверяется с выбранной версией. Механизм авторизации ещё не реализован; OpenAPI metadata не заменяет runtime-проверки.
-- OpenAPI/docs/schema exposure: точные пути и доступ определить до реализации публикации API, проверить контрактными тестами.
+- Errors: доменные ошибки переводятся на HTTP-границе; поведение Problem Details сверяется с выбранной версией.
+- API access: REST и SSE работают без авторизации и токенов доступа; middleware авторизации и требования учётных данных в OpenAPI не вводятся.
+- OpenAPI/docs/schema exposure: точные пути определить до реализации публикации API; OpenAPI/docs/schema и health доступны без авторизации и токенов. Доступ проверить контрактными тестами.
 - Tests: реальная регистрация маршрутов через `httptest`; `humatest` допустим из выбранного Huma, если требуется задаче.
 
 ## Go Local Cache — Otter v2 Profile
@@ -230,8 +232,8 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 ## Go GORM Profile
 
 - GORM enabled: yes; active pair: `go_gorm.md + go-gorm`.
-- Version source: `go.mod` и создаваемый `go.sum`; GORM пока не установлен. API style (Traditional/Generics) выбрать после проверки версии при реализации.
-- Repository/model location: планируемый `internal/storage/`; repository interfaces и доменные сервисы — `internal/core/`.
+- Version source: `go.mod` и `go.sum`; GORM `v1.31.2`, Traditional API.
+- Repository/model location: `internal/storage/`; repository interfaces, UnitOfWork и доменные сервисы — `internal/core/`.
 - Transaction owner: доменный сервис определяет границы операции, storage реализует их через переданную транзакцию. Короткие транзакции, без внешнего I/O под блокировкой.
 - Error translation: storage переводит ошибки драйвера/GORM в доменный контракт, API выполняет HTTP-отображение.
 - Database overlay: `go-gorm-sqlite-goose`.
@@ -241,26 +243,26 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - Go SQLite GORM Goose enabled: yes; active pair: `go_gorm_sqlite_goose.md + go-gorm-sqlite-goose`.
 - Database toolkit/backend: GORM + SQLite.
 - Migration owner/tool: `github.com/pressly/goose/v3`, единственный владелец production-схемы; SQL-миграции.
-- Runtime dialect/driver: `gorm.io/driver/sqlite` с `mattn/go-sqlite3`/CGO как исходный выбор. Версии, SQLite engine и compile options подтвердить после фиксации модулей.
-- Goose CLI/library: способ запуска пока не выбран; определить вместе с первым runner, закрепить его версию и проверить фактический SQLite-драйвер миграций.
-- Driver parity: сверять `sqlite_version()`, compile options и используемые возможности runtime/migration connections; равенство движков не предполагается.
-- Migration path: планируемый `migrations/sqlite/`; SQL-файлы с Goose Up и безопасным Down, когда откат применим. Схему нумерации выбрать перед первой миграцией.
-- Execution owner/timing: один контролируемый владелец до готовности API; не запускать конкурентную миграцию из каждого worker/instance.
+- Runtime dialect/driver: `gorm.io/driver/sqlite v1.6.0`, `github.com/mattn/go-sqlite3 v1.14.22`/CGO. Локально на Darwin/arm64 измерен SQLite `3.45.1`; полные compile options доступны через `Store.Diagnostics`. Целевая Linux-среда проверяется отдельно.
+- Goose CLI/library: `github.com/pressly/goose/v3 v3.27.0`, library runner с embedded SQL и `DialectSQLite3`.
+- Driver parity: GORM и Goose используют один underlying CGO `sql.DB`; версия/compile options проверяются на нескольких физических соединениях. Отдельный CLI с другим движком не используется.
+- Migration path: `migrations/sqlite/`, последовательная нумерация с `00001_initial.sql`. Первая схема не поддерживает разрушительный Down; допустимые будущие откаты определяются отдельно.
+- Execution owner/timing: `storage.Open` получает lifetime-блокировку, выполняет миграции и прерывает незавершённые состояния прежнего владельца до возврата. БД закрывается после пользователей; startup API выполняется позднее в composition root.
 - Applied migrations: неизменяемые; исправления — следующими миграциями или отдельно согласованным восстановлением истории.
 - Production backup/recovery: резервная копия перед изменениями, проверяемое восстановление с учётом WAL; разрушительные операции и реальные пользовательские БД требуют явного разрешения.
 - No competing schema owner: GORM `AutoMigrate`/`Migrator` не изменяет runtime/production-схему и не подменяет Goose в тестах.
-- DB location/DSN owner: конфигурация сервиса; планируемые рабочие данные в `/var/lib/gost-restreamer/`, вне Git. Точный путь файла задаётся конфигурацией.
+- DB location/DSN owner: `storage.Open` получает путь файла и явные `storage.Options`; будущая конфигурация сервиса задаст рабочие данные в `/var/lib/gost-restreamer/`, вне Git. Cooperative sidecar lock использует канонический путь; hardlink DB не поддерживается.
 - Foreign keys: `foreign_keys=ON` на каждом соединении, включая миграционное, с проверкой на нескольких соединениях.
-- Busy timeout/pool: конкретные значения и retry policy определить при подключении БД и проверить тестами; не навязывать `MaxOpenConns(1)` без обоснования.
-- Journal: WAL выбран архитектурой; короткие транзакции, одна одновременная запись, корректные checkpoint/backup.
-- Process policy: один Go-сервис с независимыми выходами; координацию записи внутри процесса и возможных других процессов проверить при реализации storage.
+- Busy timeout/pool: конечные бюджеты соединений, lifetime/idle time, busy timeout и retry передаются явно и валидируются; молчаливых численных defaults нет. Повторяется лишь полностью откатившаяся операция БД, с ограничением попыток/срока/контекста; `MaxOpenConns(1)` не навязывается.
+- Journal: WAL, synchronous FULL, private cache; короткие IMMEDIATE write transactions, согласованные DEFERRED reads и один одновременный writer. Эксплуатационные checkpoint/backup проверяются при поставке.
+- Process policy: один lifetime-владелец storage; второй сотрудничающий opener отклоняется до миграций/recovery. Удержания выданных внешних попыток сохраняются до подтверждённого cleanup; file lock сам по себе не доказывает остановку процессов.
 - Integration DB: только временная файловая SQLite; реальные миграции, FK/unique/check, rollback, locks, история версий и сохранение заполненных данных при upgrade.
 
 ## Project Boundaries
 
-Пути и обязанности взяты из архитектуры. В `internal/core` и `internal/media` реализованы общие типы и валидация; остальные перечисленные компоненты пока планируются:
+Пути и обязанности взяты из архитектуры. Реализованы домен/общие типы и storage; API, рабочий медиатракт и composition root ещё планируются:
 
-- `internal/api/`: Huma/Chi, DTO, авторизация, SSE.
+- `internal/api/`: Huma/Chi, DTO, SSE; управляющий API без авторизации и токенов доступа.
 - `internal/core/`: домен, сервисы, repository interfaces; без импортов Huma/GORM/FFmpeg.
 - `internal/storage/`: GORM/SQLite и транзакции.
 - `internal/media/`, `internal/fallback/`, `internal/monitoring/`: медиатракт, варианты заглушек и наблюдение по своим обязанностям.
@@ -301,8 +303,8 @@ Command source of truth: этот профиль задаёт обязатель
 
 ## Dependency Policy
 
-- Existing dependency source of truth: `go.mod` и создаваемый по импортам `go.sum`; пока runtime-зависимостей нет. Выбранные семейства стека перечислены в этом профиле и архитектуре. Dev dependency `golangci-lint` `2.15.0` закреплён отдельно в `Makefile` и не входит в runtime-граф приложения.
-- Одобрены Go, Huma v2/Chi, локальный Otter v2 и GORM/SQLite/Goose. Первые совместимые версии фиксируются при отдельно запрошенной реализации соответствующего кода, с проверкой официальных требований.
+- Existing dependency source of truth: `go.mod` и `go.sum`; закреплены GORM `v1.31.2`, SQLite dialect `v1.6.0`, CGO driver `v1.14.22` и Goose `v3.27.0`. Выбранные семейства остальных слоёв перечислены в этом профиле и архитектуре. Dev dependency `golangci-lint` `2.15.0` закреплён отдельно в `Makefile` и не входит в runtime-граф приложения.
+- Одобрены Go, Huma v2/Chi, локальный Otter v2 и GORM/SQLite/Goose. Первые совместимые версии ещё не подключённых слоёв фиксируются при реализации использующего их кода, с проверкой официальных требований.
 - Остальные новые runtime/dev dependencies и повышение toolchain требуют явного разрешения. Не устанавливать библиотеки, CLI, linters, контейнеры или hooks в рамках настройки инструкций.
 - Наличие active profile не запускает сервисы, миграции, публикацию, трансляции или установку зависимостей.
 

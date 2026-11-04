@@ -4,13 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
 // ErrInvalidQueueLimits обозначает некорректные ограничения очереди.
 var ErrInvalidQueueLimits = errors.New("некорректные ограничения очереди")
 
 // ErrInvalidWatchdogPolicy обозначает некорректные интервалы контроля источника.
-var ErrInvalidWatchdogPolicy = errors.New("некорректные интервалы контроля источника")
+var ErrInvalidWatchdogPolicy = core.ErrInvalidWatchdogPolicy
 
 // QueueLimits задаёт явные бюджеты очереди и ограничение ожидания синхронизации.
 type QueueLimits struct {
@@ -48,27 +50,4 @@ func (l QueueLimits) Validate() error {
 }
 
 // WatchdogPolicy задаёт явные интервалы контроля и восстановления обеих дорожек.
-type WatchdogPolicy struct {
-	VideoTimeout    time.Duration
-	AudioTimeout    time.Duration
-	RecoveryWindow  time.Duration
-	KeyframeTimeout time.Duration
-}
-
-// Validate проверяет положительность интервалов без назначения значений по умолчанию.
-func (p WatchdogPolicy) Validate() error {
-	for _, field := range []struct {
-		name  string
-		value time.Duration
-	}{
-		{"VideoTimeout", p.VideoTimeout},
-		{"AudioTimeout", p.AudioTimeout},
-		{"RecoveryWindow", p.RecoveryWindow},
-		{"KeyframeTimeout", p.KeyframeTimeout},
-	} {
-		if field.value <= 0 {
-			return fmt.Errorf("%w: WatchdogPolicy.%s должен быть положительным", ErrInvalidWatchdogPolicy, field.name)
-		}
-	}
-	return nil
-}
+type WatchdogPolicy = core.WatchdogPolicy
