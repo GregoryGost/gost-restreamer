@@ -5,8 +5,9 @@
 - Project key / workspace: `gost-restreamer`.
 - Project type: Go backend for personal self-hosted restreaming in the owner's local environment; the OBS plugin is a separate project.
 - Primary programming language: Go. SQL is used for Goose migrations.
-- Architecture source: `gost-restreamer-architecture.md`, revision 6.
+- Architecture source: `gost-restreamer-architecture.md`, revision 8.
 - Current repository state: созданы Go-модуль, Makefile, линтер и workflow CI; реализованы общие медиатипы, домен, Repository-интерфейсы, транзакционные операции сессий/команд, GORM/SQLite/Goose и общая runtime authority. Пакеты media содержат Router, raw Enhanced RTMP ingest, fMP4 и FFmpeg Supervisor/UDS; их приёмка относится к T03. Группы/Switcher, Publishers, API и исполняемый сервис ещё не реализованы. Контракты описаны в `docs/media-contracts.md` и `docs/domain-storage-contracts.md`.
+- Статус адаптации к редакции 8: T01–T03 сохраняют результаты прежней приёмки. Открытая T12 адаптирует основу до T04: отделяет оперативные наблюдения от долговечных данных управления и добавляет преобразование FPS по профилю. Сейчас `ObserveOutput` сохраняет наблюдения и события в SQLite, а `BuildNVIDIACommand` требует одинакового FPS входа и выхода; наличие масштабирования в argv не подтверждает приёмку всех новых профилей. Сбор FFmpeg `-progress`, GPU и полных оперативных метрик относится к T07. Целевые требования редакции 8 не считаются уже реализованными.
 - Selected technology families are approved and active now. Go закреплён в `go.mod`, линтер — в `Makefile`; версии runtime-зависимостей и нереализованные настройки подтверждаются при появлении соответствующего кода.
 
 ## Activation Semantics
@@ -201,8 +202,10 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - Event/level/key policy: стабильные имена событий, уровень, время и компонент; `stream_id`, `session_id`, идентификаторы группы/назначения и операции — там, где они применимы. Попытка подключения, reconnect и фактический результат операции учитываются отдельно.
 - Logging data disclosure: только общий раздел Go Application Context And Data Disclosure Policy, режим `full`.
 - Metrics/tracing: предусмотренные архитектурой состояния и счётчики в `internal/monitoring/` и управляющем API. OpenTelemetry API/SDK, tracing, collectors, exporters и sampling не выбраны.
+- Граница оперативных и долговечных данных: текущие наблюдаемые состояния, метрики входа/групп/назначений, FFmpeg/GPU, reconnect и ошибки — в RAM; диагностика — в журнале приложения, оперативные события — в ограниченном потоке SSE. Телеметрия и её агрегаты не сохраняются в SQLite. Долговечными остаются конфигурации, история запусков, жизненный цикл Session и протокол команд/поколений/удержаний/cleanup, включая служебные записи управления и итоговые причины завершения. Текущая реализация приводится к этой границе в T12; счётчики и сборщики реализуются в T07.
 - Metric cardinality: ограниченные измерения по компоненту, типу операции и состоянию; произвольные URL, токены и идентификаторы сессий не используются как неограниченные metric labels.
 - Telemetry ownership: composition root владеет logger и выбранными средствами наблюдения. При появлении требующего flush провайдера использовать отдельный ограниченный контекст завершения и сообщать ошибки; текущий профиль не добавляет такого провайдера.
+- Владение оперативным состоянием: оперативное хранилище имеет явного владельца, конечные бюджеты и завершение вместе с Session/Group/Output. После завершения и рестарта текущие метрики недоступны; REST/SSE не подменяют их сохранённой историей. Точная модель вводится в T12, интегрируется в T06–T09 и не заменяется вытесняемым кэшем Otter.
 - Validation: после появления кода — изолированные `go test` с захватом вывода реального handler; проверка событий, уровней, корреляции, точных `full`-значений и фактических единиц/смысла метрик. Внешний collector для тестов не требуется.
 
 ## Go Security Profile
