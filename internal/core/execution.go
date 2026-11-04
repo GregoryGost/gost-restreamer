@@ -243,17 +243,13 @@ func (s *Service) Complete(ctx context.Context, f ExecutionFence, result Complet
 				return ErrStale
 			}
 			old := o.Revision
-			if result.Success {
-				o.State = OutputPublishing
-			} else {
+			if !result.Success {
 				if err = stopOutput(ctx, r, session, o, false); err != nil {
 					return err
 				}
 				if err = cancelCommands(ctx, r, session.ID, o.ID, c.ID, false); err != nil {
 					return err
 				}
-				o.State = OutputFailed
-				o.Failure = result.Failure
 				if o.CleanupPending && !session.CleanupPending {
 					previous := session.Revision
 					session.CleanupPending = true
@@ -265,31 +261,17 @@ func (s *Service) Complete(ctx context.Context, f ExecutionFence, result Complet
 						return err
 					}
 				}
-			}
-			o.Record, err = revise(o.Record)
-			if err != nil {
-				return err
-			}
-			if err = r.Runtime.UpdateOutput(ctx, *o, old); err != nil {
-				return err
+				o.Record, err = revise(o.Record)
+				if err != nil {
+					return err
+				}
+				if err = r.Runtime.UpdateOutput(ctx, *o, old); err != nil {
+					return err
+				}
 			}
 		case CommandStopOutput, CommandDetachOutput:
 			if o == nil || o.DesiredRunning {
 				return ErrStale
-			}
-			old := o.Revision
-			if result.Success && !o.CleanupPending {
-				o.State = OutputStopped
-			}
-			if !result.Success {
-				o.Failure = result.Failure
-			}
-			o.Record, err = revise(o.Record)
-			if err != nil {
-				return err
-			}
-			if err = r.Runtime.UpdateOutput(ctx, *o, old); err != nil {
-				return err
 			}
 		case CommandPauseSession, CommandResumeSession:
 			if session.State != SessionRunning {
@@ -372,7 +354,6 @@ func (s *Service) AcknowledgeCleanup(ctx context.Context, f CleanupFence) error 
 			old = o.Revision
 			o.CleanupPending = false
 			o.Issued = false
-			o.State = OutputStopped
 			o.Record, err = revise(o.Record)
 			if err != nil {
 				return err
@@ -438,22 +419,6 @@ func (s *Service) Recover(ctx context.Context) error {
 				old := session.Revision
 				if err = stopSession(ctx, r, &session); err != nil {
 					return err
-				}
-				outputs, err := allOutputs(ctx, r, session.ID)
-				if err != nil {
-					return err
-				}
-				for _, o := range outputs {
-					oldOutput := o.Revision
-					o.State = OutputStopped
-					o.Failure = "Потерян владелец исполнения"
-					o.Record, err = revise(o.Record)
-					if err != nil {
-						return err
-					}
-					if err = r.Runtime.UpdateOutput(ctx, o, oldOutput); err != nil {
-						return err
-					}
 				}
 				session.State = SessionInterrupted
 				session.Failure = "Потерян владелец исполнения"
@@ -591,51 +556,4 @@ func settleSessionStops(ctx context.Context, r Repositories, sessionID, exclude 
 		last := commands[len(commands)-1]
 		q.After = &ListBoundary{last.CreatedAt, last.ID}
 	}
-}
-
-// ObserveOutput принимает последующее наблюдение только для действующей попытки
-// выхода; изменение соседнего выхода и ручная пауза этот допуск не отзывают.
-func (s *Service) ObserveOutput(ctx context.Context, f ExecutionFence, state OutputState, failure string) error {
-	return s.uow.Write(ctx, func(r Repositories) error {
-		c, session, o, err := s.fenced(ctx, r, f)
-		if err != nil {
-			return err
-		}
-		if o == nil || o.Attempt != f.Attempt || !o.Attached || !o.DesiredRunning || !o.Issued || session.State != SessionRunning || c.Status != CommandSucceeded {
-			return ErrStale
-		}
-		if !CanTransitionOutput(o.State, state) || state == OutputStopped {
-			return ErrConflict
-		}
-		old := o.Revision
-		if state == OutputFailed {
-			if failure == "" {
-				return ErrInvalid
-			}
-			if err = stopOutput(ctx, r, session, o, false); err != nil {
-				return err
-			}
-			if o.CleanupPending && !session.CleanupPending {
-				previous := session.Revision
-				session.CleanupPending = true
-				session.Record, err = revise(session.Record)
-				if err != nil {
-					return err
-				}
-				if err = r.Runtime.UpdateSession(ctx, session, previous); err != nil {
-					return err
-				}
-			}
-		}
-		o.State = state
-		o.Failure = failure
-		o.Record, err = revise(o.Record)
-		if err != nil {
-			return err
-		}
-		if err = r.Runtime.UpdateOutput(ctx, *o, old); err != nil {
-			return err
-		}
-		return insertEvent(ctx, r, session.ID, o.ID, "output_observed", "Обновлено наблюдаемое состояние выхода")
-	})
 }

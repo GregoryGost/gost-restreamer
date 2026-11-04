@@ -226,6 +226,9 @@ func (s *Service) GetOutput(ctx context.Context, id ID) (SessionOutput, error) {
 	return result, err
 }
 func (s *Service) ListOutputs(ctx context.Context, request PageRequest) (Page[SessionOutput], error) {
+	if request.Query.State != "" {
+		return Page[SessionOutput]{}, ErrInvalid
+	}
 	return readPage(ctx, s, "outputs", request, func(r Repositories, q ListQuery) ([]SessionOutput, error) { return r.Runtime.Outputs(ctx, q) }, func(value SessionOutput) ListBoundary { return ListBoundary{value.CreatedAt, value.ID} })
 }
 

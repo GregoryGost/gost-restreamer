@@ -112,6 +112,9 @@ func (s OutputSnapshot) Validate() error {
 	return nil
 }
 func (s Session) Validate() error {
+	if s.Failure != "" && !s.State.Terminal() {
+		return ErrInvalid
+	}
 	if err := s.Record.Validate(); err != nil {
 		return err
 	}
@@ -139,9 +142,6 @@ func (o SessionOutput) Validate() error {
 		return err
 	}
 	if err := o.SessionID.Validate(); err != nil {
-		return err
-	}
-	if err := o.State.Validate(); err != nil {
 		return err
 	}
 	if o.Generation == 0 || (!o.Attached && o.DesiredRunning) {
@@ -193,6 +193,18 @@ func (c CommandReceipt) Validate() error {
 	return nil
 }
 func (e Event) Validate() error {
+	if e.Kind == "output_execution_failed" {
+		if e.Execution == nil || e.OutputID == "" || e.Execution.SessionID != e.SessionID || e.Execution.OutputID != e.OutputID || e.Execution.Validate() != nil {
+			return ErrInvalid
+		}
+	} else if e.Execution != nil {
+		return ErrInvalid
+	}
+	if e.OutputID != "" {
+		if err := e.OutputID.Validate(); err != nil {
+			return err
+		}
+	}
 	if err := e.ID.Validate(); err != nil {
 		return err
 	}
@@ -313,6 +325,31 @@ func (f SourceFormat) Validate() error {
 		if err := validText("SourceFormat.Audio.Codec", string(f.Audio.Codec)); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (f ExecutionFence) Validate() error {
+	for _, id := range []ID{f.CommandID, f.SessionID} {
+		if err := id.Validate(); err != nil {
+			return err
+		}
+	}
+	if err := validText("ExecutionFence.Incarnation", f.Incarnation); err != nil {
+		return err
+	}
+	if f.Lifecycle == 0 || f.Attempt == 0 {
+		return ErrInvalid
+	}
+	if f.OutputID != "" {
+		if err := f.OutputID.Validate(); err != nil {
+			return err
+		}
+		if f.OutputGeneration == 0 {
+			return ErrInvalid
+		}
+	} else if f.OutputGeneration != 0 {
+		return ErrInvalid
 	}
 	return nil
 }

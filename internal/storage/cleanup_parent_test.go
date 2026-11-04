@@ -173,6 +173,7 @@ func TestDetachUnissuedPublisherCleansOnlyItsGroupUnderLiveIssuedParent(t *testi
 				}
 			}
 			neighborFence := executeCommand(t, f.service, outputStartReceipt(t, f, neighbor.ID).RequestID)
+			neighborObserver := openOutputObserver(t, f.service, neighborFence)
 			neighbor, err = f.service.GetOutput(ctx, neighbor.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -249,7 +250,7 @@ func TestDetachUnissuedPublisherCleansOnlyItsGroupUnderLiveIssuedParent(t *testi
 				t.Fatal(err)
 			}
 			requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
-			if err := f.service.ObserveOutput(ctx, neighborFence, core.OutputRetrying, "Временный отказ сети"); err != nil {
+			if err := neighborObserver.Observe(ctx, core.OutputObservation{State: core.OutputRetrying, Error: "Временный отказ сети"}); err != nil {
 				t.Fatalf("очистка группы отозвала допуск здорового соседа: %v", err)
 			}
 		})

@@ -24,18 +24,24 @@ type RuntimeSessionFence struct {
 // RuntimeAuthority упорядочивает записи БД, установку источников и допуск действий.
 // Экземпляр принадлежит UnitOfWork, а не отдельному Service.
 type RuntimeAuthority struct {
-	gate         chan struct{}
-	incarnation  string
-	closed       bool
-	leases       map[ID]*RuntimeLease
-	publications map[ID]*RuntimeLease
+	gate            chan struct{}
+	incarnation     string
+	closed          bool
+	leases          map[ID]*RuntimeLease
+	publications    map[ID]*RuntimeLease
+	limits          ObservationLimits
+	observations    map[uint64]*observationNode
+	nextObservation uint64
 }
 
-func NewRuntimeAuthority(incarnation string) (*RuntimeAuthority, error) {
+func NewRuntimeAuthority(incarnation string, limits ObservationLimits) (*RuntimeAuthority, error) {
 	if err := validText("incarnation", incarnation); err != nil {
 		return nil, err
 	}
-	a := &RuntimeAuthority{gate: make(chan struct{}, 1), incarnation: incarnation, leases: make(map[ID]*RuntimeLease), publications: make(map[ID]*RuntimeLease)}
+	if err := limits.Validate(); err != nil {
+		return nil, err
+	}
+	a := &RuntimeAuthority{limits: limits, observations: make(map[uint64]*observationNode), gate: make(chan struct{}, 1), incarnation: incarnation, leases: make(map[ID]*RuntimeLease), publications: make(map[ID]*RuntimeLease)}
 	a.gate <- struct{}{}
 	return a, nil
 }
@@ -89,6 +95,7 @@ func (a *RuntimeAuthority) reconcile(ctx context.Context, uow UnitOfWork) {
 		return
 	}
 	invalid := make([]*RuntimeLease, 0)
+	invalidObservations := make([]*observationNode, 0)
 	err := uow.View(ctx, func(r Repositories) error {
 		for _, lease := range a.leases {
 			if err := lease.authorized(ctx, r); err != nil {
@@ -96,6 +103,17 @@ func (a *RuntimeAuthority) reconcile(ctx context.Context, uow UnitOfWork) {
 					return err
 				}
 				invalid = append(invalid, lease)
+			}
+		}
+		for _, node := range a.observations {
+			if node.kind != observationOutput {
+				continue
+			}
+			c, err := r.Runtime.ReceiptByID(ctx, node.execution.CommandID)
+			if errors.Is(err, ErrNotFound) || err == nil && c.Status != CommandSucceeded {
+				invalidObservations = append(invalidObservations, node)
+			} else if err != nil {
+				return err
 			}
 		}
 		return nil
@@ -106,6 +124,9 @@ func (a *RuntimeAuthority) reconcile(ctx context.Context, uow UnitOfWork) {
 			a.revoke(lease)
 		}
 		return
+	}
+	for _, node := range invalidObservations {
+		a.removeObservation(node)
 	}
 	for _, lease := range invalid {
 		a.revoke(lease)
@@ -171,6 +192,11 @@ func (l *RuntimeLease) Revoke(ctx context.Context) error {
 func (a *RuntimeAuthority) revoke(l *RuntimeLease) {
 	if !l.valid.Swap(false) {
 		return
+	}
+	for _, n := range a.observations {
+		if n.lease == l {
+			a.removeObservation(n)
+		}
 	}
 	delete(a.leases, l.id)
 	if a.publications[l.streamID] == l {

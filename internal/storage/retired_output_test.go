@@ -158,18 +158,19 @@ func TestRetiredOutputControlsRejectNewRequestsAndPreserveReplay(t *testing.T) {
 			executeCommand(t, f.service, fresh.RequestID)
 			freshOutput := readOutputs(t, f.store, fresh.SessionID)[0]
 			fence := executeCommand(t, f.service, outputStartReceipt(t, f, freshOutput.ID).RequestID)
+			observer := openOutputObserver(t, f.service, fence)
 			healthy := readRetiredRuntime(t, f, fresh.SessionID)
-			if healthy.session.State != core.SessionRunning || healthy.outputs[0].State != core.OutputPublishing {
-				t.Fatal("новый запуск не достиг RUNNING и PUBLISHING")
+			if healthy.session.State != core.SessionRunning || !healthy.outputs[0].Issued || !healthy.outputs[0].DesiredRunning {
+				t.Fatal("новый запуск не сохранил RUNNING и issuance")
 			}
 			rejectNew("old-target-under-new-session")
 			if after := readRetiredRuntime(t, f, fresh.SessionID); !reflect.DeepEqual(healthy, after) {
 				t.Error("управление старым выходом изменило здоровый новый запуск")
 			}
-			if err := f.service.ObserveOutput(ctx, fence, core.OutputRetrying, "Временный отказ сети"); err != nil {
+			if err := observer.Observe(ctx, core.OutputObservation{State: core.OutputRetrying, Error: "Временный отказ сети"}); err != nil {
 				t.Fatalf("старый выход отозвал допуск нового publisher: %v", err)
 			}
-			if err := f.service.ObserveOutput(ctx, fence, core.OutputPublishing, ""); err != nil {
+			if err := observer.Observe(ctx, core.OutputObservation{State: core.OutputPublishing, Error: ""}); err != nil {
 				t.Fatal(err)
 			}
 		})

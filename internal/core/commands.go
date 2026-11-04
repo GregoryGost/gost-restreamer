@@ -184,7 +184,7 @@ func newOutput(ctx context.Context, r Repositories, session Session, d Destinati
 	if err != nil {
 		return SessionOutput{}, err
 	}
-	return SessionOutput{Record: record, SessionID: session.ID, Snapshot: OutputSnapshot{Destination: d, Group: g, Profile: p, Fallback: session.Snapshot.Stream.Fallback, Artifact: manifest}, State: OutputConnecting, DesiredRunning: true, Attached: true, Generation: 1}, nil
+	return SessionOutput{Record: record, SessionID: session.ID, Snapshot: OutputSnapshot{Destination: d, Group: g, Profile: p, Fallback: session.Snapshot.Stream.Fallback, Artifact: manifest}, DesiredRunning: true, Attached: true, Generation: 1}, nil
 }
 func insertOutput(ctx context.Context, r Repositories, session Session, o SessionOutput) error {
 	if err := r.Runtime.InsertOutput(ctx, o); err != nil {
@@ -487,8 +487,6 @@ func (s *Service) outputCommand(ctx context.Context, request OutputCommand, kind
 				return err
 			}
 			o.DesiredRunning = true
-			o.State = OutputConnecting
-			o.Failure = ""
 		} else {
 			// Новая команда не может управлять ресурсами прежнего владельца исполнения.
 			if session.Incarnation != s.incarnation {
@@ -570,9 +568,6 @@ func stopOutput(ctx context.Context, r Repositories, session Session, o *Session
 		o.Generation = next
 	}
 	o.DesiredRunning = false
-	if !o.Issued {
-		o.State = OutputStopped
-	}
 	return nil
 }
 func stopSession(ctx context.Context, r Repositories, session *Session) error {

@@ -69,7 +69,7 @@ func TestRestartInterruptsUnissuedWorkWithoutReplay(t *testing.T) {
 		t.Fatalf("pending-команда не прервана: %+v", c)
 	}
 	for _, o := range readOutputs(t, f.store, s.ID) {
-		if o.State != core.OutputStopped || o.DesiredRunning {
+		if o.Issued || o.CleanupPending || o.DesiredRunning {
 			t.Fatalf("restart повторил выход: %+v", o)
 		}
 	}
@@ -209,7 +209,7 @@ func TestStoppedAttachedOutputRestartsSavedSnapshotAndDetachReleasesOnlyOwnHold(
 	}
 	executeCommand(t, f.service, restart.RequestID)
 	current := readOutputs(t, f.store, start.SessionID)
-	if !reflect.DeepEqual(first.Snapshot, current[0].Snapshot) || current[0].State != core.OutputPublishing {
+	if !reflect.DeepEqual(first.Snapshot, current[0].Snapshot) || !current[0].Issued || !current[0].DesiredRunning {
 		t.Fatalf("повторный start применил новую конфигурацию: %+v", current[0])
 	}
 	if _, err := f.service.DetachOutput(ctx, core.OutputCommand{RequestID: "detach-issued-output", OutputID: first.ID}); err != nil {
@@ -229,7 +229,7 @@ func TestStoppedAttachedOutputRestartsSavedSnapshotAndDetachReleasesOnlyOwnHold(
 	_, err = f.service.StartOutput(ctx, core.OutputCommand{RequestID: "restart-detached", OutputID: first.ID})
 	requireDomainError(t, err, core.ErrConflict)
 	current = readOutputs(t, f.store, start.SessionID)
-	if current[0].Attached || current[0].CleanupPending || current[0].State != core.OutputStopped {
+	if current[0].Attached || current[0].CleanupPending || current[0].Issued || current[0].DesiredRunning {
 		t.Fatalf("detached output не завершён: %+v", current[0])
 	}
 	if !reflect.DeepEqual(outputs[1], current[1]) {

@@ -16,7 +16,7 @@ var listColumns = map[string]map[string]bool{
 	"fallback_assets":   {"state": true, "incarnation": true},
 	"fallback_variants": {"asset_id": true, "state": true, "incarnation": true},
 	"sessions":          {"stream_id": true, "state": true, "incarnation": true},
-	"outputs":           {"session_id": true, "state": true},
+	"outputs":           {"session_id": true},
 	"command_receipts":  {"session_id": true, "output_id": true, "state": true, "incarnation": true},
 	"cleanup_intents":   {"stream_id": true, "session_id": true, "output_id": true, "incarnation": true},
 	"events":            {"session_id": true, "output_id": true},

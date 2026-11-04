@@ -58,7 +58,7 @@ func TestRuntimeAdmissionExplicitlyRequiresSharedCapability(t *testing.T) {
 
 func TestRuntimeReconciliationFailsClosedWithoutReplacingWriteOutcome(t *testing.T) {
 	for _, operationErr := range []error{nil, errors.New("неоднозначный результат записи")} {
-		authority, err := NewRuntimeAuthority("owner")
+		authority, err := NewRuntimeAuthority("owner", ObservationLimits{MaxSessions: 4, MaxGroups: 8, MaxOutputs: 8, MaxFFmpegWorkers: 8, MaxIdentifierBytes: 1024, MaxErrorBytes: 4096, MaxBytes: 65536})
 		if err != nil {
 			t.Fatal(err)
 		}

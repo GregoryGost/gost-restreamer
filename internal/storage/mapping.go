@@ -123,10 +123,10 @@ func normalize(value any) (any, error) {
 			}
 			v.EndedAt = &t
 		}
-		return v, nil
+		return v, v.Validate()
 	case core.SessionOutput:
 		v.Record = record
-		return v, nil
+		return v, v.Validate()
 	case core.CommandReceipt:
 		v.Record = record
 		return v, nil
@@ -140,7 +140,7 @@ func normalize(value any) (any, error) {
 		return v, nil
 	case core.Event:
 		v.CreatedAt = record.CreatedAt
-		return v, nil
+		return v, v.Validate()
 	}
 	return nil, core.ErrInvalid
 }
@@ -186,7 +186,6 @@ func fields(value any) (map[string]any, error) {
 		f["cleanup_pending"] = v.CleanupPending
 	case core.SessionOutput:
 		f["session_id"] = v.SessionID
-		f["state"] = v.State
 		f["generation"] = decimal(v.Generation)
 		f["attempt"] = decimal(v.Attempt)
 		f["issued"] = v.Issued

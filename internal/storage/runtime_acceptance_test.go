@@ -138,6 +138,9 @@ func TestAcceptancePersistedCleanupWaitsForSupervisorJoinProof(t *testing.T) {
 	}
 	select {
 	case <-entered:
+	case <-s.Done():
+		result, err := s.Wait(context.Background())
+		t.Fatalf("worker завершился до builder: %+v, %v", result, err)
 	case <-time.After(time.Second):
 		t.Fatal("зарегистрированный builder не начался")
 	}
@@ -227,7 +230,8 @@ func TestAcceptanceOutputFailureRevokesOnlyItsOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := other.ObserveOutput(ctx, fences[0], core.OutputFailed, "синтетический отказ"); err != nil {
+	observers := []*core.OutputObserver{openOutputObserver(t, other, fences[0]), openOutputObserver(t, other, fences[1])}
+	if err := other.FailOutput(ctx, observers[0], "синтетический отказ"); err != nil {
 		t.Fatal(err)
 	}
 	if owners[0].Valid() || !owners[1].Valid() || !parent.Valid() || !publication.Valid() {
@@ -236,7 +240,7 @@ func TestAcceptanceOutputFailureRevokesOnlyItsOwner(t *testing.T) {
 	if len(pendingCleanups(t, f.store, start.SessionID)) != 1 {
 		t.Fatal("после отказа выданной попытки требуется одно сохранённое обязательство очистки")
 	}
-	if err := other.ObserveOutput(ctx, fences[1], core.OutputRetrying, "повтор соединения"); err != nil {
+	if err := observers[1].Observe(ctx, core.OutputObservation{State: core.OutputRetrying, Error: "повтор соединения"}); err != nil {
 		t.Fatal(err)
 	}
 	if !owners[1].Valid() || !parent.Valid() || !publication.Valid() {

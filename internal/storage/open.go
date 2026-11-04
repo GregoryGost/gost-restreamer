@@ -28,19 +28,23 @@ import (
 	sqlitemigrations "github.com/GregoryGost/gost-restreamer/migrations/sqlite"
 )
 
-// Options задаёт явные конечные бюджеты соединений и повторов записи.
+// Options задаёт явные конечные бюджеты соединений, повторов записи и RAM-наблюдений.
 type Options struct {
-	MaxOpenConns    int
-	MaxIdleConns    int
-	ConnMaxLifetime time.Duration
-	ConnMaxIdleTime time.Duration
-	BusyTimeout     time.Duration
-	RetryAttempts   int
-	RetryTimeout    time.Duration
-	RetryDelay      time.Duration
+	ObservationLimits core.ObservationLimits
+	MaxOpenConns      int
+	MaxIdleConns      int
+	ConnMaxLifetime   time.Duration
+	ConnMaxIdleTime   time.Duration
+	BusyTimeout       time.Duration
+	RetryAttempts     int
+	RetryTimeout      time.Duration
+	RetryDelay        time.Duration
 }
 
 func (o Options) validate() error {
+	if err := o.ObservationLimits.Validate(); err != nil {
+		return err
+	}
 	if o.MaxOpenConns <= 0 || o.MaxIdleConns < 0 || o.MaxIdleConns > o.MaxOpenConns ||
 		o.ConnMaxLifetime <= 0 || o.ConnMaxIdleTime <= 0 || o.BusyTimeout < time.Millisecond ||
 		o.BusyTimeout%time.Millisecond != 0 || o.BusyTimeout/time.Millisecond > math.MaxInt32 ||
@@ -87,7 +91,7 @@ func Open(ctx context.Context, path string, options Options) (_ *Store, retErr e
 		return nil, fmt.Errorf("создать идентификатор владельца: %w", err)
 	}
 	s.incarnation = hex.EncodeToString(token[:])
-	s.authority, err = core.NewRuntimeAuthority(s.incarnation)
+	s.authority, err = core.NewRuntimeAuthority(s.incarnation, options.ObservationLimits)
 	if err != nil {
 		return nil, err
 	}
@@ -114,6 +118,9 @@ func Open(ctx context.Context, path string, options Options) (_ *Store, retErr e
 		return nil, fmt.Errorf("создать исполнитель миграций: %w", err)
 	}
 	if err = s.Migrate(ctx); err != nil {
+		return nil, err
+	}
+	if err = s.checkStorageFormat(ctx); err != nil {
 		return nil, err
 	}
 	service, err := core.NewService(s, s.incarnation)
@@ -264,4 +271,18 @@ func (s *Store) Diagnostics(ctx context.Context) (_ Diagnostics, retErr error) {
 	}
 	d.SchemaVersion, err = s.provider.GetDBVersion(ctx)
 	return d, err
+}
+
+// ErrIncompatibleFormat обозначает БД с неподдерживаемым форматом управления.
+var ErrIncompatibleFormat = errors.New("несовместимый формат хранилища")
+
+func (s *Store) checkStorageFormat(ctx context.Context) error {
+	var count, singleton, version int64
+	if err := s.sqlDB.QueryRowContext(ctx, "SELECT count(*), coalesce(min(singleton),0), coalesce(min(version),0) FROM storage_format").Scan(&count, &singleton, &version); err != nil {
+		return fmt.Errorf("%w: требуется первичная инициализация поддерживаемого формата: %w", ErrIncompatibleFormat, err)
+	}
+	if count != 1 || singleton != 1 || version != 1 {
+		return fmt.Errorf("%w: неизвестный маркер формата", ErrIncompatibleFormat)
+	}
+	return nil
 }

@@ -387,17 +387,16 @@ type SessionOutput struct {
 	Record
 	SessionID      ID
 	Snapshot       OutputSnapshot
-	State          OutputState
 	DesiredRunning bool
 	Attached       bool
 	Generation     uint64
 	Attempt        uint64
 	Issued         bool
 	CleanupPending bool
-	Failure        string
 }
 
 type Event struct {
+	Execution *ExecutionFence `json:",omitempty"`
 	ID        ID
 	SessionID ID
 	OutputID  ID

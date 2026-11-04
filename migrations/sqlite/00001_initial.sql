@@ -1,5 +1,8 @@
 -- +goose Up
 
+CREATE TABLE storage_format (singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL);
+INSERT INTO storage_format(singleton,version) VALUES(1,1);
+
 CREATE TABLE fallback_assets (
     id TEXT PRIMARY KEY NOT NULL CHECK(length(id)>0),
     revision TEXT COLLATE BINARY NOT NULL CHECK(length(revision)=20 AND revision NOT GLOB '*[^0-9]*' AND revision<='18446744073709551615'),
@@ -95,7 +98,6 @@ CREATE TABLE outputs (
     updated_at INTEGER NOT NULL,
     payload BLOB NOT NULL,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
-    state TEXT NOT NULL CHECK(state IN ('CONNECTING','PUBLISHING','RETRYING','FAILED','STOPPED')),
     generation TEXT COLLATE BINARY NOT NULL CHECK(length(generation)=20 AND generation NOT GLOB '*[^0-9]*' AND generation<='18446744073709551615'),
     attempt TEXT COLLATE BINARY NOT NULL CHECK(length(attempt)=20 AND attempt NOT GLOB '*[^0-9]*' AND attempt<='18446744073709551615'),
     issued INTEGER NOT NULL CHECK(issued IN (0,1)),
@@ -225,8 +227,6 @@ CREATE INDEX sessions_stream_id_created ON sessions(stream_id,created_at,id);
 CREATE INDEX sessions_stream_id_state_created ON sessions(stream_id,state,created_at,id);
 
 CREATE INDEX outputs_session_id_created ON outputs(session_id,created_at,id);
-
-CREATE INDEX outputs_session_id_state_created ON outputs(session_id,state,created_at,id);
 
 CREATE INDEX events_session_id_created ON events(session_id,created_at,id);
 

@@ -209,3 +209,18 @@ var _ core.RuntimeAuthorityProvider = (*Store)(nil)
 var _ core.ConfigRepository = (*repositories)(nil)
 var _ core.RuntimeRepository = (*repositories)(nil)
 var _ core.ArtifactRepository = (*repositories)(nil)
+
+// WriteOwned проверяет точный token под тем же допуском, что и запись БД.
+func (s *Store) WriteOwned(ctx context.Context, owner *core.OutputObserver, callback func(core.Repositories) error) error {
+	if s.closed.Load() {
+		return core.ErrClosed
+	}
+	if callback == nil {
+		return core.ErrInvalid
+	}
+	budget, cancel := context.WithTimeout(ctx, s.options.RetryTimeout)
+	defer cancel()
+	return s.authority.GuardOwnedWrite(budget, s, owner, func() (bool, error) { return s.writeWithBudget(budget, callback) })
+}
+
+var _ core.RuntimeOwnedUnitOfWork = (*Store)(nil)

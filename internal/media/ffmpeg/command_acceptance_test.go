@@ -16,7 +16,7 @@ func TestAcceptanceNVIDIAArgumentsBindDecoderAndEncoderOnCorrectSides(t *testing
 	output := input
 	output.Video.Codec = core.CodecH264
 	output.Video.CodecProfile = "high"
-	cfg := ffmpeg.NVIDIAConfig{Binary: "/usr/bin/ffmpeg", Input: input, Profile: core.GroupProfile{Mode: core.ModeTranscode, Format: output, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 3000000, MaxBitrateBPS: 4000000, BufferBits: 6000000, GOPFrames: 50, MaxBFrames: 2, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 128000}}, VideoTimeBase: media.TimeBase{Numerator: 1, Denominator: 1000}}
+	cfg := ffmpeg.NVIDIAConfig{Binary: "/usr/bin/ffmpeg", Input: input, Profile: core.GroupProfile{Mode: core.ModeTranscode, Format: output, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 3000000, MaxBitrateBPS: 4000000, BufferBits: 6000000, GOPFrames: 50, MaxBFrames: 2, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 128000}}, VideoTimeBase: media.TimeBase{Numerator: 1, Denominator: 1000}, AudioTimeBase: media.TimeBase{Numerator: 1, Denominator: 44100}}
 	inputPath, outputPath := "/private/tmp/input literal;$(x)", "/private/tmp/output literal;$(x)"
 	cmd, err := ffmpeg.BuildNVIDIACommand(cfg, ffmpeg.Attempt{ID: 1, InputPath: inputPath, OutputPath: outputPath})
 	if err != nil {

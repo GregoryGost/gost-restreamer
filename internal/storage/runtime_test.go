@@ -152,7 +152,7 @@ func TestConcurrentStartsAcceptExactlyOneAtomicSession(t *testing.T) {
 			t.Fatalf("атомарный запуск сохранил %d выходов", len(outputs))
 		}
 		for _, o := range outputs {
-			if o.State != core.OutputConnecting || !o.DesiredRunning {
+			if o.Issued || o.Attempt != 0 || !o.DesiredRunning {
 				t.Fatalf("принятие start выдало исполнение за результат: %+v", o)
 			}
 		}
@@ -294,10 +294,10 @@ func TestOutputCompletionSurvivesPauseAndNeighborStop(t *testing.T) {
 		t.Fatalf("соседняя команда или пауза аннулировала здоровый callback: %v", err)
 	}
 	current := readOutputs(t, f.store, start.SessionID)
-	if !current[0].CleanupPending || current[0].DesiredRunning || current[0].State == core.OutputStopped {
+	if !current[0].CleanupPending || current[0].DesiredRunning || !current[0].Issued {
 		t.Fatalf("принятие stop выдало неподтверждённую очистку за STOPPED: %+v", current[0])
 	}
-	if current[1].ID != outputs[1].ID || current[1].State != core.OutputPublishing || current[1].Generation != outputs[1].Generation {
+	if current[1].ID != outputs[1].ID || !current[1].Issued || !current[1].DesiredRunning || current[1].Generation != outputs[1].Generation {
 		t.Fatalf("здоровый выход изменён: %+v", current[1])
 	}
 	session := readSession(t, f.store, start.SessionID)
@@ -317,23 +317,25 @@ func TestRuntimeOutputFailureAndRetryLeaveHealthyNeighborRunning(t *testing.T) {
 		c := outputStartReceipt(t, f, o.ID)
 		fences[i] = executeCommand(t, f.service, c.RequestID)
 	}
-	if err := f.service.ObserveOutput(ctx, fences[0], core.OutputRetrying, "временная ошибка сети"); err != nil {
+	observers := []*core.OutputObserver{openOutputObserver(t, f.service, fences[0]), openOutputObserver(t, f.service, fences[1])}
+	if err := observers[0].Observe(ctx, core.OutputObservation{State: core.OutputRetrying, Error: "временная ошибка сети"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := readOutputs(t, f.store, start.SessionID); got[0].State != core.OutputRetrying || got[1].State != core.OutputPublishing {
-		t.Fatalf("retry затронул соседний выход: %+v", got)
+	snapshot, err := f.service.RuntimeSnapshot(ctx, core.RuntimeSessionFence{SessionID: start.SessionID, Incarnation: fences[0].Incarnation, Lifecycle: fences[0].Lifecycle})
+	if err != nil || len(snapshot.Outputs) != 2 || snapshot.Outputs[0].Value == nil || snapshot.Outputs[0].Value.State != core.OutputRetrying || snapshot.Outputs[1].Value != nil {
+		t.Fatalf("retry изменил наблюдения соседа: %+v, %v", snapshot, err)
 	}
-	if err := f.service.ObserveOutput(ctx, fences[0], core.OutputPublishing, ""); err != nil {
+	if err := observers[0].Observe(ctx, core.OutputObservation{State: core.OutputPublishing, Error: ""}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.ObserveOutput(ctx, fences[0], core.OutputFailed, "окончательный отказ назначения"); err != nil {
+	if err := f.service.FailOutput(ctx, observers[0], "окончательный отказ назначения"); err != nil {
 		t.Fatal(err)
 	}
-	requireDomainError(t, f.service.ObserveOutput(ctx, fences[0], core.OutputPublishing, ""), core.ErrStale)
-	if err := f.service.ObserveOutput(ctx, fences[1], core.OutputRetrying, "временный отказ соседа"); err != nil {
+	requireDomainError(t, observers[0].Observe(ctx, core.OutputObservation{State: core.OutputPublishing, Error: ""}), core.ErrStale)
+	if err := observers[1].Observe(ctx, core.OutputObservation{State: core.OutputRetrying, Error: "временный отказ соседа"}); err != nil {
 		t.Fatalf("отказ первого выхода аннулировал callback второго: %v", err)
 	}
-	if err := f.service.ObserveOutput(ctx, fences[1], core.OutputPublishing, ""); err != nil {
+	if err := observers[1].Observe(ctx, core.OutputObservation{State: core.OutputPublishing, Error: ""}); err != nil {
 		t.Fatal(err)
 	}
 	if session := readSession(t, f.store, start.SessionID); session.State != core.SessionRunning {
@@ -389,6 +391,7 @@ func TestAddOutputUsesSessionPolicyAndPreservesNeighborAndReceipt(t *testing.T) 
 	neighbor := readOutputs(t, f.store, start.SessionID)[0]
 	neighborCommand := outputStartReceipt(t, f, neighbor.ID)
 	neighborFence := executeCommand(t, f.service, neighborCommand.RequestID)
+	neighborObserver := openOutputObserver(t, f.service, neighborFence)
 	a, err := f.service.ReserveAsset(ctx, core.FallbackAsset{Name: "Следующий оригинал", Kind: core.AssetImage, OriginalPath: "originals/next.png"})
 	if err != nil {
 		t.Fatal(err)
@@ -431,10 +434,10 @@ func TestAddOutputUsesSessionPolicyAndPreservesNeighborAndReceipt(t *testing.T) 
 	if added.Snapshot.Fallback.AssetID != f.asset.ID || added.Snapshot.Artifact.VariantID != f.variant.ID || added.Snapshot.Destination.StreamKey != "new-synthetic-destination-key" {
 		t.Fatalf("новый выход потерял точный принятый снимок: %+v", added.Snapshot)
 	}
-	if err := f.service.ObserveOutput(ctx, neighborFence, core.OutputRetrying, "временный отказ"); err != nil {
+	if err := neighborObserver.Observe(ctx, core.OutputObservation{State: core.OutputRetrying, Error: "временный отказ"}); err != nil {
 		t.Fatalf("AddOutput аннулировал соседний fence: %v", err)
 	}
-	if err := f.service.ObserveOutput(ctx, neighborFence, core.OutputPublishing, ""); err != nil {
+	if err := neighborObserver.Observe(ctx, core.OutputObservation{State: core.OutputPublishing, Error: ""}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -521,4 +524,13 @@ func TestFailedUnissuedStartupReleasesHoldsAndCancelsIntents(t *testing.T) {
 	if err := f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision); err != nil {
 		t.Fatalf("невыданный отказ оставил pin: %v", err)
 	}
+}
+
+func openOutputObserver(t *testing.T, service *core.Service, fence core.ExecutionFence) *core.OutputObserver {
+	t.Helper()
+	observer, err := service.OpenOutputObserver(context.Background(), fence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return observer
 }

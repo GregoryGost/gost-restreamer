@@ -12,13 +12,14 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/media/fmp4"
 )
 
-// NVIDIAConfig задаёт наблюдаемый вход, выходной профиль и точную шкалу видео.
-// Цвет и FPS сохраняются: преобразование HDR/частоты кадров этим портом не обещается.
+// NVIDIAConfig задаёт наблюдаемый вход, выходной профиль и фактические шкалы обеих дорожек.
+// FPS и размеры преобразуются по профилю; преобразование HDR не поддерживается.
 type NVIDIAConfig struct {
 	Binary        string
 	Input         core.MediaFormat
 	Profile       core.GroupProfile
 	VideoTimeBase media.TimeBase
+	AudioTimeBase media.TimeBase
 }
 
 // BuildNVIDIACommand строит отдельные argv для AV1 NVDEC → H.264 NVENC/AAC.
@@ -27,7 +28,7 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 	invalid := func(detail string) (Command, error) {
 		return Command{}, fmt.Errorf("%w: %s", ErrInvalidSupervisor, detail)
 	}
-	if c.Input.Validate() != nil || c.Profile.Validate() != nil || c.VideoTimeBase.Validate() != nil {
+	if c.Input.Validate() != nil || c.Profile.Validate() != nil || c.VideoTimeBase.Validate() != nil || c.AudioTimeBase.Validate() != nil {
 		return invalid("неполный медиапрофиль")
 	}
 	p := c.Profile
@@ -41,8 +42,8 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 	if v.PixelFormat != "yuv420p" || v.BitDepth != 8 || v.Width%2 != 0 || v.Height%2 != 0 || v.Width > math.MaxInt32 || v.Height > math.MaxInt32 {
 		return invalid("поддержан только чётный H.264 yuv420p 8-bit")
 	}
-	if c.Input.Video.PixelFormat != "yuv420p" || c.Input.Video.BitDepth != 8 || c.Input.Video.Color != v.Color || !c.Input.Video.FrameRate.Equal(v.FrameRate) {
-		return invalid("цвет/FPS/битность входа должны соответствовать выходу")
+	if c.Input.Video.PixelFormat != "yuv420p" || c.Input.Video.BitDepth != 8 || c.Input.Video.Color != v.Color {
+		return invalid("цвет/битность входа должны соответствовать выходу")
 	}
 	if v.Tier != "" {
 		return invalid("H.264 не имеет Tier")
@@ -56,7 +57,7 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 	if !p.VideoEncoding.ClosedGOP {
 		return invalid("порт NVENC поддерживает закрытый GOP")
 	}
-	if p.VideoEncoding.GOPFrames > math.MaxInt32 || p.VideoEncoding.MaxBFrames > math.MaxInt32 || v.FrameRate.Numerator > math.MaxInt32 || v.FrameRate.Denominator > math.MaxInt32 || p.VideoEncoding.TargetBitrateBPS > math.MaxInt64 || p.VideoEncoding.MaxBitrateBPS > math.MaxInt64 || p.VideoEncoding.BufferBits > math.MaxInt32 || p.AudioEncoding.BitrateBPS > math.MaxInt64 {
+	if p.VideoEncoding.GOPFrames > math.MaxInt32 || p.VideoEncoding.MaxBFrames > math.MaxInt32 || p.VideoEncoding.TargetBitrateBPS > math.MaxInt64 || p.VideoEncoding.MaxBitrateBPS > math.MaxInt64 || p.VideoEncoding.BufferBits > math.MaxInt32 || p.AudioEncoding.BitrateBPS > math.MaxInt64 {
 		return invalid("параметры превышают диапазон FFmpeg")
 	}
 	validLayout := au.Channels == 1 && au.ChannelLayout == "mono" || au.Channels == 2 && au.ChannelLayout == "stereo"
@@ -69,11 +70,15 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 	if !validCommand(c.Binary, nil, 4096) || !filepath.IsAbs(a.InputPath) || !filepath.IsAbs(a.OutputPath) || strings.ContainsRune(a.InputPath, 0) || strings.ContainsRune(a.OutputPath, 0) {
 		return invalid("некорректные binary/UDS")
 	}
-	videoScale, err := fmp4.MovieTimeScale(c.VideoTimeBase)
+	fps, err := filterFrameRate(v.FrameRate)
 	if err != nil {
 		return Command{}, err
 	}
-	movieScale, err := fmp4.MovieTimeScale(c.VideoTimeBase, media.TimeBase{Numerator: 1, Denominator: au.SampleRateHz})
+	videoScale := fps.Numerator
+	movieScale, err := fmp4.MovieTimeScale(c.VideoTimeBase, c.AudioTimeBase,
+		media.TimeBase{Numerator: 1, Denominator: videoScale},
+		media.TimeBase{Numerator: 1, Denominator: c.Input.Audio.SampleRateHz},
+		media.TimeBase{Numerator: 1, Denominator: au.SampleRateHz})
 	if err != nil {
 		return Command{}, err
 	}
@@ -89,12 +94,12 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 		rangeName = "pc"
 	}
 	// async сохраняет конечное окно для обратного чтения заголовков; ignidx останавливает поиск на текущем mdat.
-	args := []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-xerror", "-copyts", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-c:v", "av1_cuvid", "-f", "mp4", "-fflags", "+ignidx", "-i", "async:unix:" + a.InputPath,
-		"-map", "0:v:0", "-map", "0:a:0", "-vf", fmt.Sprintf("scale_cuda=w=%d:h=%d:format=yuv420p", v.Width, v.Height),
+	args := []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-xerror", "-copyts", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-c:v", "av1_cuvid", "-flags2:a", "+skip_manual", "-f", "mp4", "-fflags", "+ignidx", "-i", "async:unix:" + a.InputPath,
+		"-map", "0:v:0", "-map", "0:a:0", "-vf", fmt.Sprintf("fps=fps=%d/%d:round=near:eof_action=round,scale_cuda=w=%d:h=%d:format=yuv420p", fps.Numerator, fps.Denominator, v.Width, v.Height),
 		"-c:v", "h264_nvenc", "-profile:v", v.CodecProfile, "-pix_fmt", "cuda", "-rc", "vbr",
 		"-b:v", n(p.VideoEncoding.TargetBitrateBPS), "-maxrate:v", n(p.VideoEncoding.MaxBitrateBPS), "-bufsize:v", n(p.VideoEncoding.BufferBits),
 		"-g:v", n(uint64(p.VideoEncoding.GOPFrames)), "-bf:v", n(uint64(p.VideoEncoding.MaxBFrames)), "-flags:v", "+cgop", "-no-scenecut", "1", "-forced-idr", "1",
-		"-r:v", fmt.Sprintf("%d/%d", v.FrameRate.Numerator, v.FrameRate.Denominator), "-fps_mode:v", "passthrough", "-enc_time_base:v", "demux",
+		"-fps_mode:v", "passthrough", "-enc_time_base:v", "filter",
 		"-color_range:v", rangeName, "-color_primaries:v", v.Color.Primaries, "-color_trc:v", v.Color.Transfer, "-colorspace:v", v.Color.Matrix,
 		"-c:a", "aac", "-profile:a", "aac_low", "-b:a", n(p.AudioEncoding.BitrateBPS), "-ar:a", n(uint64(au.SampleRateHz)), "-ac:a", n(uint64(au.Channels)), "-channel_layout:a", au.ChannelLayout}
 	if v.Level != "" {
