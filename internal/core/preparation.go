@@ -129,16 +129,19 @@ func runtimeIdleForPreparation(ctx context.Context, r Repositories) error {
 
 	return nil
 }
-func preparationIdleForRuntime(ctx context.Context, r Repositories) error {
+func preparationIdleForRuntime(ctx context.Context, r Repositories, incarnation string) error {
 	if r.Artifacts == nil {
 		return ErrRuntimeCapability
 	}
-	gs, err := r.Artifacts.Generations(ctx, ListQuery{Limit: 1, PendingOnly: true})
-	if err != nil {
-		return err
-	}
-	if len(gs) > 0 {
-		return ErrNotReady
+	// Терминальные остатки сохраняют удержания, но не занимают допуск нового эфира.
+	for _, state := range []PreparationState{PreparationQueued, PreparationClaimed, PreparationIssued} {
+		gs, err := r.Artifacts.Generations(ctx, ListQuery{Limit: 1, State: string(state), Incarnation: incarnation})
+		if err != nil {
+			return err
+		}
+		if len(gs) > 0 {
+			return ErrNotReady
+		}
 	}
 	return nil
 }

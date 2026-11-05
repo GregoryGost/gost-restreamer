@@ -178,11 +178,18 @@ func TestPublishedGenerationSurvivesRecoveryWhileIssuedCleanupRemainsQuarantined
 	if err != nil || a.CurrentGenerationID != g.ID || a.PendingGenerationID != "" {
 		t.Fatal("recovery откатило завершённый current", err)
 	}
-	_, err = f.service.StartSession(ctx, f.startRequest("before-trusted-cleanup"))
-	requireDomainError(t, err, core.ErrNotReady)
+	start, err := f.service.StartSession(ctx, f.startRequest("before-trusted-cleanup"))
+	if err != nil {
+		t.Fatal("терминальная подготовка заблокировала новый запуск", err)
+	}
 	if err = f.service.AcknowledgePreparationCleanup(ctx, fence); err != nil {
 		t.Fatal(err)
 	}
+	stop, err := f.service.StopSession(ctx, core.SessionCommand{RequestID: "stop-before-next-preparation", SessionID: start.SessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executeCommand(t, f.service, stop.RequestID)
 	a, newVariant := publishFixtureGeneration(t, f.service, a, "next-source", "next-result")
 	if a.CurrentGenerationID == g.ID || newVariant.GenerationID == g.ID {
 		t.Fatal("следующая подготовка повторно использовала generation")

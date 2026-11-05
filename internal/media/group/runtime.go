@@ -17,12 +17,14 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/media/codec"
 	"github.com/GregoryGost/gost-restreamer/internal/media/ffmpeg"
 	"github.com/GregoryGost/gost-restreamer/internal/media/fmp4"
+	"github.com/GregoryGost/gost-restreamer/internal/processowner"
 )
 
 type FileOpener func(context.Context, core.ArtifactManifest) (*os.File, error)
 type PlayerBuilder func(context.Context, string, *os.File, ffmpeg.Attempt) (ffmpeg.Command, error)
 type TranscodeBuilder func(context.Context, ffmpeg.NVIDIAConfig, ffmpeg.Attempt) (ffmpeg.Command, error)
 type RuntimeConfig struct {
+	Scope                                                *processowner.Scope
 	Switcher                                             SwitcherConfig
 	FFmpeg                                               ffmpeg.Config
 	Container                                            fmp4.Limits
@@ -48,12 +50,14 @@ type RegistryConfig struct {
 	MaxGroups, MaxReferences uint32
 }
 type Registry struct {
-	mu         sync.Mutex
-	config     RegistryConfig
-	owner      *core.RuntimeLease
-	groups     map[string]*Group
-	references uint32
-	closed     bool
+	mu              sync.Mutex
+	config          RegistryConfig
+	owner           *core.RuntimeLease
+	groups          map[string]*Group
+	references      uint32
+	closed          bool
+	controlRevision uint64
+	paused          bool
 }
 
 func NewRegistry(ctx context.Context, c RegistryConfig) (*Registry, error) {
@@ -128,6 +132,9 @@ func (r *Registry) Acquire(ctx context.Context, snapshot core.OutputSnapshot, li
 	key := string(encoded)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if session.Revision > r.controlRevision {
+		r.controlRevision, r.paused = session.Revision, session.DesiredPaused
+	}
 	if r.closed || !r.owner.Valid() {
 		return nil, core.ErrStale
 	}
@@ -176,7 +183,7 @@ func (r *Registry) Acquire(ctx context.Context, snapshot core.OutputSnapshot, li
 		c := r.config.Runtime
 		c.Switcher.Profile = snapshot.Profile.Profile
 		c.Switcher.Watchdog = snapshot.Fallback.Watchdog
-		g, err = newGroup(c, r.config.Core, r.config.Parent, r.owner, observer, snapshot.Group.ID, manifest, live, session.DesiredPaused)
+		g, err = newGroup(c, r.config.Core, r.config.Parent, r.owner, observer, snapshot.Group.ID, manifest, live, r.paused, r.controlRevision)
 		if err != nil {
 			_ = observer.Close(ctx)
 			return nil, err
@@ -237,26 +244,55 @@ func (r *Registry) Close(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-type Group struct {
-	refs     uint32
-	closing  bool
-	config   RuntimeConfig
-	service  *core.Service
-	parent   core.ExecutionFence
-	owner    *core.RuntimeLease
-	observer *core.GroupObserver
-	id       core.ID
-	manifest core.ArtifactManifest
-	live     *media.Router
-	switcher *Switcher
-	cancel   context.CancelFunc
-	done     chan struct{}
-	mu       sync.Mutex
-	result   error
-	attempts [2]atomic.Uint64
+// ApplyControl упорядочивает желание с созданием новых групп по версии Session.
+func (r *Registry) ApplyControl(revision uint64, paused bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || !r.owner.Valid() {
+		return core.ErrStale
+	}
+	if revision < r.controlRevision {
+		return nil
+	}
+	if revision == r.controlRevision && paused != r.paused {
+		return core.ErrConflict
+	}
+	r.controlRevision, r.paused = revision, paused
+	var errs []error
+	for _, g := range r.groups {
+		if !g.closing {
+			if err := g.applyControl(revision, paused); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
-func newGroup(c RuntimeConfig, service *core.Service, parent core.ExecutionFence, owner *core.RuntimeLease, observer *core.GroupObserver, id core.ID, manifest core.ArtifactManifest, live *media.Router, paused bool) (*Group, error) {
+type Group struct {
+	refs            uint32
+	closing         bool
+	config          RuntimeConfig
+	service         *core.Service
+	parent          core.ExecutionFence
+	owner           *core.RuntimeLease
+	observer        *core.GroupObserver
+	id              core.ID
+	manifest        core.ArtifactManifest
+	live            *media.Router
+	switcher        *Switcher
+	cancel          context.CancelFunc
+	done            chan struct{}
+	mu              sync.Mutex
+	result          error
+	attempts        [2]atomic.Uint64
+	controlMu       sync.Mutex
+	controlRevision uint64
+	fallbackEnded   bool
+	fallbackError   error
+}
+
+func newGroup(c RuntimeConfig, service *core.Service, parent core.ExecutionFence, owner *core.RuntimeLease, observer *core.GroupObserver, id core.ID, manifest core.ArtifactManifest, live *media.Router, paused bool, revision uint64) (*Group, error) {
 	if c.Switcher.Profile.Mode == core.ModeCopy && c.Switcher.Profile.Format.Video.Codec != core.CodecAV1 || c.Switcher.Profile.Mode == core.ModeTranscode && c.Switcher.Profile.Format.Video.Codec != core.CodecH264 {
 		return nil, core.ErrInvalid
 	}
@@ -267,10 +303,69 @@ func newGroup(c RuntimeConfig, service *core.Service, parent core.ExecutionFence
 	// Срок работы принадлежит выданному владельцу Session; ctx запроса Acquire не удерживается.
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Group{config: c, service: service, parent: parent, owner: owner, observer: observer, id: id, manifest: manifest, live: live, switcher: sw, cancel: cancel, done: make(chan struct{})}
-	_ = sw.SetPaused(paused, time.Now())
+	_ = g.applyControl(revision, paused)
 	go g.run(ctx)
 	return g, nil
 }
+func (g *Group) applyControl(revision uint64, paused bool) error {
+	g.controlMu.Lock()
+	defer g.controlMu.Unlock()
+	if revision < g.controlRevision {
+		return nil
+	}
+	g.controlRevision = revision
+	err := g.switcher.SetPaused(paused, time.Now())
+	// Желание уже применено, даже если подходящий источник пока недоступен.
+	if errors.Is(err, ErrUnavailable) || errors.Is(err, ErrFeed) {
+		return nil
+	}
+	return err
+}
+
+// Ready проверяет пригодность текущего fallback, а не исторический статус FFmpeg.
+func (g *Group) Ready() error {
+	if !g.owner.Valid() {
+		return core.ErrStale
+	}
+	select {
+	case <-g.done:
+		return core.ErrStale
+	default:
+	}
+	g.mu.Lock()
+	ended, err := g.fallbackEnded, g.fallbackError
+	g.mu.Unlock()
+	if ended {
+		return errors.Join(ErrUnavailable, err)
+	}
+	return g.switcher.FallbackReady(g.attempts[index(Fallback)].Load(), time.Now())
+}
+
+// WaitReady ограничивается общим контекстом запуска, включая все перезапуски.
+func (g *Group) WaitReady(ctx context.Context) error {
+	ticker := time.NewTicker(g.config.ControlInterval)
+	defer ticker.Stop()
+	for {
+		err := g.Ready()
+		if err == nil {
+			return nil
+		}
+		g.mu.Lock()
+		ended := g.fallbackEnded
+		g.mu.Unlock()
+		if ended || errors.Is(err, core.ErrStale) || errors.Is(err, media.ErrRouterClosed) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-g.done:
+			return core.ErrStale
+		case <-ticker.C:
+		}
+	}
+}
+
 func (g *Group) Router() *media.Router { return g.switcher.Router() }
 func (g *Group) Status() Status        { return g.switcher.Status() }
 func (g *Group) Done() <-chan struct{} { return g.done }
@@ -326,7 +421,7 @@ func (g *Group) run(ctx context.Context) {
 				break
 			}
 			now := time.Now()
-			_ = g.switcher.SetPaused(session.DesiredPaused, now)
+			_ = g.applyControl(session.Revision, session.DesiredPaused)
 			_ = g.switcher.Tick(now)
 			g.observe(ctx)
 		}
@@ -437,7 +532,7 @@ func (g *Group) play(ctx context.Context) {
 	}
 	var attempt atomic.Uint64
 	var observation atomic.Pointer[core.FFmpegAttemptObserver]
-	worker := ffmpeg.Worker{SessionID: string(g.parent.SessionID), GroupID: string(g.id), Owner: g.owner, Topology: ffmpeg.FileInput}
+	worker := ffmpeg.Worker{SessionID: string(g.parent.SessionID), GroupID: string(g.id), Owner: g.owner, ProcessScope: g.config.Scope, Topology: ffmpeg.FileInput}
 	worker.Command = func(ctx context.Context, a ffmpeg.Attempt) (ffmpeg.Command, error) {
 		current, err := g.nextAttempt(Fallback)
 		if err != nil {
@@ -474,6 +569,9 @@ func (g *Group) play(ctx context.Context) {
 		return
 	}
 	result, _ := supervisor.Wait(context.Background())
+	g.mu.Lock()
+	g.fallbackEnded, g.fallbackError = true, result.Err
+	g.mu.Unlock()
 	g.fail(Fallback, result.Err)
 	g.addCleanup(result.CleanupErr)
 }
@@ -485,12 +583,22 @@ func (g *Group) nextAttempt(feed Feed) (uint64, error) {
 			return 0, ErrFeed
 		}
 		if counter.CompareAndSwap(previous, previous+1) {
+			if g.switcher != nil {
+				if err := g.switcher.BeginAttempt(feed, previous+1); err != nil {
+					return 0, err
+				}
+			}
 			return previous + 1, nil
 		}
 	}
 }
 
 func (g *Group) fail(feed Feed, err error) {
+	if feed == Fallback {
+		g.mu.Lock()
+		g.fallbackEnded, g.fallbackError = true, err
+		g.mu.Unlock()
+	}
 	attempt := g.attempts[index(feed)].Load()
 	if attempt == 0 {
 		attempt, _ = g.nextAttempt(feed)
@@ -509,6 +617,7 @@ func (g *Group) readOutput(ctx context.Context, c net.Conn, feed Feed, attempt u
 	return g.readOutputObserved(ctx, c, feed, attempt, verified, progress, nil)
 }
 func (g *Group) readOutputObserved(ctx context.Context, c net.Conn, feed Feed, attempt uint64, verified core.MediaFormat, progress ffmpeg.Progress, observation *core.FFmpegAttemptObserver) (result error) {
+	defer func() { _ = g.switcher.Fail(feed, attempt, result, time.Now()) }()
 	defer func() {
 		if observation == nil {
 			return
@@ -594,7 +703,7 @@ func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt 
 	}
 	input := core.MediaFormat{Video: first.VideoConfig.Info().Video, Audio: first.AudioConfig.Info().Audio}
 	var observation atomic.Pointer[core.FFmpegAttemptObserver]
-	worker := ffmpeg.Worker{SessionID: string(g.parent.SessionID), GroupID: string(g.id), Owner: g.owner}
+	worker := ffmpeg.Worker{SessionID: string(g.parent.SessionID), GroupID: string(g.id), Owner: g.owner, ProcessScope: g.config.Scope}
 	worker.Command = func(ctx context.Context, a ffmpeg.Attempt) (ffmpeg.Command, error) {
 		ao, err := observer.BeginAttempt(ctx, attempt)
 		if err != nil {
@@ -663,4 +772,18 @@ func transportOrigin(d media.Delivery) (fmp4.OriginMapping, error) {
 	}
 	offset, err := difference(0, start)
 	return fmp4.OriginMapping{OffsetTicks: offset, TimeBase: base}, err
+}
+
+// Joined сообщает завершение работников независимо от долговечной очистки файлов.
+func (r *Registry) Joined() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, g := range r.groups {
+		select {
+		case <-g.done:
+		default:
+			return false
+		}
+	}
+	return r.closed
 }

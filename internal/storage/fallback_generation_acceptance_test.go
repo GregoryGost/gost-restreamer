@@ -239,15 +239,21 @@ func TestPreparationAdmissionIsSharedAndPhysicalCompletionIsRequired(t *testing.
 	if err = f.svc.AcknowledgePreparationCleanup(ctx, fence); !errors.Is(err, core.ErrInUse) {
 		t.Fatalf("cleanup подтверждён до join: %v", err)
 	}
-	if _, err = f.svc.StartSession(ctx, f.start("blocked-until-join", ready)); !errors.Is(err, core.ErrNotReady) {
-		t.Fatalf("отмена преждевременно разрешила start: %v", err)
+	start, err := f.svc.StartSession(ctx, f.start("manual-before-preparation-join", ready))
+	if err != nil {
+		t.Fatalf("терминальная подготовка заблокировала ручной start: %v", err)
+	}
+	executeGenerationCommand(t, f.svc, start.RequestID)
+	before, err := f.svc.GetGeneration(ctx, g.ID)
+	if err != nil || !before.Issued || !before.CleanupPending {
+		t.Fatalf("новый start потерял прежние обязательства: %+v, %v", before, err)
 	}
 	finish()
 	if err = f.svc.AcknowledgePreparationCleanup(ctx, fence); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.svc.StartSession(ctx, f.start("after-join", ready)); err != nil {
-		t.Fatalf("join не снял запрет: %v", err)
+	if current, err := f.svc.GetSession(ctx, start.SessionID); err != nil || current.State != core.SessionRunning {
+		t.Fatalf("старый cleanup затронул новый запуск: %+v, %v", current, err)
 	}
 }
 
@@ -455,11 +461,12 @@ func TestPreparationRecoveryPreservesCurrentAndQuarantinesIssuedWork(t *testing.
 			if err != nil || g.State != core.PreparationInterrupted || g.Issued != issued || g.CleanupPending != issued {
 				t.Fatalf("неверное восстановление подготовки: %+v, %v", g, err)
 			}
-			_, err = svc.StartSession(ctx, f.start("after-recovery", ready))
+			start, err := svc.StartSession(ctx, f.start("after-recovery", ready))
+			if err != nil {
+				t.Fatalf("терминальная подготовка прежнего владельца заблокировала start: %v", err)
+			}
+			executeGenerationCommand(t, svc, start.RequestID)
 			if issued {
-				if !errors.Is(err, core.ErrNotReady) {
-					t.Fatalf("новый incarnation снял quarantine без proof: %v", err)
-				}
 				wrong := fence
 				wrong.Attempt++
 				if err = svc.AcknowledgePreparationCleanup(ctx, wrong); !errors.Is(err, core.ErrStale) {
@@ -468,11 +475,9 @@ func TestPreparationRecoveryPreservesCurrentAndQuarantinesIssuedWork(t *testing.
 				if err = svc.AcknowledgePreparationCleanup(ctx, fence); err != nil {
 					t.Fatal(err)
 				}
-				if _, err = svc.StartSession(ctx, f.start("after-exact-proof", ready)); err != nil {
-					t.Fatal(err)
-				}
-			} else if err != nil {
-				t.Fatalf("невыданная работа заблокировала start: %v", err)
+			}
+			if current, err := svc.GetSession(ctx, start.SessionID); err != nil || current.State != core.SessionRunning {
+				t.Fatalf("старый cleanup затронул новый запуск: %+v, %v", current, err)
 			}
 		})
 	}

@@ -214,7 +214,7 @@ func TestGroupReadOutputResolvesActualAV1AndReportsOnlyValidProgress(t *testing.
 			}
 			switch mode {
 			case "valid":
-				if !errors.Is(err, io.EOF) || count != 2 || !sw.Status().Available {
+				if !errors.Is(err, io.EOF) || count != 2 || sw.Status().Available {
 					t.Fatalf("valid: %v %d %+v", err, count, sw.Status())
 				}
 			case "unknown-metadata", "invalid-au":

@@ -223,7 +223,7 @@ func (s *Service) StartSession(ctx context.Context, request StartSessionRequest)
 			result = prior
 			return nil
 		}
-		if err = preparationIdleForRuntime(ctx, r); err != nil {
+		if err = preparationIdleForRuntime(ctx, r, s.incarnation); err != nil {
 			return err
 		}
 		stream, err := r.Config.Stream(ctx, request.StreamID)
@@ -234,13 +234,6 @@ func (s *Service) StartSession(ctx context.Context, request StartSessionRequest)
 			return ErrInUse
 		} else if !errors.Is(err, ErrNotFound) {
 			return err
-		}
-		pending, err := r.Artifacts.Cleanups(ctx, ListQuery{Limit: 1, StreamID: stream.ID, PendingOnly: true})
-		if err != nil {
-			return err
-		}
-		if len(pending) != 0 {
-			return ErrNotReady
 		}
 		if err = stream.Fallback.Validate(); err != nil {
 			return fmt.Errorf("%w: заглушка не настроена", ErrNotReady)
@@ -339,20 +332,55 @@ func (s *Service) ResumeSession(ctx context.Context, request SessionCommand) (Co
 func (s *Service) StopSession(ctx context.Context, request SessionCommand) (CommandReceipt, error) {
 	return s.sessionCommand(ctx, request, CommandStopSession)
 }
+
+// CompensateSessionExecution отзывает только точное ещё актуальное исполнение Session.
+// Нулевая Attempt допускается лишь для ещё не захваченной команды запуска.
+func (s *Service) CompensateSessionExecution(ctx context.Context, f ExecutionFence, requestID string) (CommandReceipt, bool, error) {
+	return s.sessionCommandFenced(ctx, SessionCommand{RequestID: requestID, SessionID: f.SessionID}, CommandStopSession, &f)
+}
+
 func (s *Service) sessionCommand(ctx context.Context, request SessionCommand, kind CommandKind) (CommandReceipt, error) {
+	result, _, err := s.sessionCommandFenced(ctx, request, kind, nil)
+	return result, err
+}
+
+func (s *Service) sessionCommandFenced(ctx context.Context, request SessionCommand, kind CommandKind, fence *ExecutionFence) (CommandReceipt, bool, error) {
 	content, err := identity(kind, request.SessionID, nil)
 	if err != nil {
-		return CommandReceipt{}, err
+		return CommandReceipt{}, false, err
 	}
 	var result CommandReceipt
+	accepted := false
 	err = s.uow.Write(ctx, func(r Repositories) error {
+		result, accepted = CommandReceipt{}, false
 		prior, found, err := priorReceipt(ctx, r, request.RequestID, content)
 		if err != nil {
 			return err
 		}
 		if found {
 			result = prior
+			accepted = true
 			return nil
+		}
+		if fence != nil {
+			validation := *fence
+			validation.Attempt = max(validation.Attempt, 1)
+			if err = validation.Validate(); err != nil {
+				return err
+			}
+			c, session, _, err := s.fenced(ctx, r, *fence)
+			if errors.Is(err, ErrStale) || errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if fence.OutputID != "" || c.Kind != CommandStartSession ||
+				(c.Status != CommandPending && c.Status != CommandClaimed && c.Status != CommandIssued && c.Status != CommandSucceeded) ||
+				(c.Attempt == 0 && c.Status != CommandPending) ||
+				(session.State != SessionStarting && session.State != SessionRunning) {
+				return nil
+			}
 		}
 		session, err := r.Runtime.Session(ctx, request.SessionID)
 		if err != nil {
@@ -400,9 +428,13 @@ func (s *Service) sessionCommand(ctx context.Context, request SessionCommand, ki
 		if terminal {
 			result.Status = CommandSucceeded
 		}
-		return s.accept(ctx, r, result)
+		if err = s.accept(ctx, r, result); err != nil {
+			return err
+		}
+		accepted = true
+		return nil
 	})
-	return result, err
+	return result, accepted && err == nil, err
 }
 
 func (s *Service) AddOutput(ctx context.Context, request AddOutputRequest) (CommandReceipt, error) {
@@ -464,20 +496,53 @@ func (s *Service) StopOutput(ctx context.Context, request OutputCommand) (Comman
 func (s *Service) DetachOutput(ctx context.Context, request OutputCommand) (CommandReceipt, error) {
 	return s.outputCommand(ctx, request, CommandDetachOutput)
 }
+
+// CompensateOutputStart останавливает только ещё актуальное исполнение запуска.
+// true означает принятую компенсацию либо повтор её квитанции; отозванный fence даёт false.
+func (s *Service) CompensateOutputStart(ctx context.Context, f ExecutionFence, requestID string) (CommandReceipt, bool, error) {
+	return s.outputCommandFenced(ctx, OutputCommand{RequestID: requestID, OutputID: f.OutputID}, CommandStopOutput, &f)
+}
+
 func (s *Service) outputCommand(ctx context.Context, request OutputCommand, kind CommandKind) (CommandReceipt, error) {
+	result, _, err := s.outputCommandFenced(ctx, request, kind, nil)
+	return result, err
+}
+
+func (s *Service) outputCommandFenced(ctx context.Context, request OutputCommand, kind CommandKind, fence *ExecutionFence) (CommandReceipt, bool, error) {
 	content, err := identity(kind, request.OutputID, nil)
 	if err != nil {
-		return CommandReceipt{}, err
+		return CommandReceipt{}, false, err
 	}
 	var result CommandReceipt
+	accepted := false
 	err = s.uow.Write(ctx, func(r Repositories) error {
+		result, accepted = CommandReceipt{}, false
 		prior, found, err := priorReceipt(ctx, r, request.RequestID, content)
 		if err != nil {
 			return err
 		}
 		if found {
 			result = prior
+			accepted = true
 			return nil
+		}
+		if fence != nil {
+			if err = fence.Validate(); err != nil {
+				return err
+			}
+			c, session, o, err := s.fenced(ctx, r, *fence)
+			if errors.Is(err, ErrStale) || errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if (c.Kind != CommandStartOutput && c.Kind != CommandAddOutput) ||
+				(c.Status != CommandClaimed && c.Status != CommandIssued && c.Status != CommandSucceeded) ||
+				session.State != SessionRunning || o == nil || o.Attempt != fence.Attempt ||
+				!o.Attached || !o.DesiredRunning || o.CleanupPending {
+				return nil
+			}
 		}
 		o, err := r.Runtime.Output(ctx, request.OutputID)
 		if err != nil {
@@ -505,7 +570,7 @@ func (s *Service) outputCommand(ctx context.Context, request OutputCommand, kind
 			if !o.Attached && kind != CommandDetachOutput {
 				return ErrConflict
 			}
-			if err = stopOutput(ctx, r, session, &o, kind == CommandDetachOutput); err != nil {
+			if err = stopOutput(ctx, r, session, &o, true); err != nil {
 				return err
 			}
 			if err = cancelCommands(ctx, r, session.ID, o.ID, "", false); err != nil {
@@ -543,9 +608,13 @@ func (s *Service) outputCommand(ctx context.Context, request OutputCommand, kind
 		if !o.CleanupPending && kind != CommandStartOutput {
 			result.Status = CommandSucceeded
 		}
-		return s.accept(ctx, r, result)
+		if err = s.accept(ctx, r, result); err != nil {
+			return err
+		}
+		accepted = true
+		return nil
 	})
-	return result, err
+	return result, accepted && err == nil, err
 }
 
 func runtimeCleanup(ctx context.Context, r Repositories, session Session, o *SessionOutput) error {
@@ -561,9 +630,10 @@ func runtimeCleanup(ctx context.Context, r Repositories, session Session, o *Ses
 	}
 	return r.Artifacts.InsertCleanup(ctx, intent)
 }
-func stopOutput(ctx context.Context, r Repositories, session Session, o *SessionOutput, detach bool) error {
+func stopOutput(ctx context.Context, r Repositories, session Session, o *SessionOutput, includeProvisional bool) error {
 	// Выданный запуск Session мог создать ресурсы группы до запуска исходящего соединения.
-	needsCleanup := o.Issued || detach && o.Attached && session.Issued
+	// При остановке всей Session их завершение покрывает отдельная очистка родителя.
+	needsCleanup := o.Issued || includeProvisional && o.Attached && o.DesiredRunning && session.Issued
 	if o.DesiredRunning || (needsCleanup && !o.CleanupPending) {
 		if needsCleanup && !o.CleanupPending {
 			if err := runtimeCleanup(ctx, r, session, o); err != nil {

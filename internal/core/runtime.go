@@ -37,6 +37,7 @@ type RuntimeAuthority struct {
 	outputExecutions      map[outputExecutionKey]*OutputExecutionReservation
 	outputExecutionBytes  uint64
 	nextOutputExecution   uint64
+	dispatcher            *RuntimeDispatcher
 }
 
 func NewRuntimeAuthority(incarnation string, limits ObservationLimits, executionLimits OutputExecutionLimits) (*RuntimeAuthority, error) {
@@ -148,6 +149,9 @@ func (a *RuntimeAuthority) Close() {
 	<-a.gate
 	defer a.release()
 	a.closed = true
+	if a.dispatcher != nil {
+		a.dispatcher.closeLocked()
+	}
 	for _, reservation := range a.outputExecutions {
 		reservation.sealLocked()
 	}
@@ -347,7 +351,7 @@ func (s *Service) BindExecution(ctx context.Context, fence ExecutionFence) (*Run
 }
 
 func (l *RuntimeLease) authorized(ctx context.Context, r Repositories) error {
-	if err := preparationIdleForRuntime(ctx, r); err != nil {
+	if err := preparationIdleForRuntime(ctx, r, l.authority.incarnation); err != nil {
 		return err
 	}
 	session, err := r.Runtime.Session(ctx, l.session.SessionID)

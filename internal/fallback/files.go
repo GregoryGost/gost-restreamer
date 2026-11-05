@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/GregoryGost/gost-restreamer/internal/core"
+	"github.com/GregoryGost/gost-restreamer/internal/processowner"
 )
 
 var (
@@ -27,15 +28,25 @@ var (
 type FileStore struct {
 	root       *os.Root
 	mu         sync.Mutex
-	identities map[string]os.FileInfo
+	identities map[string]*rememberedFile
+	evidence   *processowner.FileJournal
+}
+
+type rememberedFile struct {
+	info os.FileInfo
 }
 
 func OpenFileStore(directory string) (*FileStore, error) {
+	return OpenFileStoreWithLimits(directory, processowner.Limits{MaxOperations: 10000, MaxRecordBytes: 16384, MaxCommandArgs: 256, MaxCommandBytes: 4096, MaxExtraFiles: 1, PageSize: 100})
+}
+
+// OpenFileStoreWithLimits открывает независимый долговечный журнал на файловой системе данных.
+func OpenFileStoreWithLimits(directory string, limits processowner.Limits) (*FileStore, error) {
 	r, err := os.OpenRoot(directory)
 	if err != nil {
 		return nil, err
 	}
-	s := &FileStore{root: r, identities: map[string]os.FileInfo{}}
+	s := &FileStore{root: r, identities: map[string]*rememberedFile{}}
 	if err = r.Mkdir("fallback", 0700); err != nil && !errors.Is(err, os.ErrExist) {
 		return nil, errors.Join(err, r.Close())
 	}
@@ -46,9 +57,13 @@ func OpenFileStore(directory string) (*FileStore, error) {
 	if err = s.syncParents("fallback/entry"); err != nil {
 		return nil, errors.Join(err, r.Close())
 	}
+	s.evidence, err = processowner.NewFileJournal(directory, limits)
+	if err != nil {
+		return nil, errors.Join(err, r.Close())
+	}
 	return s, nil
 }
-func (s *FileStore) Close() error { return s.root.Close() }
+func (s *FileStore) Close() error { return errors.Join(s.evidence.Close(), s.root.Close()) }
 
 func (s *FileStore) CreateGeneration(id core.ID) error {
 	name := core.GenerationDirectory(id)
@@ -68,8 +83,23 @@ func (s *FileStore) CreateGeneration(id core.ID) error {
 
 func (s *FileStore) remember(name string, info os.FileInfo) {
 	s.mu.Lock()
-	s.identities[name] = info
+	s.identities[name] = &rememberedFile{info: info}
 	s.mu.Unlock()
+}
+
+func (s *FileStore) remembered(name string) *rememberedFile {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.identities[name]
+}
+
+func (s *FileStore) forget(name string, expected *rememberedFile) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Новая запись того же пути принадлежит другому наблюдению и сохраняется.
+	if s.identities[name] == expected {
+		delete(s.identities, name)
+	}
 }
 
 // RemoveOwned принимает проверенную запись реестра файлов и не удаляет дерево рекурсивно.
@@ -79,6 +109,32 @@ func (s *FileStore) RemoveOwned(file core.OwnedFile) error {
 func (s *FileStore) RemoveOwnedContext(ctx context.Context, file core.OwnedFile) error {
 	if err := file.Validate(); err != nil {
 		return err
+	}
+	if file.ID != "" {
+		exists, evidenceErr := s.evidence.Exists(ctx, fileIdentity(file))
+		if !exists {
+			if evidenceErr != nil {
+				return evidenceErr
+			}
+			return errors.Join(ErrCleanupPending, processowner.ErrUnknown)
+		}
+		if file.ContentHash != "" {
+			f, err := s.OpenExact(ctx, file.ManagedPath, file.SizeBytes, file.ContentHash)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			if f != nil {
+				if err = f.Close(); err != nil {
+					return err
+				}
+			}
+		}
+		known := s.remembered(file.ManagedPath)
+		if err := s.evidence.Remove(ctx, fileIdentity(file)); err != nil {
+			return err
+		}
+		s.forget(file.ManagedPath, known)
+		return nil
 	}
 	if file.ContentHash != "" {
 		return s.RemoveExact(ctx, file.ManagedPath, file.SizeBytes, file.ContentHash)
@@ -100,7 +156,7 @@ func (s *FileStore) RemoveOwnedContext(ctx context.Context, file core.OwnedFile)
 	s.mu.Lock()
 	known := s.identities[file.ManagedPath]
 	s.mu.Unlock()
-	if known == nil || !os.SameFile(known, info) {
+	if known == nil || !os.SameFile(known.info, info) {
 		return core.ErrCorrupt
 	}
 	if err = s.root.Remove(file.ManagedPath); err != nil {
@@ -109,9 +165,7 @@ func (s *FileStore) RemoveOwnedContext(ctx context.Context, file core.OwnedFile)
 	if err = s.syncExistingParents(file.ManagedPath); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	delete(s.identities, file.ManagedPath)
-	s.mu.Unlock()
+	s.forget(file.ManagedPath, known)
 	return nil
 }
 func (s *FileStore) syncExistingParents(name string) error {
@@ -316,6 +370,7 @@ func (s *FileStore) RemoveExact(ctx context.Context, name string, size uint64, d
 	if err != nil {
 		return err
 	}
+	known := s.remembered(name)
 	info, err := f.Stat()
 	err = errors.Join(err, f.Close())
 	if err != nil {
@@ -331,8 +386,6 @@ func (s *FileStore) RemoveExact(ctx context.Context, name string, size uint64, d
 	if err = s.syncExistingParents(name); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	delete(s.identities, name)
-	s.mu.Unlock()
+	s.forget(name, known)
 	return nil
 }

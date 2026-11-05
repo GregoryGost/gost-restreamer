@@ -69,6 +69,7 @@ type feedState struct {
 	stable       time.Time
 	rejected     bool
 	failure      error
+	ready        bool
 }
 type Switcher struct {
 	mu              sync.Mutex
@@ -188,6 +189,7 @@ func (s *Switcher) Push(feed Feed, attempt uint64, p media.Packet, video, audio 
 	}
 	if f.seen[track] && now.Sub(f.arrival[track]) >= s.timeout(track) {
 		f.stable = time.Time{}
+		f.ready = false
 	}
 	q := queued{packet: p, at: now, key: key}
 	if previous := f.pending[track]; previous != nil {
@@ -243,6 +245,7 @@ func (s *Switcher) enqueue(feed Feed, q queued) error {
 		return s.reject(feed, media.ErrRouterBudget)
 	}
 	if q.key && s.selected != feed {
+		f.ready = false
 		f.queue = nil
 		f.bytes = 0
 	}
@@ -251,6 +254,7 @@ func (s *Switcher) enqueue(feed Feed, q queued) error {
 		f.bytes = 0
 		f.pending = [2]*queued{}
 		f.stable = time.Time{}
+		f.ready = false
 		if s.selected == feed {
 			s.selected = 0
 		}
@@ -290,6 +294,7 @@ func (s *Switcher) fits(f *feedState, q queued) bool {
 func (s *Switcher) reject(feed Feed, err error) error {
 	f := &s.feeds[index(feed)]
 	f.rejected = true
+	f.ready = false
 	f.failure = err
 	f.queue = nil
 	f.pending = [2]*queued{}
@@ -310,11 +315,64 @@ func (s *Switcher) healthy(f *feedState, now time.Time) bool {
 	for i := range 2 {
 		if now.Before(f.arrival[i]) || now.Sub(f.arrival[i]) >= s.timeout(i) {
 			f.stable = time.Time{}
+			f.ready = false
 			return false
 		}
 	}
 	return true
 }
+
+// BeginAttempt отзывает прежнюю готовность до запуска новой внешней попытки.
+func (s *Switcher) BeginAttempt(feed Feed, attempt uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return media.ErrRouterClosed
+	}
+	if (feed != Live && feed != Fallback) || attempt == 0 {
+		return core.ErrInvalid
+	}
+	f := &s.feeds[index(feed)]
+	if attempt <= f.attempt {
+		return ErrFeed
+	}
+	*f = feedState{attempt: attempt}
+	if s.selected == feed {
+		s.selected = 0
+		s.status.Available = false
+		s.status.Err = ErrUnavailable
+	}
+	return nil
+}
+
+// FallbackReady проверяет текущую попытку независимо от выбранного источника.
+// Проверка использует те же A/V и временные условия, что и переключение.
+func (s *Switcher) FallbackReady(attempt uint64, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return media.ErrRouterClosed
+	}
+	f := &s.feeds[index(Fallback)]
+	if attempt == 0 || f.attempt != attempt {
+		return core.ErrNotReady
+	}
+	if f.rejected {
+		return errors.Join(ErrUnavailable, f.failure)
+	}
+	if !s.healthy(f, s.monotonic(now)) {
+		return core.ErrNotReady
+	}
+	if f.ready && s.selected == Fallback {
+		return nil
+	}
+	if _, _, _, err := s.transition(Fallback, now); err != nil {
+		return err
+	}
+	f.ready = true
+	return nil
+}
+
 func (s *Switcher) Tick(now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -391,7 +449,7 @@ func (s *Switcher) evaluate(now time.Time) error {
 	}
 	return s.drain(desired)
 }
-func (s *Switcher) begin(feed Feed, now time.Time) error {
+func (s *Switcher) transition(feed Feed, now time.Time) (int, int, int64, error) {
 	f := &s.feeds[index(feed)]
 	vi, ai := -1, -1
 	for i, q := range f.queue {
@@ -405,19 +463,19 @@ func (s *Switcher) begin(feed Feed, now time.Time) error {
 			}
 			if q.at.After(ready.Add(s.config.Watchdog.KeyframeTimeout)) {
 				f.stable = now
-				return ErrFeed
+				return 0, 0, 0, ErrFeed
 			}
 		}
 		vi = i
 		break
 	}
 	if vi < 0 {
-		return ErrFeed
+		return 0, 0, 0, ErrFeed
 	}
 	vp := f.queue[vi].packet
 	vpts, err := rescale(vp.Info().PTS, vp.Config().Info().TimeBase, s.base)
 	if err != nil {
-		return s.reject(feed, err)
+		return 0, 0, 0, s.reject(feed, err)
 	}
 	for i, q := range f.queue {
 		if q.packet.Config().Info().Track != media.TrackAudio {
@@ -425,19 +483,19 @@ func (s *Switcher) begin(feed Feed, now time.Time) error {
 		}
 		a, err := rescale(q.packet.Info().PTS, q.packet.Config().Info().TimeBase, s.base)
 		if err != nil {
-			return s.reject(feed, err)
+			return 0, 0, 0, s.reject(feed, err)
 		}
 		if a >= vpts {
 			skew := new(big.Int).Sub(big.NewInt(a), big.NewInt(vpts))
 			if skew.Cmp(s.duration(s.config.MaxAVSkew)) > 0 {
-				return s.reject(feed, ErrTiming)
+				return 0, 0, 0, s.reject(feed, ErrTiming)
 			}
 			ai = i
 			break
 		}
 	}
 	if ai < 0 {
-		return ErrFeed
+		return 0, 0, 0, ErrFeed
 	}
 	earliest := int64(math.MaxInt64)
 	for _, i := range []int{vi, ai} {
@@ -445,7 +503,7 @@ func (s *Switcher) begin(feed Feed, now time.Time) error {
 		for _, t := range []int64{p.Info().PTS, p.Info().DTS} {
 			v, e := rescale(t, p.Config().Info().TimeBase, s.base)
 			if e != nil {
-				return s.reject(feed, e)
+				return 0, 0, 0, s.reject(feed, e)
 			}
 			earliest = min(earliest, v)
 		}
@@ -458,16 +516,16 @@ func (s *Switcher) begin(feed Feed, now time.Time) error {
 	ap := f.queue[ai].packet
 	apts, e := rescale(ap.Info().PTS, ap.Config().Info().TimeBase, s.base)
 	if e != nil {
-		return s.reject(feed, e)
+		return 0, 0, 0, s.reject(feed, e)
 	}
 	firstPresentation = min(firstPresentation, apts)
 	gap := new(big.Int).Sub(big.NewInt(firstPresentation), big.NewInt(earliest))
 	if gap.Cmp(s.duration(s.config.MaxTransitionGap)) > 0 {
-		return s.reject(feed, ErrTiming)
+		return 0, 0, 0, s.reject(feed, ErrTiming)
 	}
 	offset, err := difference(target, earliest)
 	if err != nil {
-		return s.reject(feed, err)
+		return 0, 0, 0, s.reject(feed, err)
 	}
 	for i, q := range f.queue {
 		track := q.packet.Config().Info().Track
@@ -475,9 +533,18 @@ func (s *Switcher) begin(feed Feed, now time.Time) error {
 			continue
 		}
 		if _, _, err := s.mapPacketInfo(q.packet, offset); err != nil {
-			return s.reject(feed, err)
+			return 0, 0, 0, s.reject(feed, err)
 		}
 	}
+	return vi, ai, offset, nil
+}
+
+func (s *Switcher) begin(feed Feed, now time.Time) error {
+	vi, ai, offset, err := s.transition(feed, now)
+	if err != nil {
+		return err
+	}
+	f := &s.feeds[index(feed)]
 	if s.revision == math.MaxUint64 {
 		return ErrTiming
 	}
@@ -500,6 +567,7 @@ func (s *Switcher) begin(feed Feed, now time.Time) error {
 	if err = source.UpdateConfigs(configs[0], configs[1]); err != nil {
 		return err
 	}
+	f.ready = true
 	s.source = source
 	s.video, s.audio = configs[0], configs[1]
 	s.revision = revision

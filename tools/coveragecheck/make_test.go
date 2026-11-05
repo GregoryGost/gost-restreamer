@@ -33,16 +33,24 @@ func TestMakeCoverageRequiresSuccessfulFreshRunAndCleansArtifacts(t *testing.T) 
 	for _, tc := range []struct {
 		name, scenario string
 		pass           bool
+		wantConversion bool
 		wantReport     bool
 		wantChecker    bool
 	}{
-		{"successful_gate", "success", true, true, true},
-		{"failed_tests_leave_profile", "test_failure", false, false, false},
-		{"missing_profile", "missing_profile", false, false, false},
-		{"empty_profile", "empty_profile", false, false, false},
-		{"report_failure", "report_failure", false, true, false},
-		{"checker_build_failure", "build_failure", false, true, false},
-		{"below_threshold", "checker_failure", false, true, true},
+		{"successful_gate", "success", true, true, true, true},
+		{"failed_tests_leave_profile", "test_failure", false, false, false, false},
+		{"missing_profile", "missing_profile", false, false, false, false},
+		{"empty_profile", "empty_profile", false, false, false, false},
+		{"header_only_profile", "header_only_profile", false, false, false, false},
+		{"bad_parent_header", "bad_parent_header", false, false, false, false},
+		{"conversion_failure", "conversion_failure", false, true, false, false},
+		{"missing_helper_profile", "missing_helper_profile", false, true, false, false},
+		{"empty_helper_profile", "empty_helper_profile", false, true, false, false},
+		{"header_only_helper_profile", "header_only_helper_profile", false, true, false, false},
+		{"bad_helper_header", "bad_helper_header", false, true, false, false},
+		{"report_failure", "report_failure", false, true, true, false},
+		{"checker_build_failure", "build_failure", false, true, true, false},
+		{"below_threshold", "checker_failure", false, true, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			workdir := t.TempDir()
@@ -73,8 +81,18 @@ func TestMakeCoverageRequiresSuccessfulFreshRunAndCleansArtifacts(t *testing.T) 
 					t.Fatalf("успешность make = %t, ожидается %t: %v\n%s", runErr == nil, tc.pass, runErr, output)
 				}
 				log := readTestFile(t, logPath)
-				if strings.Contains(log, "REPORT\n") != tc.wantReport || strings.Contains(log, "CHECKER\n") != tc.wantChecker {
-					t.Errorf("неверная последовательность отчёта/проверки: %q; вывод: %s", log, output)
+				wantLog := "TEST\n"
+				if tc.wantConversion {
+					wantLog += "CONVERT\n"
+				}
+				if tc.wantReport {
+					wantLog += "REPORT\n"
+				}
+				if tc.wantChecker {
+					wantLog += "CHECKER\n"
+				}
+				if log != wantLog {
+					t.Errorf("неверная последовательность конвертации/отчёта/проверки: %q; вывод: %s", log, output)
 				}
 				if !strings.Contains(log, "TEST\n") {
 					t.Fatalf("полный тестовый запуск не выполнен: %q\n%s", log, output)
@@ -101,16 +119,17 @@ func TestMakeCoverageRequiresSuccessfulFreshRunAndCleansArtifacts(t *testing.T) 
 
 func coverageMakeEnv(artifactRoot, logPath, profileRecord, scenario string) []string {
 	controlled := map[string]string{
-		"TMPDIR":                  artifactRoot,
-		"COVERAGE_TEST_LOG":       logPath,
-		"COVERAGE_TEST_PROFILES":  profileRecord,
-		"COVERAGE_TEST_SCENARIO":  scenario,
-		"MAKEFLAGS":               "",
-		"MFLAGS":                  "",
-		"GOFLAGS":                 "-mod=readonly",
-		"GOST_MEDIA_FFMPEG":       "/не-запускать/ffmpeg",
-		"GOST_FMP4_FFMPEG":        "/не-запускать/ffmpeg",
-		"GOST_MEDIA_VIDEOTOOLBOX": "1",
+		"TMPDIR":                            artifactRoot,
+		"COVERAGE_TEST_LOG":                 logPath,
+		"COVERAGE_TEST_PROFILES":            profileRecord,
+		"COVERAGE_TEST_SCENARIO":            scenario,
+		"MAKEFLAGS":                         "",
+		"MFLAGS":                            "",
+		"GOFLAGS":                           "-mod=readonly",
+		"GOST_MEDIA_FFMPEG":                 "/не-запускать/ffmpeg",
+		"GOST_FMP4_FFMPEG":                  "/не-запускать/ffmpeg",
+		"GOST_MEDIA_VIDEOTOOLBOX":           "1",
+		"GOST_TEST_PROCESS_HELPER_COVERDIR": "/не-использовать/старое-покрытие-helper",
 	}
 	var env []string
 	for _, entry := range os.Environ() {
@@ -163,21 +182,54 @@ test)
   test "$count:$mode:$packages:$scope" = yes:yes:yes:yes
   test -n "$profile"
   test ! -e "$profile"
+  test "$GOST_TEST_PROCESS_HELPER_COVERDIR" = "$(dirname "$profile")/helpers"
+  test -d "$GOST_TEST_PROCESS_HELPER_COVERDIR"
+  for entry in "$GOST_TEST_PROCESS_HELPER_COVERDIR"/*; do
+    test ! -e "$entry"
+  done
+  : > "$GOST_TEST_PROCESS_HELPER_COVERDIR/covmeta.synthetic"
+  : > "$GOST_TEST_PROCESS_HELPER_COVERDIR/covcounters.synthetic"
   printf '%s\n' "$profile" >> "$COVERAGE_TEST_PROFILES"
   printf 'TEST\n' >> "$COVERAGE_TEST_LOG"
   case "$COVERAGE_TEST_SCENARIO" in
     missing_profile) exit 0 ;;
     empty_profile) : > "$profile" ;;
-    *) printf 'mode: atomic\na.go:1.1,2.1 1 1\n' > "$profile" ;;
+    header_only_profile) printf 'mode: atomic\n' > "$profile" ;;
+    bad_parent_header) printf 'mode: count\na.go:1.1,2.1 1 0\n' > "$profile" ;;
+    *) printf 'mode: atomic\na.go:1.1,2.1 1 0\n' > "$profile" ;;
   esac
   if test "$COVERAGE_TEST_SCENARIO" = test_failure; then exit 23; fi
   ;;
 tool)
+  if test "$2" = covdata; then
+    test "$#" = 6
+    test "$3" = textfmt
+    test "$4" = -hw
+    helper_dir=${5#-i=}
+    helper_profile=${6#-o=}
+    test "$helper_dir" != "$5"
+    test "$helper_profile" != "$6"
+    test "$helper_profile" = "$(dirname "$helper_dir")/helpers.out"
+    test ! -e "$helper_profile"
+    test -f "$helper_dir/covmeta.synthetic"
+    test -f "$helper_dir/covcounters.synthetic"
+    printf 'CONVERT\n' >> "$COVERAGE_TEST_LOG"
+    case "$COVERAGE_TEST_SCENARIO" in
+      conversion_failure) exit 26 ;;
+      missing_helper_profile) exit 0 ;;
+      empty_helper_profile) : > "$helper_profile" ;;
+      header_only_helper_profile) printf 'mode: atomic\n' > "$helper_profile" ;;
+      bad_helper_header) printf 'mode: count\na.go:1.1,2.1 1 1\n' > "$helper_profile" ;;
+      *) printf 'mode: atomic\na.go:1.1,2.1 1 1\n' > "$helper_profile" ;;
+    esac
+    exit 0
+  fi
   test "$2" = cover
   test "$#" = 3
   profile=${3#-func=}
   test "$profile" != "$3"
   test -s "$profile"
+  test "$(cat "$profile")" = "$(printf 'mode: atomic\na.go:1.1,2.1 1 0\na.go:1.1,2.1 1 1\n')"
   printf 'REPORT\n' >> "$COVERAGE_TEST_LOG"
   if test "$COVERAGE_TEST_SCENARIO" = report_failure; then exit 24; fi
   ;;

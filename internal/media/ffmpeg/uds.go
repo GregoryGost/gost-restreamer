@@ -1,6 +1,7 @@
 package ffmpeg
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -9,6 +10,8 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+
+	"github.com/GregoryGost/gost-restreamer/internal/processowner"
 )
 
 // ErrResourceOwnership означает, что путь больше не принадлежит данной попытке.
@@ -38,6 +41,9 @@ type Namespace struct {
 	shutdownErr    error
 	closed         bool
 	closeErr       error
+	scope          *processowner.Scope
+	resources      []processowner.FileIdentity
+	keepPaths      bool
 }
 
 func safeSegment(s string) bool {
@@ -122,6 +128,65 @@ func newNamespace(base, sessionID string, fileInput bool) (_ *Namespace, retErr 
 		n.InputPath = ""
 	}
 	if n.output, n.outputInfo, err = listenOwned(n.OutputPath); err != nil {
+		return nil, err
+	}
+	return n, nil
+}
+
+func newManagedNamespace(ctx context.Context, scope *processowner.Scope, fileInput bool) (_ *Namespace, retErr error) {
+	base := scope.Namespace()
+	if _, err := verifyDirectory(base); err != nil {
+		return nil, err
+	}
+	n := &Namespace{scope: scope}
+	defer func() {
+		if retErr != nil {
+			if cleanup := n.Close(); cleanup != nil {
+				retErr = &namespaceCreationError{cause: retErr, cleanup: cleanup}
+			}
+		}
+	}()
+	var err error
+	if n.dir, err = os.MkdirTemp(base, "w-"); err != nil {
+		return nil, err
+	}
+	register := func(name, kind string) error {
+		relative, err := filepath.Rel(base, name)
+		if err != nil {
+			return err
+		}
+		identity, err := scope.RuntimeIdentity(relative, kind)
+		if err != nil {
+			return err
+		}
+		n.resources = append(n.resources, identity)
+		return scope.RegisterRuntime(ctx, relative, kind)
+	}
+	if err = register(n.dir, processowner.Directory); err != nil {
+		return nil, err
+	}
+	n.InputPath, n.OutputPath = filepath.Join(n.dir, "i.sock"), filepath.Join(n.dir, "o.sock")
+	maxPath := 107
+	if runtime.GOOS == "darwin" {
+		maxPath = 103
+	}
+	if len(n.InputPath) > maxPath || len(n.OutputPath) > maxPath {
+		return nil, fmt.Errorf("%w: слишком длинный путь UDS", ErrInvalidSupervisor)
+	}
+	if !fileInput {
+		if n.input, n.inputInfo, err = listenOwned(n.InputPath); err != nil {
+			return nil, err
+		}
+		if err = register(n.InputPath, processowner.Socket); err != nil {
+			return nil, err
+		}
+	} else {
+		n.InputPath = ""
+	}
+	if n.output, n.outputInfo, err = listenOwned(n.OutputPath); err != nil {
+		return nil, err
+	}
+	if err = register(n.OutputPath, processowner.Socket); err != nil {
 		return nil, err
 	}
 	return n, nil
@@ -246,6 +311,17 @@ func (n *Namespace) Close() error {
 	}
 	n.closed = true
 	errs := []error{n.shutdownLocked()}
+	if n.scope != nil {
+		if n.keepPaths {
+			n.closeErr = errors.Join(n.shutdownErr, ErrCleanupPending)
+			return n.closeErr
+		}
+		for i := len(n.resources) - 1; i >= 0; i-- {
+			errs = append(errs, n.scope.RuntimeJournal().Remove(context.Background(), n.resources[i]))
+		}
+		n.closeErr = errors.Join(errs...)
+		return n.closeErr
+	}
 	// Проверка родителей предшествует доступу к вложенным путям.
 	if err := sameDirectory(n.sessionDir, n.sessionInfo); err != nil {
 		n.closeErr = errors.Join(append(errs, err)...)

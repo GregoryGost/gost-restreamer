@@ -500,7 +500,7 @@ func TestFallbackPipelineCPUGenerationFDLoopsAndDecode(t *testing.T) {
 			probeLimits := fallback.ProbeLimits{MaxJSONBytes: 1 << 20, MaxWidth: 1024, MaxHeight: 1024, MaxPixels: 1024 * 1024, MaxDuration: 10 * time.Second, ImageDuration: scenario.imageDuration, MaxPackets: 4096, Container: integrationLimits()}
 			actualRunner := fallbackPipelineRunner{t: t, runner: runner}
 			probe := fallback.Prober{Binary: filepath.Join(filepath.Dir(binary), "ffprobe"), Runner: actualRunner, Limits: probeLimits}
-			config := fallback.Config{GeneratorVersion: "cpu-integration", FFmpeg: binary, FFprobe: probe.Binary, MaxUploadBytes: 1 << 20, MaxOutputBytes: 8 << 20, PrepareTimeout: 15 * time.Second, ShutdownTimeout: 3 * time.Second, QueueInterval: time.Millisecond, Runner: runner.Limits, Probe: probeLimits}
+			config := fallback.Config{ReconcileLimit: 10, GeneratorVersion: "cpu-integration", FFmpeg: binary, FFprobe: probe.Binary, MaxUploadBytes: 1 << 20, MaxOutputBytes: 8 << 20, PrepareTimeout: 15 * time.Second, ShutdownTimeout: 3 * time.Second, QueueInterval: time.Millisecond, Runner: runner.Limits, Probe: probeLimits}
 			builder := fallbackPipelineCPUBuilder(binary)
 			if scenario.production {
 				builder = fallback.ProductionBuilder(binary)

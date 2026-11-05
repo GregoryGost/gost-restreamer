@@ -121,8 +121,9 @@ func TestIssuedWorkKeepsHoldsUntilCorrectCleanupAfterRestart(t *testing.T) {
 		t.Fatal("recovery переписал завершённую квитанцию")
 	}
 	requireDomainError(t, f.service.Complete(ctx, oldFence, core.Completion{Success: true}), core.ErrStale)
-	if _, err := f.service.StartSession(ctx, f.startRequest("blocked-before-cleanup")); !errors.Is(err, core.ErrNotReady) && !errors.Is(err, core.ErrInUse) {
-		t.Fatalf("новый start до cleanup должен отклоняться: %v", err)
+	newStart, err := f.service.StartSession(ctx, f.startRequest("manual-before-cleanup"))
+	if err != nil || newStart.SessionID == session.ID {
+		t.Fatalf("ручной start при старой очистке: %+v, %v", newStart, err)
 	}
 	requireOutputVariantHolds(t, f.store, f.variant.ID, true)
 	requireDomainError(t, f.service.DeleteVariant(ctx, f.variant.ID, f.variant.Revision), core.ErrInUse)
@@ -144,10 +145,8 @@ func TestIssuedWorkKeepsHoldsUntilCorrectCleanupAfterRestart(t *testing.T) {
 	if len(pendingCleanups(t, f.store, session.ID)) != 0 {
 		t.Fatal("подтверждённая очистка осталась pending")
 	}
-	newStart, err := f.service.StartSession(ctx, f.startRequest("manual-after-cleanup"))
-	if err != nil || newStart.SessionID == session.ID {
-		t.Fatalf("ручной start после cleanup: %+v, %v", newStart, err)
-	}
+	_, err = f.service.StartSession(ctx, f.startRequest("duplicate-active-session"))
+	requireDomainError(t, err, core.ErrInUse)
 	for _, cleanup := range cleanups {
 		if err := f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(cleanup)); err != nil {
 			t.Fatal(err)
@@ -195,6 +194,13 @@ func TestStoppedAttachedOutputRestartsSavedSnapshotAndDetachReleasesOnlyOwnHold(
 	outputs := readOutputs(t, f.store, start.SessionID)
 	first := outputs[0]
 	if _, err := f.service.StopOutput(ctx, core.OutputCommand{RequestID: "stop-unissued-output", OutputID: first.ID}); err != nil {
+		t.Fatal(err)
+	}
+	provisional := pendingCleanups(t, f.store, start.SessionID)
+	if len(provisional) != 1 || provisional[0].OutputID != first.ID || provisional[0].Attempt != 0 {
+		t.Fatalf("остановка потеряла очистку предварительной группы: %+v", provisional)
+	}
+	if err := f.service.AcknowledgeCleanup(ctx, core.CleanupFenceFor(provisional[0])); err != nil {
 		t.Fatal(err)
 	}
 	requireDomainError(t, f.service.DeleteDestination(ctx, first.Snapshot.Destination.ID, first.Snapshot.Destination.Revision), core.ErrInUse)

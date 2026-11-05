@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/GregoryGost/gost-restreamer/internal/processowner"
 )
 
 // Command задаёт отдельные аргументы и заранее открытый входной дескриптор FD 3.
@@ -30,7 +32,10 @@ func (l RunnerLimits) Validate() error {
 }
 
 // Runner выполняет конечный процесс; возврат подтверждает единственный Wait и закрытие копировщиков.
-type Runner struct{ Limits RunnerLimits }
+type Runner struct {
+	Limits RunnerLimits
+	Scope  *processowner.Scope
+}
 type RunResult struct{ Diagnostics []byte }
 
 func (r Runner) Run(ctx context.Context, command Command, input *os.File, output io.Writer) (RunResult, error) {
@@ -55,19 +60,42 @@ func (r Runner) Run(ctx context.Context, command Command, input *os.File, output
 	}
 	ctx, cancel := context.WithTimeout(ctx, r.Limits.Timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, command.Binary, command.Args...)
-	if input != nil {
-		cmd.ExtraFiles = []*os.File{input}
-	}
 	var diagnostics bytes.Buffer
 	diag := &cancelWriter{writer: boundedWriter{w: &diagnostics, remaining: r.Limits.MaxDiagnosticBytes}, cancel: cancel}
-	cmd.Stderr = diag
 	var stdout *cancelOutput
 	if output != nil {
 		stdout = &cancelOutput{w: output, cancel: cancel}
-		cmd.Stdout = stdout
 	}
-	err := cmd.Run()
+	var err error
+	if r.Scope != nil {
+		c := processowner.Command{Binary: command.Binary, Args: command.Args, Stderr: diag}
+		if input != nil {
+			c.ExtraFiles = []*os.File{input}
+		}
+		if stdout != nil {
+			c.Stdout = stdout
+		}
+		process, startErr := r.Scope.Start(ctx, c)
+		err = startErr
+		if err == nil {
+			// Дедлайн закрывает lifeline; возврат по-прежнему ждёт единственного Wait нативного процесса.
+			result, waitErr := process.Wait(context.Background())
+			err = errors.Join(result.Err, waitErr)
+			if !result.Joined {
+				err = errors.Join(err, ErrCleanupPending)
+			}
+		}
+	} else {
+		cmd := exec.CommandContext(ctx, command.Binary, command.Args...)
+		if input != nil {
+			cmd.ExtraFiles = []*os.File{input}
+		}
+		cmd.Stderr = diag
+		if stdout != nil {
+			cmd.Stdout = stdout
+		}
+		err = cmd.Run()
+	}
 	if stdout != nil && stdout.err != nil {
 		err = errors.Join(stdout.err, err)
 	}

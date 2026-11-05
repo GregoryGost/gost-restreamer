@@ -12,13 +12,18 @@ import (
 )
 
 func selfConfig() Config {
-	return Config{GeneratorVersion: "generator", FFmpeg: "ffmpeg", FFprobe: "ffprobe", MaxUploadBytes: 1 << 20, MaxOutputBytes: 8 << 20, PrepareTimeout: time.Minute, ShutdownTimeout: time.Second, QueueInterval: time.Millisecond, Runner: selfRunner().Limits, Probe: selfProbeLimits()}
+	return Config{ReconcileLimit: 10, GeneratorVersion: "generator", FFmpeg: "ffmpeg", FFprobe: "ffprobe", MaxUploadBytes: 1 << 20, MaxOutputBytes: 8 << 20, PrepareTimeout: time.Minute, ShutdownTimeout: time.Second, QueueInterval: time.Millisecond, Runner: selfRunner().Limits, Probe: selfProbeLimits()}
 }
 
 func TestDefaultManagerValidatesLimitsAndOwnsItsClosedLifecycle(t *testing.T) {
 	files, _ := selfFileStore(t)
 	c := selfConfig()
-	m, err := NewManager(&core.Service{}, files, c)
+	if _, err := NewManager(&core.Service{}, files, c); !errors.Is(err, ErrInvalid) {
+		t.Fatal("рабочий Manager без ProcessRegistry принят", err)
+	}
+	runner := Runner{Limits: c.Runner}
+	probe := Prober{Binary: c.FFprobe, Runner: runner, Limits: c.Probe}
+	m, err := NewManagerWithTools(&core.Service{}, files, c, Tools{Builder: ProductionBuilder(c.FFmpeg), Inspector: probe, Runner: runner})
 	if err != nil {
 		t.Fatal(err)
 	}

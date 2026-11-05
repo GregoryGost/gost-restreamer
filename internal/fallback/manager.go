@@ -3,6 +3,7 @@ package fallback
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/GregoryGost/gost-restreamer/internal/core"
+	"github.com/GregoryGost/gost-restreamer/internal/processowner"
 )
 
 // Config задаёт конечные бюджеты операций; очередь ограничивает общий Store.
@@ -21,10 +23,12 @@ type Config struct {
 	PrepareTimeout, ShutdownTimeout, QueueInterval time.Duration
 	Runner                                         RunnerLimits
 	Probe                                          ProbeLimits
+	ProcessRegistry                                *processowner.Registry
+	ReconcileLimit                                 int
 }
 
 func (c Config) Validate() error {
-	if c.GeneratorVersion == "" || c.FFmpeg == "" || c.FFprobe == "" || c.MaxUploadBytes == 0 || c.MaxOutputBytes == 0 || c.MaxUploadBytes >= math.MaxInt64 || c.MaxOutputBytes >= math.MaxInt64 || c.PrepareTimeout <= 0 || c.ShutdownTimeout <= 0 || c.QueueInterval <= 0 {
+	if c.GeneratorVersion == "" || c.FFmpeg == "" || c.FFprobe == "" || c.MaxUploadBytes == 0 || c.MaxOutputBytes == 0 || c.MaxUploadBytes >= math.MaxInt64 || c.MaxOutputBytes >= math.MaxInt64 || c.PrepareTimeout <= 0 || c.ShutdownTimeout <= 0 || c.QueueInterval <= 0 || c.ReconcileLimit <= 0 || c.ReconcileLimit > core.MaxPageLimit {
 		return ErrInvalid
 	}
 	return errors.Join(c.Runner.Validate(), c.Probe.Validate())
@@ -47,16 +51,24 @@ type Tools struct {
 	VerifyLoopDuration func(context.Context, *os.File, time.Duration) error
 }
 type Manager struct {
-	service *core.Service
-	files   *FileStore
-	config  Config
-	tools   Tools
-	mu      sync.Mutex
-	closed  bool
-	jobs    map[core.ID]*Job
+	service              *core.Service
+	files                *FileStore
+	config               Config
+	tools                Tools
+	mu                   sync.Mutex
+	closed               bool
+	jobs                 map[core.ID]*Job
+	reconcileGate        chan struct{}
+	reconciliationClosed bool
+	scopeCursor          string
+	fileCursor           string
+	retiredScopes        map[string]retiredPreparationScope
 }
 
 func NewManager(service *core.Service, files *FileStore, config Config) (*Manager, error) {
+	if config.ProcessRegistry == nil {
+		return nil, ErrInvalid
+	}
 	runner := Runner{Limits: config.Runner}
 	probe := Prober{Binary: config.FFprobe, Runner: runner, Limits: config.Probe}
 	return NewManagerWithTools(service, files, config, Tools{Builder: ProductionBuilder(config.FFmpeg), Inspector: probe, Runner: runner, Normalize: probe.NormalizePrepared, VerifyLoopDuration: probe.VerifyLoopDuration})
@@ -68,7 +80,9 @@ func NewManagerWithTools(service *core.Service, files *FileStore, config Config,
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	return &Manager{service: service, files: files, config: config, tools: tools, jobs: map[core.ID]*Job{}}, nil
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{}
+	return &Manager{service: service, files: files, config: config, tools: tools, jobs: map[core.ID]*Job{}, reconcileGate: gate, retiredScopes: map[string]retiredPreparationScope{}}, nil
 }
 
 type Result struct {
@@ -101,6 +115,7 @@ type Job struct {
 func (j *Job) Generation() core.FallbackGeneration { return cloneGeneration(j.generation) }
 func (j *Job) Done() <-chan struct{}               { return j.done }
 func (j *Job) Cancel() {
+	j.cancel()
 	j.mu.Lock()
 	owner := j.owner
 	j.mu.Unlock()
@@ -109,7 +124,6 @@ func (j *Job) Cancel() {
 		_ = owner.Revoke(ctx)
 		cancel()
 	}
-	j.cancel()
 }
 func (j *Job) Wait(ctx context.Context) (Result, error) {
 	select {
@@ -211,6 +225,9 @@ func (m *Manager) execute(ctx context.Context, g core.FallbackGeneration, reader
 	fence := core.PreparationFenceFor(g)
 	var owner *core.PreparationOwner
 	var finish func()
+	var scope *processowner.Scope
+	var ticket *processowner.Ticket
+	scopeAttempted := false
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), m.config.ShutdownTimeout)
 		defer cancel()
@@ -235,9 +252,43 @@ func (m *Manager) execute(ctx context.Context, g core.FallbackGeneration, reader
 				result.Err = errors.Join(result.Err, err, m.service.CancelPreparation(cleanup, fence, result.Err.Error()))
 			}
 		}
+		var physicalErr error
+		if scopeAttempted && scope == nil {
+			physicalErr = ErrCleanupPending
+		}
+		if scope != nil {
+			if ticket != nil {
+				physicalErr = ticket.Complete(cleanup)
+				if physicalErr == nil {
+					ticket = nil
+				}
+			}
+			closeErr := scope.CloseContext(cleanup)
+			if closeErr != nil {
+				m.mu.Lock()
+				m.retiredScopes[scope.ID()] = retiredPreparationScope{scope: scope, ticket: ticket, generationID: g.ID}
+				m.mu.Unlock()
+			}
+			physicalErr = errors.Join(physicalErr, closeErr)
+			proof, proofErr := scope.Resolve(cleanup)
+			physicalErr = errors.Join(physicalErr, proofErr)
+			if !proof.Joined {
+				physicalErr = errors.Join(physicalErr, ErrCleanupPending)
+			}
+		}
+		if errors.Is(result.Err, processowner.ErrUnknown) || errors.Is(result.Err, processowner.ErrPending) || errors.Is(result.Err, ErrCleanupPending) {
+			physicalErr = errors.Join(physicalErr, ErrCleanupPending)
+		}
+		if physicalErr != nil {
+			result.Err = errors.Join(result.Err, physicalErr, ErrCleanupPending)
+			return
+		}
 		ack := m.service.AcknowledgePreparationCleanup(cleanup, fence)
 		result.Clean = ack == nil
 		result.Err = errors.Join(result.Err, ack)
+		if ack == nil && scope != nil {
+			result.Err = errors.Join(result.Err, m.config.ProcessRegistry.AcknowledgeScope(cleanup, scope.ID()))
+		}
 	}()
 	for {
 		var err error
@@ -302,7 +353,29 @@ func (m *Manager) execute(ctx context.Context, g core.FallbackGeneration, reader
 	}()
 	defer func() { cancel(); <-watchDone }()
 	g.Attempt = fence.Attempt
-	publication, err := m.prepare(work, g, reader)
+	tools := m.tools
+	if m.config.ProcessRegistry != nil {
+		key, keyErr := json.Marshal(preparationScopeOwner{1, "preparation", fence})
+		if keyErr != nil {
+			result.Err = keyErr
+			return result
+		}
+		scopeAttempted = true
+		scope, err = m.config.ProcessRegistry.Create(work, string(key))
+		if err != nil {
+			result.Err = err
+			return result
+		}
+		ticket, err = scope.Register(work, "preparation")
+		if err != nil {
+			result.Err = err
+			return result
+		}
+		runner := Runner{Limits: m.config.Runner, Scope: scope}
+		probe := Prober{Binary: m.config.FFprobe, Runner: runner, Limits: m.config.Probe}
+		tools = Tools{Builder: ProductionBuilder(m.config.FFmpeg), Inspector: probe, Runner: runner, Normalize: probe.NormalizePrepared, VerifyLoopDuration: probe.VerifyLoopDuration}
+	}
+	publication, err := m.prepare(work, g, reader, tools)
 	if err != nil {
 		result.Err = err
 		return result
@@ -315,11 +388,18 @@ func (m *Manager) execute(ctx context.Context, g core.FallbackGeneration, reader
 	return result
 }
 
-func (m *Manager) prepare(ctx context.Context, g core.FallbackGeneration, reader io.ReadCloser) (publication core.GenerationPublication, retErr error) {
+func (m *Manager) prepare(ctx context.Context, g core.FallbackGeneration, reader io.ReadCloser, tools Tools) (publication core.GenerationPublication, retErr error) {
 	if err := ctx.Err(); err != nil {
 		return core.GenerationPublication{}, err
 	}
-	if err := m.files.CreateGeneration(g.ID); err != nil {
+	if err := m.reserveGenerationFiles(ctx, g.ID); err != nil {
+		return core.GenerationPublication{}, err
+	}
+	directory, err := m.ownedFile(ctx, g.ID, core.GenerationDirectory(g.ID))
+	if err != nil {
+		return core.GenerationPublication{}, err
+	}
+	if err := m.files.CreateOwnedGenerationContext(ctx, directory); err != nil {
 		return core.GenerationPublication{}, err
 	}
 	var source io.Reader = reader
@@ -339,7 +419,7 @@ func (m *Manager) prepare(ctx context.Context, g core.FallbackGeneration, reader
 	if source == nil {
 		return core.GenerationPublication{}, ErrInvalid
 	}
-	file, err := m.files.Create(g.StagingPath)
+	file, err := m.createOwned(ctx, g.ID, g.StagingPath)
 	if err != nil {
 		return core.GenerationPublication{}, err
 	}
@@ -363,14 +443,14 @@ func (m *Manager) prepare(ctx context.Context, g core.FallbackGeneration, reader
 	if err != nil {
 		return core.GenerationPublication{}, err
 	}
-	if err = m.files.PublishRename(g.StagingPath, g.OriginalPath); err != nil {
+	if err = m.renameOwned(ctx, g.ID, g.StagingPath, g.OriginalPath); err != nil {
 		return core.GenerationPublication{}, err
 	}
 	input, err := m.files.OpenExact(ctx, g.OriginalPath, size, hash)
 	if err != nil {
 		return core.GenerationPublication{}, err
 	}
-	observed, err := m.tools.Inspector.Source(ctx, input, g.Kind)
+	observed, err := tools.Inspector.Source(ctx, input, g.Kind)
 	err = errors.Join(err, input.Close())
 	if err != nil {
 		return core.GenerationPublication{}, err
@@ -381,7 +461,7 @@ func (m *Manager) prepare(ctx context.Context, g core.FallbackGeneration, reader
 		if v.Width > m.config.Probe.MaxWidth || v.Height > m.config.Probe.MaxHeight || uint64(v.Width)*uint64(v.Height) > m.config.Probe.MaxPixels {
 			return publication, ErrLimit
 		}
-		variant, err := m.variant(ctx, g, required, observed, size, hash)
+		variant, err := m.variant(ctx, g, required, observed, size, hash, tools)
 		if err != nil {
 			return publication, err
 		}
@@ -390,12 +470,12 @@ func (m *Manager) prepare(ctx context.Context, g core.FallbackGeneration, reader
 	return publication, nil
 }
 
-func (m *Manager) variant(ctx context.Context, g core.FallbackGeneration, p core.RequiredProfile, source Source, size uint64, hash string) (core.FallbackVariant, error) {
+func (m *Manager) variant(ctx context.Context, g core.FallbackGeneration, p core.RequiredProfile, source Source, size uint64, hash string, tools Tools) (core.FallbackVariant, error) {
 	loop, err := EffectiveLoopDuration(source.Duration, p.Profile, m.config.Probe.MaxDuration)
 	if err != nil {
 		return core.FallbackVariant{}, err
 	}
-	command, err := m.tools.Builder(GenerateRequest{Source: source, Profile: p.Profile, LoopDuration: loop})
+	command, err := tools.Builder(GenerateRequest{Source: source, Profile: p.Profile, LoopDuration: loop})
 	if err != nil {
 		return core.FallbackVariant{}, err
 	}
@@ -406,11 +486,11 @@ func (m *Manager) variant(ctx context.Context, g core.FallbackGeneration, p core
 	if err != nil {
 		return core.FallbackVariant{}, err
 	}
-	output, err := m.files.Create(p.StagingPath)
+	output, err := m.createOwned(ctx, g.ID, p.StagingPath)
 	if err != nil {
 		return core.FallbackVariant{}, errors.Join(err, input.Close())
 	}
-	_, err = m.tools.Runner.Run(ctx, command, input, &boundedWriter{w: output, remaining: m.config.MaxOutputBytes})
+	_, err = tools.Runner.Run(ctx, command, input, &boundedWriter{w: output, remaining: m.config.MaxOutputBytes})
 	err = errors.Join(err, input.Close())
 	if err != nil {
 		return core.FallbackVariant{}, errors.Join(err, output.Close())
@@ -421,7 +501,7 @@ func (m *Manager) variant(ctx context.Context, g core.FallbackGeneration, p core
 		return core.FallbackVariant{}, err
 	}
 	staging := p.StagingPath
-	normalize := m.tools.Normalize
+	normalize := tools.Normalize
 	if normalize != nil {
 		staging = p.StagingPath + ".normalized"
 		_, err = m.service.RegisterPreparationFile(ctx, core.PreparationFenceFor(g), core.OwnedFile{ManagedPath: staging, Kind: core.OwnedStaging})
@@ -432,7 +512,7 @@ func (m *Manager) variant(ctx context.Context, g core.FallbackGeneration, p core
 		if e != nil {
 			return core.FallbackVariant{}, e
 		}
-		normalized, e := m.files.Create(staging)
+		normalized, e := m.createOwned(ctx, g.ID, staging)
 		if e != nil {
 			return core.FallbackVariant{}, errors.Join(e, raw.Close())
 		}
@@ -450,20 +530,24 @@ func (m *Manager) variant(ctx context.Context, g core.FallbackGeneration, p core
 	if err != nil {
 		return core.FallbackVariant{}, err
 	}
-	actual, err := m.tools.Inspector.Verify(ctx, verify, p.Profile)
-	if err == nil && m.tools.VerifyLoopDuration != nil {
-		err = m.tools.VerifyLoopDuration(ctx, verify, loop)
+	actual, err := tools.Inspector.Verify(ctx, verify, p.Profile)
+	if err == nil && tools.VerifyLoopDuration != nil {
+		err = tools.VerifyLoopDuration(ctx, verify, loop)
 	}
 	err = errors.Join(err, verify.Close())
 	if err != nil {
 		return core.FallbackVariant{}, err
 	}
 	if staging != p.StagingPath {
-		if err = m.files.RemoveOwnedContext(ctx, core.OwnedFile{AssetID: g.AssetID, GenerationID: g.ID, ManagedPath: p.StagingPath, Kind: core.OwnedStaging}); err != nil {
+		raw, err := m.ownedFile(ctx, g.ID, p.StagingPath)
+		if err != nil {
+			return core.FallbackVariant{}, err
+		}
+		if err = m.files.RemoveOwnedContext(ctx, raw); err != nil {
 			return core.FallbackVariant{}, err
 		}
 	}
-	if err = m.files.PublishRename(staging, p.ManagedPath); err != nil {
+	if err = m.renameOwned(ctx, g.ID, staging, p.ManagedPath); err != nil {
 		return core.FallbackVariant{}, err
 	}
 	return core.FallbackVariant{Record: core.Record{ID: p.VariantID}, AssetID: g.AssetID, GenerationID: g.ID, Profile: p.Profile, ProfileKey: p.ProfileKey, CanonicalProfile: p.CanonicalProfile, ManagedPath: p.ManagedPath, GeneratorVersion: g.GeneratorVersion, SourceHash: hash, SizeBytes: variantSize, ContentHash: digest, VerifiedFormat: actual}, nil
@@ -473,13 +557,26 @@ func (m *Manager) variant(ctx context.Context, g core.FallbackGeneration, p core
 func (m *Manager) Close(ctx context.Context) error {
 	m.mu.Lock()
 	m.closed = true
+	m.reconciliationClosed = true
 	jobs := make([]*Job, 0, len(m.jobs))
 	for _, j := range m.jobs {
 		jobs = append(jobs, j)
 	}
 	m.mu.Unlock()
 	for _, j := range jobs {
-		j.Cancel()
+		j.cancel()
+		j.mu.Lock()
+		owner := j.owner
+		j.mu.Unlock()
+		if owner != nil {
+			_ = owner.Revoke(ctx)
+		}
+	}
+	select {
+	case <-m.reconcileGate:
+		defer func() { m.reconcileGate <- struct{}{} }()
+	case <-ctx.Done():
+		return errors.Join(ErrCleanupPending, ctx.Err())
 	}
 	var err error
 	for _, j := range jobs {
@@ -489,7 +586,14 @@ func (m *Manager) Close(ctx context.Context) error {
 		}
 		err = errors.Join(err, e)
 	}
-	return err
+	return errors.Join(err, m.retryRetiredScopes(ctx))
+}
+
+// CloseAdmission немедленно запрещает новые Upload/Rebuild без ожидания текущих заданий.
+func (m *Manager) CloseAdmission() {
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
 }
 
 // CleanupFile сверяет намерение с реестром файлов и подтверждает долговечность удаления.
@@ -505,7 +609,14 @@ func (m *Manager) CleanupFile(ctx context.Context, intent core.CleanupIntent) er
 		return core.ErrStale
 	}
 	if stored.Acknowledged {
-		return nil
+		file, lookupErr := m.ownedFile(ctx, stored.ArtifactGenerationID, stored.ManagedPath)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if file.ID != stored.FileID || file.Kind != stored.FileKind {
+			return core.ErrStale
+		}
+		return m.files.AcknowledgeOwnedContext(ctx, file)
 	}
 	fence := core.CleanupFenceFor(stored)
 	file, err := m.service.AuthorizeFileCleanup(ctx, fence)
@@ -515,5 +626,66 @@ func (m *Manager) CleanupFile(ctx context.Context, intent core.CleanupIntent) er
 	if err = m.files.RemoveOwnedContext(ctx, file); err != nil {
 		return err
 	}
-	return m.service.AcknowledgeCleanup(ctx, fence)
+	if err = m.service.AcknowledgeCleanup(ctx, fence); err != nil {
+		return err
+	}
+	return m.files.AcknowledgeOwnedContext(ctx, file)
+}
+
+func (m *Manager) ownedFile(ctx context.Context, generation core.ID, name string) (core.OwnedFile, error) {
+	request := core.PageRequest{Query: core.ListQuery{Limit: m.config.ReconcileLimit, GenerationID: generation}}
+	for {
+		page, err := m.service.ListGenerationFiles(ctx, request)
+		if err != nil {
+			return core.OwnedFile{}, err
+		}
+		for _, file := range page.Items {
+			if file.ManagedPath == name {
+				return file, nil
+			}
+		}
+		if page.NextCursor == "" {
+			return core.OwnedFile{}, core.ErrNotFound
+		}
+		request.Cursor = page.NextCursor
+	}
+}
+
+func (m *Manager) reserveGenerationFiles(ctx context.Context, generation core.ID) error {
+	request := core.PageRequest{Query: core.ListQuery{Limit: m.config.ReconcileLimit, GenerationID: generation}}
+	for {
+		page, err := m.service.ListGenerationFiles(ctx, request)
+		if err != nil {
+			return err
+		}
+		for _, file := range page.Items {
+			if err = m.files.ReserveOwnedContext(ctx, file); err != nil {
+				return err
+			}
+		}
+		if page.NextCursor == "" {
+			return nil
+		}
+		request.Cursor = page.NextCursor
+	}
+}
+
+func (m *Manager) createOwned(ctx context.Context, generation core.ID, name string) (*os.File, error) {
+	file, err := m.ownedFile(ctx, generation, name)
+	if err != nil {
+		return nil, err
+	}
+	return m.files.CreateOwnedContext(ctx, file)
+}
+
+func (m *Manager) renameOwned(ctx context.Context, generation core.ID, staging, final string) error {
+	from, err := m.ownedFile(ctx, generation, staging)
+	if err != nil {
+		return err
+	}
+	to, err := m.ownedFile(ctx, generation, final)
+	if err != nil {
+		return err
+	}
+	return m.files.PublishOwnedRenameContext(ctx, from, to)
 }

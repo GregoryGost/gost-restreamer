@@ -12,7 +12,7 @@ export GOFLAGS ?= -mod=readonly
 
 .PHONY: help toolchain-check tools require-linter require-packages fmt fmt-check \
 	tidy tidy-check mod-verify vet test coverage test-race lint-config lint build binary \
-	bootstrap-check check
+	bootstrap-check check process-helper
 
 help:
 	@printf '%s\n' \
@@ -23,6 +23,7 @@ help:
 		'make fmt              — отформатировать Go-файлы.' \
 		'make tidy             — обновить go.mod и go.sum по импортам.' \
 		'make binary           — собрать сервис в ./bin/gost-restreamer.'
+	@printf '%s\n' 'make process-helper   — собрать владельца native-процессов в ./bin/gost-process-helper.'
 
 toolchain-check:
 	@$(GO) version
@@ -80,9 +81,16 @@ coverage: require-packages
 		trap 'coverage_status=$$?; trap - EXIT HUP INT TERM; rm -rf "$$coverage_dir"; exit "$$coverage_status"' EXIT; \
 		trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
 		profile="$$coverage_dir/coverage.out"; \
+		helper_dir="$$coverage_dir/helpers"; \
+		helper_profile="$$coverage_dir/helpers.out"; \
+		mkdir "$$helper_dir" || exit $$?; \
 		printf '%s\n' 'Покрытие всех пакетов ./...; исключений нет; порог 85%.' "Профиль текущего запуска: $$profile"; \
-		GOST_MEDIA_FFMPEG= GOST_FMP4_FFMPEG= GOST_MEDIA_VIDEOTOOLBOX= $(GO) test -count=1 -covermode=atomic -coverpkg=./... -coverprofile="$$profile" ./... || exit $$?; \
+		GOST_MEDIA_FFMPEG= GOST_FMP4_FFMPEG= GOST_MEDIA_VIDEOTOOLBOX= GOST_TEST_PROCESS_HELPER_COVERDIR="$$helper_dir" $(GO) test -count=1 -covermode=atomic -coverpkg=./... -coverprofile="$$profile" ./... || exit $$?; \
 		test -s "$$profile" || { printf '%s\n' 'NOT VERIFIED: профиль покрытия отсутствует или пуст.' >&2; exit 1; }; \
+		test "$$(sed -n '1p' "$$profile")" = 'mode: atomic' && test -n "$$(sed -n '2p' "$$profile")" || { printf '%s\n' 'NOT VERIFIED: основной профиль должен содержать блоки в режиме atomic.' >&2; exit 1; }; \
+		$(GO) tool covdata textfmt -hw -i="$$helper_dir" -o="$$helper_profile" || exit $$?; \
+		test -s "$$helper_profile" && test "$$(sed -n '1p' "$$helper_profile")" = 'mode: atomic' && test -n "$$(sed -n '2p' "$$helper_profile")" || { printf '%s\n' 'NOT VERIFIED: профиль helper должен содержать реальные блоки в режиме atomic.' >&2; exit 1; }; \
+		sed '1d' "$$helper_profile" >> "$$profile" || exit $$?; \
 		$(GO) tool cover -func="$$profile" || exit $$?; \
 		$(GO) build -o "$$coverage_dir/coveragecheck" ./tools/coveragecheck || exit $$?; \
 		"$$coverage_dir/coveragecheck" -profile "$$profile" -min 85
@@ -102,6 +110,10 @@ build: require-packages
 binary: require-packages
 	mkdir -p bin
 	$(GO) build -trimpath -o bin/gost-restreamer ./cmd/gost-restreamer
+
+process-helper: require-packages
+	mkdir -p bin
+	$(GO) build -trimpath -o bin/gost-process-helper ./cmd/gost-process-helper
 
 bootstrap-check: toolchain-check fmt-check tidy-check mod-verify lint-config
 

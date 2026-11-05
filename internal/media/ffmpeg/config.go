@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/GregoryGost/gost-restreamer/internal/processowner"
 )
 
 var (
@@ -112,10 +114,12 @@ type Worker struct {
 	SessionID string
 	GroupID   string
 	Owner     OwnerPermit
-	Topology  Topology
-	Command   CommandBuilder
-	Input     IOHandler
-	Output    IOHandler
+	// ProcessScope обязателен в рабочей сборке и учитывает все попытки Worker.
+	ProcessScope *processowner.Scope
+	Topology     Topology
+	Command      CommandBuilder
+	Input        IOHandler
+	Output       IOHandler
 }
 
 // Result разделяет исход worker и доказательство физической очистки.

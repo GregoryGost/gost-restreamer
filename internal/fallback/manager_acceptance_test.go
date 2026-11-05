@@ -53,7 +53,7 @@ func (f acceptanceRunFunc) Run(ctx context.Context, c Command, input *os.File, o
 }
 
 func acceptanceManagerConfig() Config {
-	return Config{GeneratorVersion: "acceptance-generator", FFmpeg: "controlled-ffmpeg", FFprobe: "controlled-ffprobe", MaxUploadBytes: 1 << 16, MaxOutputBytes: 1 << 16, PrepareTimeout: 5 * time.Second, ShutdownTimeout: time.Second, QueueInterval: time.Millisecond, Runner: RunnerLimits{Timeout: time.Second, MaxArgs: 256, MaxCommandBytes: 1 << 16, MaxDiagnosticBytes: 1 << 16}, Probe: ProbeLimits{MaxJSONBytes: 1 << 16, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 4096 * 4096, MaxDuration: time.Minute, ImageDuration: time.Second, MaxPackets: 1000, Container: fmp4.Limits{MaxBoxBytes: 1 << 20, MaxInitBytes: 1 << 20, MaxMoofBytes: 1 << 16, MaxMdatBytes: 1 << 20, MaxSampleBytes: 1 << 18, MaxExtradataBytes: 1 << 12, MaxSamples: 100}}}
+	return Config{ReconcileLimit: 10, GeneratorVersion: "acceptance-generator", FFmpeg: "controlled-ffmpeg", FFprobe: "controlled-ffprobe", MaxUploadBytes: 1 << 16, MaxOutputBytes: 1 << 16, PrepareTimeout: 5 * time.Second, ShutdownTimeout: time.Second, QueueInterval: time.Millisecond, Runner: RunnerLimits{Timeout: time.Second, MaxArgs: 256, MaxCommandBytes: 1 << 16, MaxDiagnosticBytes: 1 << 16}, Probe: ProbeLimits{MaxJSONBytes: 1 << 16, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 4096 * 4096, MaxDuration: time.Minute, ImageDuration: time.Second, MaxPackets: 1000, Container: fmp4.Limits{MaxBoxBytes: 1 << 20, MaxInitBytes: 1 << 20, MaxMoofBytes: 1 << 16, MaxMdatBytes: 1 << 20, MaxSampleBytes: 1 << 18, MaxExtradataBytes: 1 << 12, MaxSamples: 100}}}
 }
 
 func acceptanceManagerService(t *testing.T) (*core.Service, *storage.Store, core.FallbackAsset, core.Stream) {

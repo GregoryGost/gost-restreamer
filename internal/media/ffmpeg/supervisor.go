@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/GregoryGost/gost-restreamer/internal/processowner"
 )
 
 // Supervisor владеет одним логическим worker и всеми его последовательными попытками.
@@ -219,11 +221,33 @@ func (p *packetProgress) health(now, start time.Time, c Config) error {
 }
 
 func (s *Supervisor) runAttempt(parent context.Context, w Worker, id uint64) (retErr, cleanupErr error) {
+	defer func() {
+		if errors.Is(retErr, ErrCleanupPending) || errors.Is(retErr, processowner.ErrPending) || errors.Is(retErr, processowner.ErrUnknown) {
+			cleanupErr = errors.Join(cleanupErr, ErrCleanupPending)
+		}
+	}()
 	ctx, cancelCause := context.WithCancelCause(parent)
 	cancel := func() { cancelCause(context.Canceled) }
 	defer cancel()
+	if w.ProcessScope != nil {
+		ticket, err := w.ProcessScope.Register(ctx, "ffmpeg-attempt")
+		if err != nil {
+			return err, nil
+		}
+		defer func() {
+			complete, stop := context.WithTimeout(context.Background(), s.config.ShutdownTimeout)
+			defer stop()
+			cleanupErr = errors.Join(cleanupErr, ticket.Complete(complete))
+		}()
+	}
 	sessionHash := fmt.Sprintf("%x", sha256.Sum256([]byte(w.SessionID)))[:16]
-	n, err := newNamespace(s.config.BaseDir, sessionHash, w.Topology == FileInput)
+	var n *Namespace
+	var err error
+	if w.ProcessScope != nil {
+		n, err = newManagedNamespace(ctx, w.ProcessScope, w.Topology == FileInput)
+	} else {
+		n, err = newNamespace(s.config.BaseDir, sessionHash, w.Topology == FileInput)
+	}
 	if err != nil {
 		var partial *namespaceCreationError
 		if errors.As(err, &partial) {
@@ -295,6 +319,9 @@ func (s *Supervisor) runAttempt(parent context.Context, w Worker, id uint64) (re
 				retErr = errors.Join(retErr, handlerErr)
 			}
 		}
+		if errors.Is(retErr, ErrCleanupPending) || errors.Is(retErr, processowner.ErrPending) || errors.Is(retErr, processowner.ErrUnknown) {
+			n.keepPaths = true
+		}
 		cleanupErr = errors.Join(cleanupErr, n.Close())
 	}()
 	if ctx.Err() != nil {
@@ -339,23 +366,10 @@ func (s *Supervisor) runAttempt(parent context.Context, w Worker, id uint64) (re
 	// argv копируются до передачи процессу и диагностики.
 	command.Args = append([]string(nil), command.Args...)
 	s.queue.push(Diagnostic{Time: time.Now(), Attempt: id, Kind: "command", Args: append([]string{command.Binary}, command.Args...)})
-	cmd := exec.CommandContext(ctx, command.Binary, command.Args...)
-	cmd.ExtraFiles = append([]*os.File(nil), command.ExtraFiles...)
-	cmd.Cancel = func() error {
-		err := cmd.Process.Signal(os.Interrupt)
-		if errors.Is(err, os.ErrProcessDone) {
-			return os.ErrProcessDone
-		}
-		return err
-	}
-	cmd.WaitDelay = s.config.GracePeriod
-	cmd.Stdout = &diagnosticWriter{queue: s.queue, attempt: id, kind: "stdout", chunk: s.config.DiagnosticChunkBytes}
-	cmd.Stderr = &diagnosticWriter{queue: s.queue, attempt: id, kind: "stderr", chunk: s.config.DiagnosticChunkBytes}
-	if err = cmd.Start(); err != nil {
+	processDone, err := s.startProcess(ctx, w.ProcessScope, command, id)
+	if err != nil {
 		return err, nil
 	}
-	processDone := make(chan error, 1)
-	go func() { processDone <- cmd.Wait() }()
 	ticker := time.NewTicker(s.config.WatchdogInterval)
 	defer ticker.Stop()
 	start := time.Now()
@@ -437,4 +451,41 @@ selectLoop:
 		err = <-processDone
 		return errors.Join(reason, err), nil
 	}
+}
+
+func (s *Supervisor) startProcess(ctx context.Context, scope *processowner.Scope, command Command, id uint64) (<-chan error, error) {
+	stdout := &diagnosticWriter{queue: s.queue, attempt: id, kind: "stdout", chunk: s.config.DiagnosticChunkBytes}
+	stderr := &diagnosticWriter{queue: s.queue, attempt: id, kind: "stderr", chunk: s.config.DiagnosticChunkBytes}
+	done := make(chan error, 1)
+	if scope != nil {
+		process, err := scope.Start(ctx, processowner.Command{Binary: command.Binary, Args: command.Args, ExtraFiles: command.ExtraFiles, Stdout: stdout, Stderr: stderr})
+		if err != nil {
+			return nil, err
+		}
+		go func() {
+			result, waitErr := process.Wait(context.Background())
+			if !result.Joined {
+				waitErr = errors.Join(waitErr, ErrCleanupPending)
+			}
+			done <- errors.Join(result.Err, waitErr)
+		}()
+		return done, nil
+	}
+	// Прямой запуск оставлен отдельным портом низкоуровневых тестов компонента.
+	cmd := exec.CommandContext(ctx, command.Binary, command.Args...)
+	cmd.ExtraFiles = append([]*os.File(nil), command.ExtraFiles...)
+	cmd.Cancel = func() error {
+		err := cmd.Process.Signal(os.Interrupt)
+		if errors.Is(err, os.ErrProcessDone) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	cmd.WaitDelay = s.config.GracePeriod
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	go func() { done <- cmd.Wait() }()
+	return done, nil
 }

@@ -122,7 +122,7 @@ func (s *Service) Claim(ctx context.Context, requestID string) (ExecutionFence, 
 			}
 		}
 		if c.Kind == CommandStartSession || c.Kind == CommandStartOutput || c.Kind == CommandAddOutput {
-			if err = preparationIdleForRuntime(ctx, r); err != nil {
+			if err = preparationIdleForRuntime(ctx, r, s.incarnation); err != nil {
 				return err
 			}
 		}
@@ -147,7 +147,7 @@ func (s *Service) MarkIssued(ctx context.Context, f ExecutionFence) error {
 			return err
 		}
 		if c.Kind == CommandStartSession || c.Kind == CommandStartOutput || c.Kind == CommandAddOutput {
-			if err = preparationIdleForRuntime(ctx, r); err != nil {
+			if err = preparationIdleForRuntime(ctx, r, s.incarnation); err != nil {
 				return err
 			}
 		}
@@ -259,7 +259,7 @@ func (s *Service) Complete(ctx context.Context, f ExecutionFence, result Complet
 			}
 			old := o.Revision
 			if !result.Success {
-				if err = stopOutput(ctx, r, session, o, false); err != nil {
+				if err = stopOutput(ctx, r, session, o, true); err != nil {
 					return err
 				}
 				if err = cancelCommands(ctx, r, session.ID, o.ID, c.ID, false); err != nil {

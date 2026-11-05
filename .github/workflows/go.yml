@@ -56,13 +56,13 @@ jobs:
 
       - name: Сборка бинарника
         if: steps.source.outputs.binary == 'true'
-        run: make binary
+        run: make binary process-helper
 
       - name: Архив и контрольная сумма
         if: steps.source.outputs.binary == 'true'
         run: |
           mkdir -p dist
-          tar -czf dist/gost-restreamer-linux-amd64.tar.gz -C bin gost-restreamer
+          tar -czf dist/gost-restreamer-linux-amd64.tar.gz -C bin gost-restreamer gost-process-helper
           cd dist
           sha256sum gost-restreamer-linux-amd64.tar.gz > gost-restreamer-linux-amd64.tar.gz.sha256
 

@@ -295,15 +295,15 @@ func TestAcceptanceSupervisorUnreadDiagnosticsCannotBlockMedia(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("нечитанная диагностика заблокировала медиа")
 	}
-	if s.DroppedDiagnostics() == 0 {
-		t.Fatal("переполнение очереди не отражено счётчиком")
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := s.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
 	acceptanceWait(t, s)
+	if s.DroppedDiagnostics() == 0 {
+		t.Fatal("переполнение очереди не отражено счётчиком")
+	}
 }
 
 func TestAcceptanceSupervisorDisconnectIsFailureWithCleanJoin(t *testing.T) {

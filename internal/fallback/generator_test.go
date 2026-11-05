@@ -197,6 +197,13 @@ func TestCPUImageGenerationAndActualProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := selfRunner()
+	registry := fallbackProcessRegistry(t)
+	scope, err := registry.Create(context.Background(), "cpu-image-preparation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scope.Close() })
+	r.Scope = scope
 	p := Prober{Binary: filepath.Join(filepath.Dir(binary), "ffprobe"), Runner: r, Limits: selfProbeLimits()}
 	p.Limits.ImageDuration = time.Second
 	observed, err := p.Source(context.Background(), source, core.AssetImage)
@@ -247,6 +254,16 @@ func TestCPUImageGenerationAndActualProbe(t *testing.T) {
 				t.Fatalf("verify actual %+v: %v", actual, err)
 			}
 		})
+	}
+	if err = scope.Seal(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err = scope.Close(); err != nil {
+		t.Fatal(err)
+	}
+	proof, err := scope.Resolve(context.Background())
+	if err != nil || !proof.Joined {
+		t.Fatalf("CPU-подготовка не присоединила процессы: %+v %v", proof, err)
 	}
 }
 

@@ -248,6 +248,7 @@ func TestOutboundFramingIndependentByteExpectationAndPartialWrites(t *testing.T)
 
 type transportSelfFrame struct {
 	typ           byte
+	chunkStream   byte
 	stream, stamp uint32
 	body          []byte
 }
@@ -273,7 +274,7 @@ func transportSelfReadFrame(r io.Reader, chunk int) (transportSelfFrame, error) 
 	if n > 1<<20 {
 		return transportSelfFrame{}, ErrLimit
 	}
-	f := transportSelfFrame{typ: h[7], stream: binary.LittleEndian.Uint32(h[8:12]), stamp: stamp, body: make([]byte, n)}
+	f := transportSelfFrame{typ: h[7], chunkStream: h[0] & 63, stream: binary.LittleEndian.Uint32(h[8:12]), stamp: stamp, body: make([]byte, n)}
 	for at := 0; at < n; {
 		amount := min(chunk, n-at)
 		if _, err := io.ReadFull(r, f.body[at:at+amount]); err != nil {
@@ -437,6 +438,22 @@ func (c *transportSelfCountingConn) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// Управляющие ответы могут прийти между любыми командами установки соединения.
+func transportSelfReadStartupFrame(conn io.Reader, chunk int) (transportSelfFrame, error) {
+	for {
+		f, err := transportSelfReadFrame(conn, chunk)
+		if err != nil {
+			return f, err
+		}
+		if f.typ != 3 && f.typ != 5 {
+			return f, nil
+		}
+		if f.chunkStream != 2 || f.stream != 0 || len(f.body) != 4 || f.typ == 5 && binary.BigEndian.Uint32(f.body) == 0 {
+			return f, ErrFraming
+		}
+	}
+}
+
 func transportSelfStartupWindow(raw net.Conn, key string, window uint32) error {
 	conn := &transportSelfCountingConn{Conn: raw}
 	if _, _, err := handshake.DoServer(conn, true); err != nil {
@@ -447,7 +464,7 @@ func transportSelfStartupWindow(raw net.Conn, key string, window uint32) error {
 		return err
 	}
 	data, err := amf0.Unmarshal(f.body)
-	if err != nil || data[0] != "connect" {
+	if err != nil || len(data) == 0 || data[0] != "connect" {
 		return ErrFraming
 	}
 	if window != 0 {
@@ -464,36 +481,34 @@ func transportSelfStartupWindow(raw net.Conn, key string, window uint32) error {
 	if err = transportSelfWriteAMF(conn, amf0.Data{"_result", float64(1), nil, amf0.Object{{Key: "code", Value: "NetConnection.Connect.Success"}}}, 0); err != nil {
 		return err
 	}
-	for {
-		f, err = transportSelfReadFrame(conn, 128)
-		if err != nil {
-			return err
-		}
-		if f.typ == 1 {
-			break
-		}
-		if f.typ != 5 && f.typ != 3 {
-			return ErrFraming
-		}
+	f, err = transportSelfReadStartupFrame(conn, 128)
+	if err != nil {
+		return err
+	}
+	if f.typ != 1 || f.chunkStream != 2 || f.stream != 0 || len(f.body) != 4 {
+		return ErrFraming
 	}
 	size := int(binary.BigEndian.Uint32(f.body))
-	f, err = transportSelfReadFrame(conn, size)
+	if size == 0 || size > 65536 {
+		return ErrFraming
+	}
+	f, err = transportSelfReadStartupFrame(conn, size)
 	if err != nil {
 		return err
 	}
 	data, err = amf0.Unmarshal(f.body)
-	if err != nil || data[0] != "createStream" {
+	if err != nil || f.typ != 20 || len(data) == 0 || data[0] != "createStream" {
 		return ErrFraming
 	}
 	if err = transportSelfWriteAMF(conn, amf0.Data{"_result", float64(2), nil, float64(0x01020304)}, 0); err != nil {
 		return err
 	}
-	f, err = transportSelfReadFrame(conn, size)
+	f, err = transportSelfReadStartupFrame(conn, size)
 	if err != nil {
 		return err
 	}
 	data, err = amf0.Unmarshal(f.body)
-	if err != nil || f.stream != 0x01020304 || len(data) != 5 || data[0] != "publish" || data[3] != key {
+	if err != nil || f.typ != 20 || f.stream != 0x01020304 || len(data) != 5 || data[0] != "publish" || data[3] != key {
 		return ErrFraming
 	}
 	return transportSelfWriteAMF(conn, amf0.Data{"onStatus", float64(0), nil, amf0.Object{{Key: "code", Value: "NetStream.Publish.Start"}}}, 0x01020304)
@@ -510,9 +525,12 @@ func transportSelfWriteControl(conn net.Conn, typ byte, body []byte) error {
 
 func TestOutboundHandshakeBytesArePartOfAcknowledgementSequence(t *testing.T) {
 	left, right := net.Pipe()
-	defer func() { _ = left.Close(); _ = right.Close() }()
+	peerJoined := make(chan struct{})
+	defer func() { _ = left.Close(); _ = right.Close(); <-peerJoined }()
 	peerDone := make(chan error, 1)
 	go func() {
+		defer close(peerJoined)
+		defer func() { _ = right.Close() }()
 		err := transportSelfStartupWindow(right, "key", 256)
 		peerDone <- err
 		if err == nil {
@@ -525,11 +543,12 @@ func TestOutboundHandshakeBytesArePartOfAcknowledgementSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, err := DialOutbound(context.Background(), target, OutboundOptions{Limits: transportSelfLimits(), DialContext: func(context.Context, string, string) (net.Conn, error) { return left, nil }, Admit: func(context.Context, OutboundOperation) (func(), error) { return func() {}, nil }})
+	peerErr := <-peerDone
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("установка соединения: client=%v peer=%v", err, peerErr)
 	}
-	if err = <-peerDone; err != nil {
-		t.Fatal(err)
+	if peerErr != nil {
+		t.Fatal(peerErr)
 	}
 	_ = c.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
