@@ -321,6 +321,11 @@ func (a *RuntimeAuthority) removeObservation(n *observationNode) {
 		if other == nil {
 			continue
 		}
+		for _, reservation := range a.outputExecutions {
+			if other.kind == observationOutput && reservation.fence == other.execution {
+				reservation.sealLocked()
+			}
+		}
 		delete(a.observations, token)
 		other.valid.Store(false)
 		close(other.done)

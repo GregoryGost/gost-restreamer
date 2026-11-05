@@ -93,7 +93,7 @@ func (r *Router) BeginSource() (*Source, error) {
 	r.video, r.audio = CodecConfig{}, CodecConfig{}
 	r.videoDTS, r.audioDTS = routerTimestamp{}, routerTimestamp{}
 	for s := range r.subscriptions {
-		s.resetLocked(time.Now())
+		s.resetForLocked(time.Now(), dropSourceReset)
 	}
 	return source, nil
 }
@@ -147,7 +147,7 @@ func (s *Source) UpdateConfigs(video, audio CodecConfig) error {
 	}
 	r.video, r.audio, r.hasConfigs = video, audio, true
 	for sub := range r.subscriptions {
-		sub.resetLocked(time.Now())
+		sub.resetForLocked(time.Now(), dropConfigReset)
 	}
 	return nil
 }
@@ -200,7 +200,7 @@ func (s *Source) Disconnect() error {
 	r.hasConfigs = false
 	r.video, r.audio = CodecConfig{}, CodecConfig{}
 	for sub := range r.subscriptions {
-		sub.resetLocked(time.Now())
+		sub.resetForLocked(time.Now(), dropSourceReset)
 	}
 	return nil
 }
@@ -221,7 +221,7 @@ func (r *Router) Subscribe(limits QueueLimits) (*Subscription, error) {
 	s := &Subscription{router: r, limits: limits, changed: make(chan struct{}), done: make(chan struct{})}
 	r.reserved += limits.MaxBytes
 	r.subscriptions[s] = struct{}{}
-	s.resetLocked(time.Now())
+	s.resetForLocked(time.Now(), dropSourceReset)
 	return s, nil
 }
 

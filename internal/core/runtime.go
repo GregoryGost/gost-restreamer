@@ -24,25 +24,32 @@ type RuntimeSessionFence struct {
 // RuntimeAuthority упорядочивает записи БД, установку источников и допуск действий.
 // Экземпляр принадлежит UnitOfWork, а не отдельному Service.
 type RuntimeAuthority struct {
-	gate            chan struct{}
-	incarnation     string
-	closed          bool
-	leases          map[ID]*RuntimeLease
-	publications    map[ID]*RuntimeLease
-	limits          ObservationLimits
-	observations    map[uint64]*observationNode
-	nextObservation uint64
-	preparations    map[ID]*PreparationOwner
+	gate                  chan struct{}
+	incarnation           string
+	closed                bool
+	leases                map[ID]*RuntimeLease
+	publications          map[ID]*RuntimeLease
+	limits                ObservationLimits
+	observations          map[uint64]*observationNode
+	nextObservation       uint64
+	preparations          map[ID]*PreparationOwner
+	outputExecutionLimits OutputExecutionLimits
+	outputExecutions      map[outputExecutionKey]*OutputExecutionReservation
+	outputExecutionBytes  uint64
+	nextOutputExecution   uint64
 }
 
-func NewRuntimeAuthority(incarnation string, limits ObservationLimits) (*RuntimeAuthority, error) {
+func NewRuntimeAuthority(incarnation string, limits ObservationLimits, executionLimits OutputExecutionLimits) (*RuntimeAuthority, error) {
 	if err := validText("incarnation", incarnation); err != nil {
 		return nil, err
 	}
 	if err := limits.Validate(); err != nil {
 		return nil, err
 	}
-	a := &RuntimeAuthority{preparations: make(map[ID]*PreparationOwner), limits: limits, observations: make(map[uint64]*observationNode), gate: make(chan struct{}, 1), incarnation: incarnation, leases: make(map[ID]*RuntimeLease), publications: make(map[ID]*RuntimeLease)}
+	if err := executionLimits.Validate(); err != nil {
+		return nil, err
+	}
+	a := &RuntimeAuthority{outputExecutionLimits: executionLimits, outputExecutions: make(map[outputExecutionKey]*OutputExecutionReservation), preparations: make(map[ID]*PreparationOwner), limits: limits, observations: make(map[uint64]*observationNode), gate: make(chan struct{}, 1), incarnation: incarnation, leases: make(map[ID]*RuntimeLease), publications: make(map[ID]*RuntimeLease)}
 	a.gate <- struct{}{}
 	return a, nil
 }
@@ -141,6 +148,9 @@ func (a *RuntimeAuthority) Close() {
 	<-a.gate
 	defer a.release()
 	a.closed = true
+	for _, reservation := range a.outputExecutions {
+		reservation.sealLocked()
+	}
 	for _, o := range a.preparations {
 		a.revokePreparation(o)
 	}
@@ -195,6 +205,11 @@ func (l *RuntimeLease) Revoke(ctx context.Context) error {
 }
 
 func (a *RuntimeAuthority) revoke(l *RuntimeLease) {
+	for _, reservation := range a.outputExecutions {
+		if reservation.lease == l {
+			reservation.sealLocked()
+		}
+	}
 	if !l.valid.Swap(false) {
 		return
 	}
@@ -312,6 +327,7 @@ func (s *Service) BindExecutionOwner(ctx context.Context, fence ExecutionFence) 
 		return nil, err
 	}
 	defer a.release()
+	fence = cloneExecutionFence(fence)
 	lease := &RuntimeLease{authority: a, id: id, session: RuntimeSessionFence{fence.SessionID, fence.Incarnation, fence.Lifecycle}, execution: fence, done: make(chan struct{})}
 	if err = s.uow.View(ctx, func(r Repositories) error { return lease.authorized(ctx, r) }); err != nil {
 		return nil, err

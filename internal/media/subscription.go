@@ -3,10 +3,13 @@ package media
 import (
 	"context"
 	"errors"
+	"math"
 	"time"
 )
 
 var (
+	// ErrSubscriptionGeneration обозначает терминальное исчерпание идентичностей сброса.
+	ErrSubscriptionGeneration = errors.New("исчерпаны поколения подписки")
 	// ErrSubscriptionClosed обозначает закрытую владельцем подписку.
 	ErrSubscriptionClosed = errors.New("подписка закрыта")
 	// ErrResyncTimeout обозначает истечение срока согласованного запуска A/V.
@@ -17,6 +20,7 @@ var (
 // Перед сериализацией получатель повторно проверяет IsCurrent и идентичность попытки работника.
 // Проверка не удерживает актуальность во время последующего внешнего I/O.
 type Delivery struct {
+	Generation   uint64
 	Packet       Packet
 	VideoConfig  CodecConfig
 	AudioConfig  CodecConfig
@@ -24,7 +28,7 @@ type Delivery struct {
 	source       *Source
 }
 
-// IsCurrent проверяет актуальность источника и обеих ревизий после выдачи пакета.
+// IsCurrent проверяет источник, обе ревизии и поколение сброса после выдачи пакета.
 func (d Delivery) IsCurrent() bool {
 	if d.subscription == nil {
 		return false
@@ -50,6 +54,9 @@ type Subscription struct {
 	changed      chan struct{}
 	done         chan struct{}
 	terminal     error
+	generation   uint64
+	drops        SubscriptionDrops
+	saturated    bool
 }
 
 // Next ждёт пакет или завершение. Успешное удаление из очереди передаёт владение.
@@ -72,10 +79,11 @@ func (s *Subscription) Next(ctx context.Context) (Delivery, error) {
 			s.queue = s.queue[1:]
 			s.packetBytes -= packet.StoredBytes()
 			if !r.currentPacketLocked(packet) {
+				s.dropLocked(dropSourceReset, 1)
 				r.mu.Unlock()
 				continue
 			}
-			delivery := Delivery{Packet: packet, VideoConfig: r.video, AudioConfig: r.audio, subscription: s, source: r.source}
+			delivery := Delivery{Generation: s.generation, Packet: packet, VideoConfig: r.video, AudioConfig: r.audio, subscription: s, source: r.source}
 			r.mu.Unlock()
 			return delivery, nil
 		}
@@ -89,13 +97,13 @@ func (s *Subscription) Next(ctx context.Context) (Delivery, error) {
 	}
 }
 
-// IsCurrent проверяет происхождение доставки, публикацию и обе текущие ревизии.
+// IsCurrent проверяет происхождение доставки, публикацию, ревизии и поколение сброса.
 func (s *Subscription) IsCurrent(d Delivery) bool {
 	r := s.router
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s.expireLocked(time.Now())
-	return s.terminal == nil && d.subscription == s && d.source != nil && r.source == d.source && r.hasConfigs && routerSameConfig(r.video, d.VideoConfig) && routerSameConfig(r.audio, d.AudioConfig) && r.currentPacketLocked(d.Packet)
+	return s.terminal == nil && d.Generation == s.generation && d.subscription == s && d.source != nil && r.source == d.source && r.hasConfigs && routerSameConfig(r.video, d.VideoConfig) && routerSameConfig(r.audio, d.AudioConfig) && r.currentPacketLocked(d.Packet)
 }
 
 // Done закрывается после Close, остановки Router или истечения ResyncTimeout.
@@ -129,10 +137,18 @@ func (s *Subscription) clearPacketsLocked() {
 	s.cut = routerTimestamp{}
 }
 
-func (s *Subscription) resetLocked(now time.Time) {
+func (s *Subscription) resetLocked(now time.Time) { s.resetForLocked(now, dropOverflow) }
+
+func (s *Subscription) resetForLocked(now time.Time, reason subscriptionDropReason) {
 	if s.terminal != nil {
 		return
 	}
+	if s.generation == math.MaxUint64 {
+		s.closeLocked(ErrSubscriptionGeneration)
+		return
+	}
+	s.generation++
+	s.dropLocked(reason, s.countLocked())
 	s.clearPacketsLocked()
 	s.configBytes, s.configFits = 0, false
 	r := s.router
@@ -170,6 +186,7 @@ func (s *Subscription) closeLocked(err error) {
 		s.timer.Stop()
 		s.timer = nil
 	}
+	s.dropLocked(dropClosed, s.countLocked())
 	s.clearPacketsLocked()
 	s.configBytes, s.configFits = 0, false
 	delete(s.router.subscriptions, s)
@@ -189,15 +206,30 @@ func (s *Subscription) fitsLocked(p Packet) bool {
 
 func (s *Subscription) enqueueLocked(p Packet, now time.Time) {
 	s.expireLocked(now)
-	if s.terminal != nil || !s.router.currentPacketLocked(p) {
+	if s.terminal != nil {
+		s.dropLocked(dropClosed, 1)
+		return
+	}
+	if !s.router.currentPacketLocked(p) {
+		s.dropLocked(dropSourceReset, 1)
 		return
 	}
 	if !s.configFits {
+		s.dropLocked(dropConfigRejected, 1)
 		return
 	}
 	if !s.fitsLocked(p) {
 		s.resetLocked(now)
-		if s.terminal != nil || !s.configFits || !s.fitsLocked(p) {
+		if s.terminal != nil {
+			s.dropLocked(dropClosed, 1)
+			return
+		}
+		if !s.configFits {
+			s.dropLocked(dropConfigRejected, 1)
+			return
+		}
+		if !s.fitsLocked(p) {
+			s.dropLocked(dropOversized, 1)
 			return
 		}
 	}
@@ -215,6 +247,7 @@ func (s *Subscription) enqueueLocked(p Packet, now time.Time) {
 		}
 		// Полная аудиоединица начинается не раньше показанного независимого кадра.
 		if routerCompareTimestamp(p.info.PTS, p.config.info.TimeBase, s.cut.ticks, s.cut.base) < 0 {
+			s.dropLocked(dropAudioBeforeCut, 1)
 			return
 		}
 		s.queue = append(s.queue, p)
@@ -224,6 +257,7 @@ func (s *Subscription) enqueueLocked(p Packet, now time.Time) {
 	}
 	if !s.hasVideo {
 		if !p.info.Keyframe {
+			s.dropLocked(dropAwaitingKeyframe, 1)
 			return
 		}
 		s.hasVideo = true
@@ -237,6 +271,7 @@ func (s *Subscription) enqueueLocked(p Packet, now time.Time) {
 				s.queue = append(s.queue, audio)
 			} else {
 				s.packetBytes -= audio.StoredBytes()
+				s.dropLocked(dropAudioBeforeCut, 1)
 			}
 		}
 		if len(s.queue) > 1 {

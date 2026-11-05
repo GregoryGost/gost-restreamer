@@ -62,7 +62,7 @@ func acceptanceObservationLimits() ObservationLimits {
 
 func newObservationAcceptanceService(t *testing.T, limits ObservationLimits) (*Service, *observationAcceptanceUOW, ExecutionFence, ExecutionFence) {
 	t.Helper()
-	a, err := NewRuntimeAuthority("owner", limits)
+	a, err := NewRuntimeAuthority("owner", limits, OutputExecutionLimits{MaxReservations: 8, MaxIdentifierBytes: 1024, MaxBytes: 65536})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +371,7 @@ func TestAcceptanceObservationLimitsRejectZeroAndArithmeticOverflow(t *testing.T
 	} {
 		limits := acceptanceObservationLimits()
 		change(&limits)
-		if _, err := NewRuntimeAuthority("owner", limits); !errors.Is(err, ErrInvalid) {
+		if _, err := NewRuntimeAuthority("owner", limits, OutputExecutionLimits{MaxReservations: 8, MaxIdentifierBytes: 1024, MaxBytes: 65536}); !errors.Is(err, ErrInvalid) {
 			t.Fatal("некорректные ограничения приняты", limits, err)
 		}
 	}

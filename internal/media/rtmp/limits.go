@@ -1,4 +1,4 @@
-// Package rtmp принимает ограниченный поток Enhanced RTMP AV1/AAC.
+// Package rtmp принимает ограниченный поток Enhanced RTMP AV1/AAC и передаёт AV1/H.264/AAC через RTMP/RTMPS.
 package rtmp
 
 import (

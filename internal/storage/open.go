@@ -30,19 +30,23 @@ import (
 
 // Options задаёт явные конечные бюджеты соединений, повторов записи и RAM-наблюдений.
 type Options struct {
-	PreparationLimits core.PreparationLimits
-	ObservationLimits core.ObservationLimits
-	MaxOpenConns      int
-	MaxIdleConns      int
-	ConnMaxLifetime   time.Duration
-	ConnMaxIdleTime   time.Duration
-	BusyTimeout       time.Duration
-	RetryAttempts     int
-	RetryTimeout      time.Duration
-	RetryDelay        time.Duration
+	OutputExecutionLimits core.OutputExecutionLimits
+	PreparationLimits     core.PreparationLimits
+	ObservationLimits     core.ObservationLimits
+	MaxOpenConns          int
+	MaxIdleConns          int
+	ConnMaxLifetime       time.Duration
+	ConnMaxIdleTime       time.Duration
+	BusyTimeout           time.Duration
+	RetryAttempts         int
+	RetryTimeout          time.Duration
+	RetryDelay            time.Duration
 }
 
 func (o Options) validate() error {
+	if err := o.OutputExecutionLimits.Validate(); err != nil {
+		return err
+	}
 	if err := o.PreparationLimits.Validate(); err != nil {
 		return err
 	}
@@ -95,7 +99,7 @@ func Open(ctx context.Context, path string, options Options) (_ *Store, retErr e
 		return nil, fmt.Errorf("создать идентификатор владельца: %w", err)
 	}
 	s.incarnation = hex.EncodeToString(token[:])
-	s.authority, err = core.NewRuntimeAuthority(s.incarnation, options.ObservationLimits)
+	s.authority, err = core.NewRuntimeAuthority(s.incarnation, options.ObservationLimits, options.OutputExecutionLimits)
 	if err != nil {
 		return nil, err
 	}

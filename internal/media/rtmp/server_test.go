@@ -32,7 +32,7 @@ type ingestFixture struct {
 func newIngestFixture(t *testing.T) ingestFixture {
 	t.Helper()
 	ctx := context.Background()
-	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "ingest.sqlite"), storage.Options{PreparationLimits: core.PreparationLimits{MaxQueued: 8, MaxProfiles: 64}, ObservationLimits: core.ObservationLimits{MaxSessions: 16, MaxGroups: 64, MaxOutputs: 128, MaxFFmpegWorkers: 64, MaxIdentifierBytes: 1024, MaxErrorBytes: 65536, MaxBytes: 4 << 20}, MaxOpenConns: 4, MaxIdleConns: 4, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute, BusyTimeout: 10 * time.Millisecond, RetryAttempts: 3, RetryTimeout: time.Second, RetryDelay: time.Millisecond})
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "ingest.sqlite"), storage.Options{PreparationLimits: core.PreparationLimits{MaxQueued: 8, MaxProfiles: 64}, OutputExecutionLimits: core.OutputExecutionLimits{MaxReservations: 128, MaxIdentifierBytes: 1024, MaxBytes: 4 << 20}, ObservationLimits: core.ObservationLimits{MaxSessions: 16, MaxGroups: 64, MaxOutputs: 128, MaxFFmpegWorkers: 64, MaxIdentifierBytes: 1024, MaxErrorBytes: 65536, MaxBytes: 4 << 20}, MaxOpenConns: 4, MaxIdleConns: 4, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute, BusyTimeout: 10 * time.Millisecond, RetryAttempts: 3, RetryTimeout: time.Second, RetryDelay: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
