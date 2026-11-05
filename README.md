@@ -76,4 +76,4 @@ go test -count=1 ./tests/integration -run '^TestAcceptanceProfileConversionCPUAn
 - [Медиатракт, форматы, временные метки и переключения](docs/media-contracts.md).
 - [Домен, хранение и жизненный цикл данных](docs/domain-storage-contracts.md).
 - [Сессии, процессы и восстановление ресурсов](docs/session-manager-contracts.md).
-- [CI и окружение сборки](.github/README.md).
+- [CI и окружение сборки](.github/CI.md).
