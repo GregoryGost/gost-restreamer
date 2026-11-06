@@ -1,3 +1,5 @@
+//go:build !linux || !cgo
+
 package gpu
 
 type unavailableProvider struct{ reason Reason }
