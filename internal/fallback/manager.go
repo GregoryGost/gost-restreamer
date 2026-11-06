@@ -110,6 +110,7 @@ type Job struct {
 	mu         sync.Mutex
 	owner      *core.PreparationOwner
 	shutdown   time.Duration
+	upload     *uploadTransfer
 }
 
 func (j *Job) Generation() core.FallbackGeneration { return cloneGeneration(j.generation) }
@@ -200,9 +201,22 @@ func (m *Manager) enqueue(ctx context.Context, request core.PreparationRequest, 
 	}
 	work, cancel := context.WithTimeout(context.Background(), m.config.PrepareTimeout)
 	j := &Job{generation: g, cancel: cancel, done: make(chan struct{}), shutdown: m.config.ShutdownTimeout}
+	if reader != nil {
+		j.upload = &uploadTransfer{reader: reader, done: make(chan struct{})}
+	}
+	uploadClosed := make(chan struct{})
+	stopUpload := context.AfterFunc(work, func() {
+		defer close(uploadClosed)
+		if j.upload != nil {
+			_ = j.abortUpload(work.Err())
+		}
+	})
 	m.jobs[g.ID] = j
 	go func() {
 		j.result = m.execute(work, g, reader, j)
+		if !stopUpload() {
+			<-uploadClosed
+		}
 		cancel()
 		m.mu.Lock()
 		delete(m.jobs, g.ID)
@@ -229,14 +243,15 @@ func (m *Manager) execute(ctx context.Context, g core.FallbackGeneration, reader
 	var ticket *processowner.Ticket
 	scopeAttempted := false
 	defer func() {
+		if reader != nil {
+			result.Err = errors.Join(result.Err, reader.Close())
+			_ = j.upload.complete(ctx, result.Err)
+		}
 		cleanup, cancel := context.WithTimeout(context.Background(), m.config.ShutdownTimeout)
 		defer cancel()
 		stored, identityErr := m.service.GetGeneration(cleanup, g.ID)
 		if identityErr == nil && stored.AttemptToken == g.AttemptToken && stored.Incarnation == g.Incarnation {
 			fence = core.PreparationFenceFor(stored)
-		}
-		if reader != nil {
-			result.Err = errors.Join(result.Err, reader.Close())
 		}
 		if owner != nil {
 			result.Err = errors.Join(result.Err, owner.Revoke(cleanup))
@@ -375,7 +390,7 @@ func (m *Manager) execute(ctx context.Context, g core.FallbackGeneration, reader
 		probe := Prober{Binary: m.config.FFprobe, Runner: runner, Limits: m.config.Probe}
 		tools = Tools{Builder: ProductionBuilder(m.config.FFmpeg), Inspector: probe, Runner: runner, Normalize: probe.NormalizePrepared, VerifyLoopDuration: probe.VerifyLoopDuration}
 	}
-	publication, err := m.prepare(work, g, reader, tools)
+	publication, err := m.prepare(work, g, reader, tools, j)
 	if err != nil {
 		result.Err = err
 		return result
@@ -388,7 +403,7 @@ func (m *Manager) execute(ctx context.Context, g core.FallbackGeneration, reader
 	return result
 }
 
-func (m *Manager) prepare(ctx context.Context, g core.FallbackGeneration, reader io.ReadCloser, tools Tools) (publication core.GenerationPublication, retErr error) {
+func (m *Manager) prepare(ctx context.Context, g core.FallbackGeneration, reader io.ReadCloser, tools Tools, j *Job) (publication core.GenerationPublication, retErr error) {
 	if err := ctx.Err(); err != nil {
 		return core.GenerationPublication{}, err
 	}
@@ -445,6 +460,11 @@ func (m *Manager) prepare(ctx context.Context, g core.FallbackGeneration, reader
 	}
 	if err = m.renameOwned(ctx, g.ID, g.StagingPath, g.OriginalPath); err != nil {
 		return core.GenerationPublication{}, err
+	}
+	if j.upload != nil {
+		if err = j.upload.complete(ctx, nil); err != nil {
+			return core.GenerationPublication{}, err
+		}
 	}
 	input, err := m.files.OpenExact(ctx, g.OriginalPath, size, hash)
 	if err != nil {

@@ -130,13 +130,17 @@ Goose (миграции схемы) ──────────────�
 | Область | Операции |
 |---|---|
 | Конфигурации | `GET/POST /streams`, `GET/PATCH/DELETE /streams/{id}`, `POST /streams/{id}/start`, `GET /streams/{id}/sessions` |
-| История и управление | `GET /sessions`, `GET /sessions/{id}`, `POST /sessions/{id}/stop`, `/pause`, `/resume`, `GET /sessions/{id}/outputs`, `/metrics` (текущий RAM-снимок) |
-| Независимые выходы | `POST /sessions/{id}/outputs/{outputId}/start` и `/stop`, `GET /sessions/{id}/outputs/{outputId}` (текущие состояние/метрики из RAM), `GET /streams/{id}/destinations` |
+| История и управление | `GET /sessions`, `GET /sessions/{id}`, `POST /sessions/{id}/stop`, `/pause`, `/resume`, `GET /sessions/{id}/outputs`, `/metrics` (текущий RAM-снимок), `GET /commands/{commandId}` (точная долговечная квитанция) |
+| Независимые выходы | `POST /sessions/{id}/outputs` (добавление), `POST /sessions/{id}/outputs/{outputId}/start`, `/stop`, `/detach`, `GET /sessions/{id}/outputs/{outputId}` (разрешённый снимок и текущие RAM-данные), `GET /streams/{id}/destinations` |
 | Назначения и профили | CRUD `/destinations`, `/transcode-profiles`, `/transcode-groups`; привязка Destination к Stream/Group |
-| Заглушки | `GET/POST /fallback-assets`, `GET/DELETE /fallback-assets/{id}`, `GET /fallback-assets/{id}/variants`, `POST /fallback-assets/{id}/rebuild`, `PUT/GET /streams/{id}/fallback-policy` |
-| Сервис | `GET /events` (SSE), `/system/capabilities`, `/health/live`, `/health/ready` |
+| Заглушки | `GET/POST /fallback-assets` (создание метаданных), `GET/DELETE /fallback-assets/{id}`, `PUT /fallback-assets/{id}/content` (передача выбранному Asset), `GET /fallback-assets/{id}/variants`, `POST /fallback-assets/{id}/rebuild`, `GET /fallback-assets/{id}/generations/{generationId}`, `PUT/GET /streams/{id}/fallback-policy` |
+| Сервис | `GET /events` (SSE), `GET /events/snapshot` (согласованный RAM-снимок), `/system/capabilities`, `/health/live`, `/health/ready` |
 
-Списки включают фильтры и **пагинацию** (`limit`, `cursor`, `state`, диапазон дат). `GET /sessions/{id}/metrics` возвращает текущий снимок из RAM для выполняющейся сессии; SSE передаёт изменения в реальном времени, а после переподключения клиент обновляет снимок через REST. Для завершённых сессий оперативная статистика недоступна, сохраняются только долговременные сведения о запуске. Асинхронные команды запуска/остановки возвращают подтверждение принятия команды (например, `202 Accepted`), а фактический переход состояния публикуется отдельно. Модель и маршруты — проектный контракт, ещё не реализованный API.
+Списки включают применимые фильтры и **пагинацию** (`limit`, `cursor`, `state`, диапазон дат). `GET /sessions/{id}/metrics` возвращает текущий снимок из RAM для выполняющейся сессии. Известная Session без RAM получает явную недоступность с `null`, неизвестный ID — `404`. SSE передаёт изменения; после пропуска клиент получает `/events/snapshot` с согласованным cursor и возобновляет подписку с этой границы. Для завершённых сессий сохраняются только долговременные сведения о запуске. Асинхронные команды возвращают `202 Accepted` с квитанцией и `Location` точного результата; повтор того же RequestID не создаёт нового выполнения.
+
+По решению владельца от 6 ноября 2026 года HTTP-передача оригинала завершается до ответа, а inspection и подготовка вариантов продолжаются в фоне. Новое содержимое не заменяет current до успешной атомарной публикации. Readiness оценивает работоспособность управления после bootstrap, независимо от медиавозможностей; наличие executable не доказывает аппаратную исполнимость. Медиадопуск остаётся у владельца фактически необходимого ресурса, без общего HTTP-запрета команд по снимку capabilities.
+
+Правки/удаления требуют `expected_revision`; PATCH сохраняет различие отсутствия, `null`, `false` и пустой строки. 64-битные значения и длительности передаются десятичными строками, профильные байты — локальным `ProfileText` string/base64 union. Ключи и весь Endpoint доступны только на запись. Спецификации публикуются как неизменяемые `/api/v1/openapi.json` и `/api/v1/openapi.yaml`; документация и схемы — `/api/v1/docs` и `/api/v1/schemas`. Полный [публичный HTTP-контракт и результаты его проверки](docs/api-contracts.md) уточняет DTO, передачу, SSE, ошибки и границы приёмки. Общая точка входа сервиса остаётся отдельной задачей.
 
 ## 8. Структура проекта (план MVP)
 
