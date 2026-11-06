@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/GregoryGost/gost-restreamer/internal/api"
+	"github.com/GregoryGost/gost-restreamer/internal/buildinfo"
 	"github.com/GregoryGost/gost-restreamer/internal/config"
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/fallback"
@@ -302,7 +303,9 @@ func (a *Application) acquire(ctx context.Context, helper string, d dependencies
 	a.owners.ingestListener = nil
 	a.httpServe = startOperation(func() stopResult { e := a.http.Serve(a.httpListener); return stopResult{e, true} })
 	a.ingestServe = startOperation(func() stopResult { e := a.ingest.Serve(lifetime, a.ingestListener); return stopResult{e, true} })
-	a.sink.Logger().Info("application_started", "http", a.HTTPAddress(), "ingest", a.IngestAddress())
+	build := buildinfo.Current()
+	a.sink.Logger().Info("application_started", "http", a.HTTPAddress(), "ingest", a.IngestAddress(),
+		"version", build.Version, "commit", build.Commit, "dirty", build.Dirty, "go_version", build.GoVersion)
 	return nil
 }
 

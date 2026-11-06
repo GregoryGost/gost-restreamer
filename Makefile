@@ -4,6 +4,8 @@ GO := go
 GO_VERSION := $(shell sed -n 's/^go //p' go.mod)
 GOLANGCI_LINT_VERSION := 2.15.0
 GOLANGCI_LINT := $(CURDIR)/bin/golangci-lint
+VERSION ?=
+VERSION_LDFLAGS = $(if $(strip $(VERSION)),-X github.com/GregoryGost/gost-restreamer/internal/buildinfo.version=$(VERSION))
 
 export GOTOOLCHAIN := local
 export GOWORK := off
@@ -109,11 +111,11 @@ build: require-packages
 
 binary: require-packages
 	mkdir -p bin
-	$(GO) build -trimpath -o bin/gost-restreamer ./cmd/gost-restreamer
+	$(GO) build -trimpath -ldflags="$(VERSION_LDFLAGS)" -o bin/gost-restreamer ./cmd/gost-restreamer
 
 process-helper: require-packages
 	mkdir -p bin
-	$(GO) build -trimpath -o bin/gost-process-helper ./cmd/gost-process-helper
+	$(GO) build -trimpath -ldflags="$(VERSION_LDFLAGS)" -o bin/gost-process-helper ./cmd/gost-process-helper
 
 bootstrap-check: toolchain-check fmt-check tidy-check mod-verify lint-config
 

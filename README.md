@@ -55,6 +55,15 @@ make check
 make binary process-helper
 ```
 
+Версию обоих бинарников можно прочитать без конфигурации и запуска сервиса:
+
+```sh
+./bin/gost-restreamer --version
+./bin/gost-process-helper --version
+```
+
+Вывод содержит версию приложения, commit, признак локальных изменений и версию Go. Выпуски имеют вид `v0.1.0`, сборки разработки — `v0.2.0-dev.1+<commit>`. Для явно назначенной локальной версии используйте `make binary process-helper VERSION=v0.2.0-dev.1+a1b2c3d`. Без `VERSION` используются доступные метаданные Go; при их отсутствии выводится `devel` и неизвестное происхождение. Правила назначения и границы проверки описаны в [контракте версионирования](docs/versioning.md).
+
 Настройки инсталляции задаются YAML-файлом на основе [примера](configs/example.yaml). Перед локальным запуском нужно выбрать доступные абсолютные каталоги данных и runtime и настроить путь к собранному helper. Параметр `--config` выбирает файл:
 
 ```sh
@@ -117,4 +126,5 @@ go test -count=1 ./tests/integration -run '^TestAcceptanceProfileConversionCPUAn
 - [Оперативные измерения, события, NVML и журнал](docs/monitoring-contracts.md).
 - [Управляющий REST/SSE API](docs/api-contracts.md).
 - [Приложение, конфигурация, запуск и остановка](docs/application-contracts.md).
+- [Версии, происхождение бинарников и сборки CI](docs/versioning.md).
 - [CI и окружение сборки](.github/CI.md).

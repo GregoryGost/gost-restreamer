@@ -8,12 +8,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: gost-restreamer-version-${{ github.repository }}
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   check:
     name: Go и сборка для Debian 13
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: write
     container:
       image: golang:1.27.3-trixie
     env:
@@ -26,6 +33,46 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # Версия v7.0.1.
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Планирование версии merge-коммита
+        id: plan
+        env:
+          RELEASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          git for-each-ref --format='%(objectname)%09%(refname)' refs/tags > "$RUNNER_TEMP/release-tags.local"
+          LC_ALL=C sort "$RUNNER_TEMP/release-tags.local" > "$RUNNER_TEMP/release-tags.before"
+          go run ./tools/releaseplan -branch "$RELEASE_BRANCH" -commit "$MERGE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Вычисление нового тега
+        if: steps.plan.outputs.reuse != 'true'
+        id: tagger
+        uses: GregoryGost/version-tagger@f7cd9b22c2acac8d07d416aee07593be502dcae5 # Версия v1.2.0.
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: 0.1.0
+          uselasttag: ${{ steps.plan.outputs.use_last_tag }}
+          prefix: v
+          postfix: ${{ steps.plan.outputs.postfix }}
+          postfixnoup: false
+          metadata: ${{ steps.plan.outputs.metadata }}
+          releasetype: ${{ steps.plan.outputs.release_type }}
+          auto: false
+          dryrun: true
+
+      - name: Проверка выделенной версии
+        env:
+          EXPECTED_VERSION: ${{ steps.plan.outputs.version }}
+          GENERATED_VERSION: ${{ steps.tagger.outputs.newtag }}
+          REUSE: ${{ steps.plan.outputs.reuse }}
+        run: |
+          if [ "$REUSE" != true ] && [ "$EXPECTED_VERSION" != "$GENERATED_VERSION" ]; then
+            echo 'Вычисленная версия не совпала с планом; выпуск остановлен.' >&2
+            exit 1
+          fi
+          printf 'Версия обоих бинарников: %s\n' "$EXPECTED_VERSION" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Установка инструментов проекта
         run: make tools
@@ -56,20 +103,57 @@ jobs:
 
       - name: Сборка бинарника
         if: steps.source.outputs.binary == 'true'
-        run: make binary process-helper
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          make binary process-helper VERSION="$VERSION"
+          expected="$VERSION commit=$MERGE_SHA dirty=false go=$(go env GOVERSION)"
+          test "$(bin/gost-restreamer --version)" = "$expected"
+          test "$(bin/gost-process-helper --version)" = "$expected"
 
       - name: Архив и контрольная сумма
         if: steps.source.outputs.binary == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
         run: |
           mkdir -p dist
-          tar -czf dist/gost-restreamer-linux-amd64.tar.gz -C bin gost-restreamer gost-process-helper
+          archive="gost-restreamer-$VERSION-linux-amd64.tar.gz"
+          tar -czf "dist/$archive" -C bin gost-restreamer gost-process-helper
           cd dist
-          sha256sum gost-restreamer-linux-amd64.tar.gz > gost-restreamer-linux-amd64.tar.gz.sha256
+          sha256sum "$archive" > "$archive.sha256"
+
+      - name: Публикация проверенного тега
+        if: steps.source.outputs.binary == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SERVER_URL: ${{ github.server_url }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          REUSE: ${{ steps.plan.outputs.reuse }}
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.$SERVER_URL/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+          git ls-remote --tags --refs origin > "$RUNNER_TEMP/release-tags.current"
+          LC_ALL=C sort "$RUNNER_TEMP/release-tags.current" > "$RUNNER_TEMP/release-tags.after"
+          if ! cmp -s "$RUNNER_TEMP/release-tags.before" "$RUNNER_TEMP/release-tags.after"; then
+            echo 'Удалённые теги изменились после планирования; нужен повторный запуск.' >&2
+            exit 1
+          fi
+          if [ "$REUSE" != true ]; then
+            git tag "$VERSION" "$MERGE_SHA"
+            git push origin "refs/tags/$VERSION:refs/tags/$VERSION"
+            published="$(git ls-remote --tags --refs origin "refs/tags/$VERSION")"
+            test "$published" = "$(printf '%s\t%s' "$MERGE_SHA" "refs/tags/$VERSION")"
+          fi
 
       - name: Сохранение артефактов
         if: steps.source.outputs.binary == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # Версия v7.0.2.
         with:
-          name: gost-restreamer-linux-amd64
+          name: gost-restreamer-${{ steps.plan.outputs.version }}-linux-amd64
           path: dist/*
           if-no-files-found: error

@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/GregoryGost/gost-restreamer/internal/app"
+	"github.com/GregoryGost/gost-restreamer/internal/buildinfo"
 	"github.com/GregoryGost/gost-restreamer/internal/config"
 )
 
@@ -35,10 +36,14 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	return runWith(ctx, args, stderr, commandDependencies{})
 }
 func runWith(ctx context.Context, args []string, stderr io.Writer, d commandDependencies) int {
+	return runWithOutput(ctx, args, os.Stdout, stderr, d)
+}
+func runWithOutput(ctx context.Context, args []string, stdout, stderr io.Writer, d commandDependencies) int {
 	var diagnostics bytes.Buffer
 	flags := flag.NewFlagSet("gost-restreamer", flag.ContinueOnError)
 	flags.SetOutput(&diagnostics)
 	path := ""
+	showVersion := flags.Bool("version", false, "Вывести версию сборки и завершить работу.")
 	flags.Func("config", "Путь к единственному файлу YAML.", func(value string) error {
 		if value == "" {
 			return errors.New("путь конфигурации пуст")
@@ -56,6 +61,13 @@ func runWith(ctx context.Context, args []string, stderr io.Writer, d commandDepe
 	if flags.NArg() != 0 {
 		_, _ = fmt.Fprintln(stderr, "позиционные аргументы запрещены")
 		return 2
+	}
+	if *showVersion {
+		if _, err := fmt.Fprintln(stdout, buildinfo.Current()); err != nil {
+			_, _ = fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	}
 	if d.load == nil {
 		d.load = config.LoadSelected
