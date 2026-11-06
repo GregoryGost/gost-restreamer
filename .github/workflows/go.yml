@@ -15,19 +15,21 @@ concurrency:
 
 jobs:
   check:
-    name: Go и сборка для Debian 13
+    name: Go и сборка для Debian 12
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: write
     container:
-      image: golang:1.27.3-trixie
+      image: golang:1.27.3-bookworm
     env:
       CGO_ENABLED: "1"
       GOTOOLCHAIN: local
       GOWORK: "off"
       GOFLAGS: -mod=readonly
+      GOOS: linux
+      GOARCH: amd64
     steps:
       - name: Получение исходников
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # Версия v7.0.1.
@@ -101,27 +103,16 @@ jobs:
         if: steps.source.outputs.packages == 'true'
         run: make vet lint coverage test-race build
 
-      - name: Сборка бинарника
+      - name: Сборка и проверка архива поставки
         if: steps.source.outputs.binary == 'true'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
-          make binary process-helper VERSION="$VERSION"
+          make package VERSION="$VERSION"
           expected="$VERSION commit=$MERGE_SHA dirty=false go=$(go env GOVERSION)"
           test "$(bin/gost-restreamer --version)" = "$expected"
           test "$(bin/gost-process-helper --version)" = "$expected"
-
-      - name: Архив и контрольная сумма
-        if: steps.source.outputs.binary == 'true'
-        env:
-          VERSION: ${{ steps.plan.outputs.version }}
-        run: |
-          mkdir -p dist
-          archive="gost-restreamer-$VERSION-linux-amd64.tar.gz"
-          tar -czf "dist/$archive" -C bin gost-restreamer gost-process-helper
-          cd dist
-          sha256sum "$archive" > "$archive.sha256"
 
       - name: Публикация проверенного тега
         if: steps.source.outputs.binary == 'true'

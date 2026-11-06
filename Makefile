@@ -6,6 +6,8 @@ GOLANGCI_LINT_VERSION := 2.15.0
 GOLANGCI_LINT := $(CURDIR)/bin/golangci-lint
 VERSION ?=
 VERSION_LDFLAGS = $(if $(strip $(VERSION)),-X github.com/GregoryGost/gost-restreamer/internal/buildinfo.version=$(VERSION))
+BIN_DIR ?= bin
+DIST_DIR ?= dist
 
 export GOTOOLCHAIN := local
 export GOWORK := off
@@ -14,7 +16,7 @@ export GOFLAGS ?= -mod=readonly
 
 .PHONY: help toolchain-check tools require-linter require-packages fmt fmt-check \
 	tidy tidy-check mod-verify vet test coverage test-race lint-config lint build binary \
-	bootstrap-check check process-helper
+	bootstrap-check check process-helper package
 
 help:
 	@printf '%s\n' \
@@ -26,6 +28,7 @@ help:
 		'make tidy             — обновить go.mod и go.sum по импортам.' \
 		'make binary           — собрать сервис в ./bin/gost-restreamer.'
 	@printf '%s\n' 'make process-helper   — собрать владельца native-процессов в ./bin/gost-process-helper.'
+	@printf '%s\n' 'make package VERSION=… — собрать оба бинарника, архив поставки и проверенную SHA256.'
 
 toolchain-check:
 	@$(GO) version
@@ -110,12 +113,32 @@ build: require-packages
 	$(GO) build -o /dev/null ./...
 
 binary: require-packages
-	mkdir -p bin
-	$(GO) build -trimpath -ldflags="$(VERSION_LDFLAGS)" -o bin/gost-restreamer ./cmd/gost-restreamer
+	mkdir -p "$(BIN_DIR)"
+	$(GO) build -trimpath -ldflags="$(VERSION_LDFLAGS)" -o "$(BIN_DIR)/gost-restreamer" ./cmd/gost-restreamer
 
 process-helper: require-packages
-	mkdir -p bin
-	$(GO) build -trimpath -ldflags="$(VERSION_LDFLAGS)" -o bin/gost-process-helper ./cmd/gost-process-helper
+	mkdir -p "$(BIN_DIR)"
+	$(GO) build -trimpath -ldflags="$(VERSION_LDFLAGS)" -o "$(BIN_DIR)/gost-process-helper" ./cmd/gost-process-helper
+
+package: binary process-helper
+	@test -n "$(VERSION)" || { printf '%s\n' 'Для архива требуется явная VERSION.' >&2; exit 1; }
+	@set -eu; \
+		archive="gost-restreamer-$(VERSION)-$$($(GO) env GOOS)-$$($(GO) env GOARCH).tar.gz"; \
+		mkdir -p "$(DIST_DIR)"; \
+		tar -czf "$(DIST_DIR)/$$archive" -C "$(abspath $(BIN_DIR))" gost-restreamer gost-process-helper \
+			-C "$(CURDIR)" configs/example.yaml deploy/systemd/gost-restreamer.service; \
+		if command -v sha256sum >/dev/null 2>&1; then checksum=sha256sum; else checksum='shasum -a 256'; fi; \
+		(cd "$(DIST_DIR)" && $$checksum "$$archive" > "$$archive.sha256" && $$checksum -c "$$archive.sha256"); \
+		verify_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/gost-restreamer-package.XXXXXXXX")"; \
+		trap 'package_status=$$?; trap - EXIT HUP INT TERM; rm -rf "$$verify_dir"; exit "$$package_status"' EXIT; \
+		trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+		tar -xzf "$(DIST_DIR)/$$archive" -C "$$verify_dir"; \
+		for binary in gost-restreamer gost-process-helper; do \
+			test -x "$$verify_dir/$$binary"; cmp "$(BIN_DIR)/$$binary" "$$verify_dir/$$binary"; \
+		done; \
+		for asset in configs/example.yaml deploy/systemd/gost-restreamer.service; do \
+			cmp "$$asset" "$$verify_dir/$$asset"; \
+		done
 
 bootstrap-check: toolchain-check fmt-check tidy-check mod-verify lint-config
 

@@ -1,0 +1,29 @@
+[Unit]
+Description=Gost Restreamer
+After=network.target
+
+[Service]
+Type=exec
+User=root
+Group=root
+Environment=PATH=/opt/gost-restreamer:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/var/lib/gost-restreamer
+ExecStart=/opt/gost-restreamer/gost-restreamer --config /etc/gost-restreamer/config.yaml
+StateDirectory=gost-restreamer
+StateDirectoryMode=0700
+RuntimeDirectory=gost-restreamer
+RuntimeDirectoryMode=0700
+# Журнал физических ресурсов нужен после stop/start и restart для проверки cleanup.
+RuntimeDirectoryPreserve=yes
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gost-restreamer
+# SIGTERM получает CLI; helper сохраняет владение Wait до общего предела остановки.
+KillMode=mixed
+KillSignal=SIGTERM
+# В YAML shutdown_timeout=30s; systemd оставляет запас для выхода процесса.
+TimeoutStopSec=40s
+
+[Install]
+WantedBy=multi-user.target
