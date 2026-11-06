@@ -38,6 +38,9 @@ jobs:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
 
+      - name: Настройка доверенного каталога Git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Планирование версии merge-коммита
         id: plan
         env:
