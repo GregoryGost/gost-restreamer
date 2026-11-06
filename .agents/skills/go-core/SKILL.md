@@ -24,7 +24,7 @@ HTTP/Huma, GORM/SQLite/Goose and testing framework specifics belong to separatel
 4. Reconstruct invariants, state ownership, error mapping, cancellation, goroutine/resource lifecycle, package boundaries and observable behavior.
 5. Compare at least one simpler design where material: concrete type versus interface; value versus pointer receiver; composition versus embedding; mutex versus channel; direct function versus generics.
 6. Try to disprove tentative findings against actual consumers, tests and official versioned sources; mark what is verified and what remains unknown.
-7. Implement only authorized changes; use repository-defined formatter/linter/build/test commands and report what ran.
+7. Implement only authorized changes; use repository-defined formatter/linter/build/test commands and report what ran. When the target Go profile selects gopls diagnostics, include the declared language-server check on the changed Go code and impacted scope; see `references/gopls-language-server.md`.
 
 ## Reference routing — load only relevant material
 
@@ -40,6 +40,7 @@ HTTP/Huma, GORM/SQLite/Goose and testing framework specifics belong to separatel
 | Evidence-led CPU/heap/trace profiling, benchmarks, PGO and performance regressions | `references/performance-engineering.md` |
 | Memory retention, goroutine/resource leaks, heap/RSS/CGO diagnostics, pprof | `references/memory-and-resource-leaks.md` |
 | Terminal debugging of failing tests or local Go processes with Delve (`dlv`) | `references/runtime-debugging.md` |
+| Go language-server semantic navigation, analyzer diagnostics, MCP/LSP or CLI integration | `references/gopls-language-server.md` |
 | Cache eligibility, keys, consistency, invalidation and failure boundaries | `references/cache-design.md`, only for cache-related tasks |
 | New language/library features, deprecations and module-level behavior | `references/modern-go.md` |
 | General code review, refactor audit or multi-category request | `references/patterns-and-review.md` plus the matching focused references |
@@ -61,6 +62,7 @@ Do not load every reference for a one-line change; do not skip the relevant refe
 - Apply a target's established application role, operational boundary and disclosure policy from `CODEX_PROJECT.md` without inventing new assumptions on each task. Choose `references/service-lifecycle.md`, `references/performance-engineering.md` and `references/modules-and-build.md` for relevant work; no mandatory profiler, new process, dependency upgrade or PGO.
 - Keep package imports acyclic and exported contracts intentional. Do not introduce new dependencies, tools, language-version upgrades or source rewrites without the active project policy/user authorization.
 - `gofmt` is the standard baseline; apply additional local linting/testing tools only when already declared and permitted.
+- Treat `gopls` as an independent source of language-server analysis, not an alias for `go vet`, tests, or a project's linters. If the active `CODEX_PROJECT.md` declares a gopls diagnostic check, use the verified available MCP/LSP/CLI mode for changed files and relevant workspace breakages on the final saved source snapshot. Inspect new findings against the declared severity/analyzer policy; fix only authorized actionable defects, not every Hint by default. Report unavailable or unrun required diagnostics as **NOT VERIFIED**, never silently as a pass.
 
 ## Review output contract
 

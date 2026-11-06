@@ -11,3 +11,16 @@ default_subagent_reasoning_effort = "high"
 [mcp_servers.context7]
 url = "https://mcp.context7.com/mcp"
 bearer_token_env_var = "CONTEXT7_API_KEY"
+
+# В локальной копии укажите абсолютные пути к установленному gopls и репозиторию.
+# При необходимости задайте PATH в секции env, чтобы gopls находил Go выбранной версии.
+[mcp_servers.gopls]
+command = "/absolute/path/to/gopls"
+args = ["mcp"]
+cwd = "/absolute/path/to/gost-restreamer"
+
+[mcp_servers.gopls.env]
+GOTOOLCHAIN = "local"
+GOWORK = "off"
+CGO_ENABLED = "1"
+GOFLAGS = "-mod=readonly"

@@ -162,6 +162,18 @@ Skill names resolve to `.agents/skills/<name>/SKILL.md`. Required dependency clo
 - Performance/PGO: представительные измерения по конкретному вопросу с повторениями и сопоставимыми входами, версиями и флагами. PGO не выбран; `benchstat` используется только при наличии и разрешении. Профили CPU/heap/trace хранятся во временном каталоге задачи.
 - Design/review: активные Go references, версия спецификации и release notes, соответствующая модулю.
 
+### Диагностика и семантический анализ gopls
+
+- Gopls diagnostics enabled: yes; применяется `.agents/skills/go-core/references/gopls-language-server.md` внутри активного `go-core`.
+- Selected integration: официальный встроенный MCP, detached, stdio (`gopls mcp`); основной интерфейс — фактически подключённые инструменты сервера. Локальная регистрация находится в `.codex/config.toml`. Этот режим анализирует сохранённые файлы; доступ к несохранённым буферам редактора не предполагается.
+- Executable/version source: уже установленный `/Users/grigoriy/go/bin/gopls`, проверенная версия `v0.24.0`, собранная с Go `1.27.3`. При смене окружения проверить реальный путь, версию и совместимость с Go проекта; не устанавливать и не обновлять инструмент автоматически. При недоступном MCP разрешён существующий CLI fallback того же проверенного `gopls`.
+- Workspace/build context: корень текущего репозитория; в проверенном локальном окружении `/Users/grigoriy/Coding/gost-restreamer`. Go `1.27.3`, `darwin/arm64`, `CGO_ENABLED=1`, `GOTOOLCHAIN=local`, `GOWORK=off`, `GOFLAGS=-mod=readonly`, без дополнительных build tags. Локальный MCP задаёт `PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`. Это не подтверждает диагностику платформенно недоступного Linux/NVIDIA-кода.
+- Analyzer configuration: штатный набор анализаторов выбранного `gopls v0.24.0`; дополнительные анализаторы, подавления и настройки редактора не включаются автоматически. Имена инструментов и схемы аргументов проверяются у реально подключённого сервера, без предположения о доступности VS Code Problems.
+- Required diagnostic scope: после изменения Go-кода проверить диагностику workspace с явными абсолютными путями изменённых Go-файлов и затронутых файлов, определённых по зависимостям. Для MCP использовать `go_diagnostics` с `files`, если это подтверждено опубликованной схемой; общий вызов без файлов не заменяет их углублённый анализ. Перед приёмкой повторить проверку на окончательном сохранённом снимке; при изменении исходников или значимой build-конфигурации прежний результат теряет актуальность.
+- Severity/acceptance policy: новые `Error` блокируют приёмку затронутых изменений. Каждый новый `Warning` требует разбора по полному коду и контракту; подтверждённый дефект устраняется в разрешённой области, для неблокирующего результата фиксируется основание. `Information` и `Hint` рассматриваются по существу и не запускают автоматические исправления или расширение задачи. Прежние находки учитываются отдельно; запрещены массовый `fixAll`, подавление диагностики и отключение анализаторов ради пустого списка.
+- Fallback/reporting: CLI — `/Users/grigoriy/go/bin/gopls check -severity=warning <фактические Go-файлы>` после проверки `gopls version` и `gopls help check`; учитываются текст, severity и реальная область анализа, а не только exit code. Отчёт указывает интерфейс/версию, файлы, build-контекст, снимок и новые/прежние находки. Недоступная, неполная или невыполненная обязательная проверка получает `NOT VERIFIED`; результаты CLI не объявляются полным эквивалентом редактора.
+- Authorized side effects: локальный запуск Go/gopls, чтение workspace и закреплённого графа модулей, запись в стандартные локальные Go/gopls-кэши в пределах текущих разрешений. Загрузка недостающих закреплённых модулей требует разрешённого сетевого доступа; зависимости и toolchain автоматически не меняются. Проверенный режим Go telemetry — `local`; глобальные настройки телеметрии не меняются. Attached LSP, сетевой listener, новый wrapper, действия над исходниками и `go_vulncheck` автоматически не запускаются. Gopls дополняет обязательные `go vet`, линтер, сборку и тесты.
+
 ## Среды разработки и локальные медиапроверки
 
 ОС разработки не закреплена за проектом. Для выбранной macOS, Windows или Linux отдельно проверяются Go/CGO, C-компилятор, Make/shell, файловые пути, UDS, блокировки и управление процессами. Команды выполняются в соответствии с фактической средой; её выбор сам по себе не подтверждает нативную сборку или прохождение всех проверок на этой ОС. Целевая серверная среда остаётся Debian 13 / `linux/amd64` / RTX A1000.
@@ -335,6 +347,7 @@ Command source of truth: этот профиль задаёт обязатель
 - Toolchain/modules: `go version`, `go env GOVERSION GOOS GOARCH CGO_ENABLED GOTOOLCHAIN`, `go list -m all`, `go mod verify`.
 - Format: `gofmt -w <изменённые Go-файлы>`; check — `gofmt -l <изменённые Go-файлы>`.
 - Static analysis: `make vet` → `go vet ./...`; `make lint` → закреплённый `golangci-lint run ./...`.
+- Gopls diagnostics: фактически подключённый MCP `go_diagnostics` с абсолютными путями изменённых и затронутых Go-файлов либо объявленный выше CLI fallback. Обязательная проверка на финальном сохранённом снимке по политике Go Profile; выполняется агентом при изменении Go-кода, не добавляет установку `gopls` в Make/CI и не заменяет их проверки.
 - Unit/integration tests: `go test ./...`.
 - Coverage: `make coverage`; полный запуск тестов, свежий профиль, `go tool cover -func=<profile>` и точная проверка минимума 85% через `tools/coveragecheck`.
 - Race tests: `go test -race ./...` при поддерживаемой платформе/CGO.
@@ -358,7 +371,7 @@ Command source of truth: этот профиль задаёт обязатель
 ## Material Provenance
 
 - Source: [GregoryGost/agent-projects-tools](https://github.com/GregoryGost/agent-projects-tools).
-- Source version: `v1.16.2`.
-- Source commit: `d278349394b220074c1a6e1d1e9ed4097a70e781`.
+- Source version: `v1.16.3`.
+- Source commit: `f12591ed8d838d4296d5791b5948a14ab3e122ff`.
 - Local adaptations: root `AGENTS.md` targets this project and preserves the user's evidence/review and platform-specific console instructions; this profile and the configuration example are project-owned.
 - Обновлять переносимые материалы согласованно: bootstrap, routing, dependencies, coordination, роли, skills и этот профиль. Не заменять профиль полным шаблоном с чужими стеками.

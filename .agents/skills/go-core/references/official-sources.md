@@ -28,6 +28,9 @@
 - Sync: https://pkg.go.dev/sync
 - Go race detector: https://go.dev/doc/articles/race_detector
 - Diagnostics and profiling: https://go.dev/doc/diagnostics
+- Official gopls language server diagnostics and CLI: https://go.dev/gopls/features/diagnostics
+- Official gopls experimental built-in MCP setup, modes and side effects: https://go.dev/gopls/features/mcp
+- gopls configuration, build flags and analyzers: https://go.dev/gopls/settings
 - PGO: https://go.dev/doc/pgo
 - Module and workspace semantics: https://go.dev/ref/mod
 - Go toolchain selection: https://go.dev/doc/toolchain
