@@ -48,9 +48,13 @@ type Config struct {
 	DiagnosticChunkBytes int
 	MaxCommandBytes      uint64
 	MaxCommandArgs       int
+	Progress             ProgressConfig
 }
 
 func (c Config) Validate() error {
+	if err := c.Progress.Validate(); err != nil {
+		return err
+	}
 	if !filepath.IsAbs(c.BaseDir) || c.BaseDir != filepath.Clean(c.BaseDir) {
 		return fmt.Errorf("%w: требуется абсолютный BaseDir", ErrInvalidSupervisor)
 	}
@@ -120,6 +124,20 @@ type Worker struct {
 	Command      CommandBuilder
 	Input        IOHandler
 	Output       IOHandler
+	// OnAttemptResult вызывается один раз после присоединения операций попытки и очистки,
+	// вне блокировок и до решения о повторе. Обработчик обязан завершаться за конечное
+	// время, не ожидая вывода журнала и не вызывая синхронно Stop или Wait этого Supervisor.
+	OnAttemptResult func(AttemptResult)
+}
+
+// AttemptResult содержит исход одной физической попытки с её неизменным локальным ID.
+// Stopped относится к отмене логического работника, а не внутреннего контекста попытки.
+// CleanupErr сохраняет ошибку очистки отдельно от ошибки выполнения.
+type AttemptResult struct {
+	ID         uint64
+	Err        error
+	CleanupErr error
+	Stopped    bool
 }
 
 // Result разделяет исход worker и доказательство физической очистки.

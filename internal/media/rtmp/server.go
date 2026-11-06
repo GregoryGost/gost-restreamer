@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/media"
+	"github.com/GregoryGost/gost-restreamer/internal/media/codec"
 	"github.com/bluenviron/gortmplib"
 	"github.com/bluenviron/gortmplib/pkg/amf0"
 	"github.com/bluenviron/gortmplib/pkg/message"
@@ -31,6 +33,7 @@ type Options struct {
 	Core   *core.Service
 	Route  RouteResolver
 	Feed   FeedResolver
+	Logger *slog.Logger
 }
 
 // Result сообщает фактический исход соединения без блокировки его завершения.
@@ -188,6 +191,9 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) (result error) {
 		close(closed)
 		<-watchExit
 		s.report(result)
+		if result != nil && s.opts.Logger != nil {
+			s.opts.Logger.Error("obs_connection", "component", "rtmp", "operation", "handle", "error", result)
+		}
 		s.mu.Lock()
 		delete(s.active, conn)
 		s.signalLocked()
@@ -232,16 +238,21 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) (result error) {
 	}
 	adapter := publication{router: router, wire: wire}
 	fence := core.RuntimeSessionFence{SessionID: session.ID, Incarnation: session.Incarnation, Lifecycle: session.Lifecycle}
-	lease, err := s.opts.Core.ActivateOBSFor(ctx, fence, streamID, key, func(*core.RuntimeLease) (func(), error) {
+	lease, err := s.opts.Core.ActivateOBSFor(ctx, fence, streamID, key, func(lease *core.RuntimeLease) (func(), error) {
 		var err error
 		adapter.source, err = router.BeginSource()
 		if err != nil {
 			return nil, err
 		}
-		return func() { _ = adapter.source.Disconnect() }, nil
+		adapter.publicationID = lease.ID()
+		router.BeginPublication(lease.ID())
+		return func() { router.EndPublication(lease.ID()); _ = adapter.source.Disconnect() }, nil
 	})
 	if err != nil {
 		return err
+	}
+	if s.opts.Logger != nil {
+		s.opts.Logger.Info("obs_publication", "component", "rtmp", "operation", "activate", "stream_id", streamID, "session_id", session.ID, "lease_id", lease.ID(), "url", rc.URL.String(), "publication_key", key)
 	}
 	leaseWatchDone := make(chan struct{})
 	leaseWatchExit := make(chan struct{})
@@ -270,6 +281,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) (result error) {
 		if err != nil {
 			return err
 		}
+		adapter.receivedAt = time.Now()
 		if err = lease.Do(ctx, func() error { return adapter.message(msg) }); err != nil {
 			return err
 		}
@@ -313,6 +325,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 type publication struct {
+	publicationID                core.ID
+	receivedAt                   time.Time
 	router                       *media.Router
 	source                       *media.Source
 	wire                         *wireConn
@@ -424,6 +438,16 @@ func (p *publication) videoPacket(t time.Duration, tu []byte) error {
 		return nil
 	}
 	f, key, err := p.description.inspect(tu, p.fps)
+	if err == nil || errors.Is(err, ErrUnready) {
+		if f.Codec == "" {
+			f.Codec = core.CodecAV1
+		}
+		receivedAt := p.receivedAt
+		if receivedAt.IsZero() {
+			receivedAt = time.Now()
+		}
+		p.router.ObserveIngressAt(p.publicationID, media.TrackVideo, uint64(len(tu)), f, core.AudioFormat{}, receivedAt)
+	}
 	if errors.Is(err, ErrUnready) {
 		return nil
 	}
@@ -483,6 +507,9 @@ func (p *publication) videoPacket(t time.Duration, tu []byte) error {
 func (p *publication) audioPacket(t time.Duration, au []byte) error {
 	if err := p.timestamp(t, false); err != nil {
 		return err
+	}
+	if len(p.asc) > 0 && codec.ValidateAACAU(p.asc, au) == nil {
+		p.router.ObserveIngress(p.publicationID, media.TrackAudio, uint64(len(au)), core.VideoFormat{}, p.audio.Info().Audio)
 	}
 	if !p.ready {
 		return nil

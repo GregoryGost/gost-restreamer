@@ -14,6 +14,7 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/media"
 	"github.com/GregoryGost/gost-restreamer/internal/media/group"
 	"github.com/GregoryGost/gost-restreamer/internal/media/publisher"
+	"github.com/GregoryGost/gost-restreamer/internal/monitoring"
 	"github.com/GregoryGost/gost-restreamer/internal/processowner"
 )
 
@@ -40,12 +41,20 @@ type Config struct {
 	Ingress                                                              IngressOwner
 	Preparation                                                          PreparationOwner
 	Logger                                                               *slog.Logger
+	Monitoring                                                           monitoring.SamplerConfig
+	Telemetry                                                            core.TelemetryLimits
 	MaxSessions, MaxOutputs, MaxCommands, PageSize                       int
 	MaxGroups, MaxReferences                                             uint32
 	ReconcileInterval, StartupTimeout, OperationTimeout, ShutdownTimeout time.Duration
 }
 
 func (c Config) validate() error {
+	if c.Telemetry.Validate() != nil || c.Monitoring.Validate() != nil || c.Group.FFmpeg.Progress.MaxLineBytes <= 0 || c.Group.FFmpeg.Progress.MaxReportBytes <= 0 || c.Group.FFmpeg.Progress.MaxFields <= 0 {
+		return core.ErrInvalid
+	}
+	if c.MaxOutputs > 0 && uint64(c.Monitoring.MaxSources) < 1+3*uint64(c.MaxGroups)+uint64(c.MaxOutputs) {
+		return core.ErrInvalid
+	}
 	if c.Core == nil || c.Files == nil || c.Processes == nil || c.GeneratorVersion == "" || c.Logger == nil || c.Ingress == nil || c.Preparation == nil || c.MaxSessions <= 0 || c.MaxOutputs <= 0 || c.MaxCommands <= 0 || c.PageSize <= 0 || c.PageSize > core.MaxPageLimit || c.MaxGroups == 0 || c.MaxReferences == 0 || c.ReconcileInterval <= 0 || c.StartupTimeout <= 0 || c.OperationTimeout <= 0 || c.ShutdownTimeout <= 0 || c.Router.Validate() != nil || c.Publisher.Validate() != nil {
 		return core.ErrInvalid
 	}
@@ -79,6 +88,9 @@ type Manager struct {
 
 func New(ctx context.Context, c Config) (*Manager, error) {
 	if err := c.validate(); err != nil {
+		return nil, err
+	}
+	if err := c.Core.ConfigureTelemetry(ctx, c.Telemetry); err != nil {
 		return nil, err
 	}
 	dispatcher, err := c.Core.ReserveDispatcher(ctx)

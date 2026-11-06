@@ -94,7 +94,7 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 		rangeName = "pc"
 	}
 	// async сохраняет конечное окно для обратного чтения заголовков; ignidx останавливает поиск на текущем mdat.
-	args := []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-xerror", "-copyts", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-c:v", "av1_cuvid", "-flags2:a", "+skip_manual", "-f", "mp4", "-fflags", "+ignidx", "-i", "async:unix:" + a.InputPath,
+	args := []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-progress", "pipe:1", "-stats_period", "2", "-nostats", "-xerror", "-copyts", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-c:v", "av1_cuvid", "-flags2:a", "+skip_manual", "-f", "mp4", "-fflags", "+ignidx", "-i", "async:unix:" + a.InputPath,
 		"-map", "0:v:0", "-map", "0:a:0", "-vf", fmt.Sprintf("fps=fps=%d/%d:round=near:eof_action=round,scale_cuda=w=%d:h=%d:format=yuv420p", fps.Numerator, fps.Denominator, v.Width, v.Height),
 		"-c:v", "h264_nvenc", "-profile:v", v.CodecProfile, "-pix_fmt", "cuda", "-rc", "vbr",
 		"-b:v", n(p.VideoEncoding.TargetBitrateBPS), "-maxrate:v", n(p.VideoEncoding.MaxBitrateBPS), "-bufsize:v", n(p.VideoEncoding.BufferBits),

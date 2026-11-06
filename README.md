@@ -34,6 +34,8 @@ make check
 
 `make tools` устанавливает закреплённый `golangci-lint` в `bin/` проекта. `make check` выполняет проверку форматирования и модулей, vet, линтер, тесты, проверку покрытия не ниже 85%, race и сборку пакетов.
 
+Для показателей NVIDIA используется NVML на Linux с CGO. На macOS сборка и обычные тесты работают без NVML; показатели NVIDIA имеют явный статус недоступности. Аппаратные показания проверяются отдельно на целевом сервере.
+
 | Команда | Действие |
 | --- | --- |
 | `make help` | Список команд проекта. |
@@ -56,6 +58,13 @@ GOST_FMP4_FFMPEG="$(command -v ffmpeg)" \
 go test -count=1 ./internal/fallback ./internal/media/fmp4 ./tests/integration
 ```
 
+Короткая проверка структурированного progress штатной файловой команды FFmpeg:
+
+```sh
+GOST_MEDIA_FFMPEG="$(command -v ffmpeg)" \
+go test -count=1 ./internal/media/ffmpeg -run '^TestFileCommandCPUProgress$'
+```
+
 <details>
 <summary>Дополнительная аппаратная проверка на macOS</summary>
 
@@ -76,4 +85,5 @@ go test -count=1 ./tests/integration -run '^TestAcceptanceProfileConversionCPUAn
 - [Медиатракт, форматы, временные метки и переключения](docs/media-contracts.md).
 - [Домен, хранение и жизненный цикл данных](docs/domain-storage-contracts.md).
 - [Сессии, процессы и восстановление ресурсов](docs/session-manager-contracts.md).
+- [Оперативные измерения, события, NVML и журнал](docs/monitoring-contracts.md).
 - [CI и окружение сборки](.github/CI.md).

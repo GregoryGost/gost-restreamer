@@ -25,6 +25,7 @@ type Supervisor struct {
 	cancel   context.CancelFunc
 	done     chan struct{}
 	result   Result
+	progress progressStore
 }
 
 func New(config Config) (*Supervisor, error) {
@@ -73,6 +74,13 @@ func (s *Supervisor) NextDiagnostic(ctx context.Context) (Diagnostic, error) {
 	return s.queue.next(ctx)
 }
 func (s *Supervisor) DroppedDiagnostics() uint64 { return s.queue.losses() }
+
+// Snapshot копирует последнее полное наблюдение текущей физической попытки.
+func (s *Supervisor) Snapshot() ProgressSnapshot {
+	snapshot := s.progress.snapshot()
+	snapshot.DroppedDiagnostics = s.queue.losses()
+	return snapshot
+}
 
 // Stop сначала запрещает новые попытки, затем ожидает физического завершения.
 // По истечении срока Done остаётся наблюдаемым; повторный Stop может дождаться cleanup.
@@ -152,6 +160,9 @@ func (s *Supervisor) run(ctx context.Context, w Worker) {
 		result.Attempts++
 		attemptErr, cleanupErr := s.runAttempt(ctx, w, result.Attempts)
 		result.Err, result.CleanupErr = attemptErr, errors.Join(result.CleanupErr, cleanupErr)
+		if w.OnAttemptResult != nil {
+			w.OnAttemptResult(AttemptResult{ID: result.Attempts, Err: attemptErr, CleanupErr: cleanupErr, Stopped: ctx.Err() != nil || !w.Owner.Valid()})
+		}
 		if cleanupErr != nil || attemptErr == nil || ctx.Err() != nil || !w.Owner.Valid() || result.Attempts > uint64(s.config.MaxRestarts) {
 			break
 		}
@@ -221,6 +232,7 @@ func (p *packetProgress) health(now, start time.Time, c Config) error {
 }
 
 func (s *Supervisor) runAttempt(parent context.Context, w Worker, id uint64) (retErr, cleanupErr error) {
+	s.progress.begin(id)
 	defer func() {
 		if errors.Is(retErr, ErrCleanupPending) || errors.Is(retErr, processowner.ErrPending) || errors.Is(retErr, processowner.ErrUnknown) {
 			cleanupErr = errors.Join(cleanupErr, ErrCleanupPending)
@@ -454,16 +466,19 @@ selectLoop:
 }
 
 func (s *Supervisor) startProcess(ctx context.Context, scope *processowner.Scope, command Command, id uint64) (<-chan error, error) {
-	stdout := &diagnosticWriter{queue: s.queue, attempt: id, kind: "stdout", chunk: s.config.DiagnosticChunkBytes}
+	parser := newProgressParser(s.config.Progress, &s.progress, id)
+	stdout := &diagnosticWriter{queue: s.queue, attempt: id, kind: "stdout", chunk: s.config.DiagnosticChunkBytes, progress: parser}
 	stderr := &diagnosticWriter{queue: s.queue, attempt: id, kind: "stderr", chunk: s.config.DiagnosticChunkBytes}
 	done := make(chan error, 1)
 	if scope != nil {
 		process, err := scope.Start(ctx, processowner.Command{Binary: command.Binary, Args: command.Args, ExtraFiles: command.ExtraFiles, Stdout: stdout, Stderr: stderr})
 		if err != nil {
+			parser.finish()
 			return nil, err
 		}
 		go func() {
 			result, waitErr := process.Wait(context.Background())
+			parser.finish()
 			if !result.Joined {
 				waitErr = errors.Join(waitErr, ErrCleanupPending)
 			}
@@ -484,8 +499,13 @@ func (s *Supervisor) startProcess(ctx context.Context, scope *processowner.Scope
 	cmd.WaitDelay = s.config.GracePeriod
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	if err := cmd.Start(); err != nil {
+		parser.finish()
 		return nil, err
 	}
-	go func() { done <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		parser.finish()
+		done <- err
+	}()
 	return done, nil
 }

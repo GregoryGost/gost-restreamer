@@ -38,6 +38,10 @@ type RuntimeAuthority struct {
 	outputExecutionBytes  uint64
 	nextOutputExecution   uint64
 	dispatcher            *RuntimeDispatcher
+	telemetry             *TelemetryLimits
+	events                *eventStream
+	system                *SystemObserver
+	nextSystem            uint64
 }
 
 func NewRuntimeAuthority(incarnation string, limits ObservationLimits, executionLimits OutputExecutionLimits) (*RuntimeAuthority, error) {
@@ -148,7 +152,13 @@ func (a *RuntimeAuthority) reconcile(ctx context.Context, uow UnitOfWork) {
 func (a *RuntimeAuthority) Close() {
 	<-a.gate
 	defer a.release()
+	if a.closed {
+		return
+	}
 	a.closed = true
+	if a.system != nil {
+		a.system.closeLocked()
+	}
 	if a.dispatcher != nil {
 		a.dispatcher.closeLocked()
 	}
@@ -160,6 +170,9 @@ func (a *RuntimeAuthority) Close() {
 	}
 	for _, lease := range a.leases {
 		a.revoke(lease)
+	}
+	if a.events != nil {
+		close(a.events.changed)
 	}
 }
 
@@ -217,6 +230,7 @@ func (a *RuntimeAuthority) revoke(l *RuntimeLease) {
 	if !l.valid.Swap(false) {
 		return
 	}
+	a.inputDisconnectedLocked(l)
 	for _, n := range a.observations {
 		if n.lease == l {
 			a.removeObservation(n)
@@ -310,6 +324,7 @@ func (s *Service) activateOBS(ctx context.Context, expected *RuntimeSessionFence
 	old := a.publications[streamID]
 	a.leases[id] = lease
 	a.publications[streamID] = lease
+	a.inputConnectedLocked(lease)
 	if old != nil {
 		a.revoke(old)
 	}

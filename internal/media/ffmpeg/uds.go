@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
-	"syscall"
 
 	"github.com/GregoryGost/gost-restreamer/internal/processowner"
 )
@@ -29,7 +28,7 @@ type Namespace struct {
 	dirInfo        os.FileInfo
 	sessionDir     string
 	sessionInfo    os.FileInfo
-	createdSession bool
+	parent         *namespaceParent
 	input          *net.UnixListener
 	output         *net.UnixListener
 	inputInfo      os.FileInfo
@@ -98,14 +97,10 @@ func newNamespace(base, sessionID string, fileInput bool) (_ *Namespace, retErr 
 			}
 		}
 	}()
-	if err = os.Mkdir(n.sessionDir, 0700); err == nil {
-		n.createdSession = true
-	} else if !errors.Is(err, os.ErrExist) {
+	if n.parent, err = acquireNamespaceParent(n.sessionDir); err != nil {
 		return nil, err
 	}
-	if n.sessionInfo, err = verifyDirectory(n.sessionDir); err != nil {
-		return nil, err
-	}
+	n.sessionInfo = n.parent.info
 	if n.dir, err = os.MkdirTemp(n.sessionDir, "w-"); err != nil {
 		return nil, err
 	}
@@ -322,25 +317,23 @@ func (n *Namespace) Close() error {
 		n.closeErr = errors.Join(errs...)
 		return n.closeErr
 	}
+	n.closeErr = errors.Join(append(errs, n.closeUnmanaged())...)
+	return n.closeErr
+}
+
+func (n *Namespace) closeUnmanaged() (retErr error) {
+	// Удержание родителя возвращается и при отказе проверки вложенных ресурсов.
+	defer func() { retErr = errors.Join(retErr, releaseNamespaceParent(n.parent)) }()
 	// Проверка родителей предшествует доступу к вложенным путям.
 	if err := sameDirectory(n.sessionDir, n.sessionInfo); err != nil {
-		n.closeErr = errors.Join(append(errs, err)...)
-		return n.closeErr
+		return err
 	}
 	if n.dirInfo != nil {
 		if err := sameDirectory(n.dir, n.dirInfo); err != nil {
-			n.closeErr = errors.Join(append(errs, err)...)
-			return n.closeErr
+			return err
 		}
 	}
-	errs = append(errs, removeOwned(n.InputPath, n.inputInfo), removeOwned(n.OutputPath, n.outputInfo), removeOwned(n.dir, n.dirInfo))
-	if n.createdSession {
-		if err := removeOwned(n.sessionDir, n.sessionInfo); err != nil && !errors.Is(err, syscall.ENOTEMPTY) && !errors.Is(err, syscall.EEXIST) {
-			errs = append(errs, err)
-		}
-	}
-	n.closeErr = errors.Join(errs...)
-	return n.closeErr
+	return errors.Join(removeOwned(n.InputPath, n.inputInfo), removeOwned(n.OutputPath, n.outputInfo), removeOwned(n.dir, n.dirInfo))
 }
 
 func sameDirectory(path string, original os.FileInfo) error {

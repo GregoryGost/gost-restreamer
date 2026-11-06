@@ -53,6 +53,7 @@ type Router struct {
 	videoDTS, audioDTS routerTimestamp
 	subscriptions      map[*Subscription]struct{}
 	closed             bool
+	ingress            IngressSnapshot
 }
 
 type routerTimestamp struct {
@@ -233,6 +234,7 @@ func (r *Router) Close() error {
 		return nil
 	}
 	r.closed = true
+	r.ingress.Connected = false
 	r.source = nil
 	r.hasConfigs = false
 	r.video, r.audio = CodecConfig{}, CodecConfig{}

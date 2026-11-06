@@ -27,6 +27,7 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/media/group"
 	"github.com/GregoryGost/gost-restreamer/internal/media/publisher"
 	"github.com/GregoryGost/gost-restreamer/internal/media/rtmp"
+	"github.com/GregoryGost/gost-restreamer/internal/monitoring"
 	"github.com/GregoryGost/gost-restreamer/internal/processowner"
 	"github.com/GregoryGost/gost-restreamer/internal/storage"
 )
@@ -196,6 +197,9 @@ func newManagerFixture(t *testing.T, enabled bool, modify func(*Config)) manager
 	queue := media.QueueLimits{MaxPackets: 64, MaxBytes: 65536, MaxPacketBytes: 4096, MaxConfigBytes: 512, ResyncTimeout: time.Second}
 	router := media.RouterLimits{MaxConsumers: 16, MaxRetainedBytes: 2 << 20, MaxConfigBytes: 512}
 	c := Config{Core: service, Files: files, Processes: processes, GeneratorVersion: generation.GeneratorVersion, Ingress: ingress, Preparation: preparation, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), MaxSessions: 2, MaxOutputs: 8, MaxCommands: 8, PageSize: 8, MaxGroups: 8, MaxReferences: 8, Router: router, ReconcileInterval: 5 * time.Millisecond, StartupTimeout: 3 * time.Second, OperationTimeout: time.Second, ShutdownTimeout: 3 * time.Second, Publisher: publisher.Options{Queue: queue, RetryInitial: time.Millisecond, RetryMax: 20 * time.Millisecond, ResubscribeDelay: time.Millisecond, Transport: rtmp.OutboundOptions{Limits: rtmp.OutboundLimits{MaxChunkStreams: 8, MaxMessageBytes: 65536, MaxChunkBytes: 4096, MaxFragments: 1024, MaxControlBytes: 4096, MaxConfigBytes: 4096, MaxAMFBytes: 8192, MaxAMFDepth: 8, MaxAMFElements: 128, ChunkSize: 4096, MaxControlPending: 32, MaxRetainedBytes: 4 << 20, DialTimeout: time.Second, TLSTimeout: time.Second, StartupTimeout: time.Second, MessageTimeout: time.Second, WriteTimeout: time.Second}}}, Group: group.RuntimeConfig{Switcher: group.SwitcherConfig{Profile: profile, Watchdog: policy.Watchdog, Queue: queue, Router: router, MaxAVSkew: time.Second, MaxTransitionGap: time.Second}, Container: fmp4.Limits{MaxBoxBytes: 1 << 20, MaxInitBytes: 1 << 20, MaxMoofBytes: 65536, MaxMdatBytes: 1 << 20, MaxSampleBytes: 65536, MaxExtradataBytes: 4096, MaxSamples: 100}, Binary: "controlled", ResubscribeBackoff: time.Millisecond, ControlInterval: 5 * time.Millisecond, ShutdownTimeout: 2 * time.Second, FFmpeg: ffmpeg.Config{BaseDir: runtimeDirectory, StartupTimeout: time.Second, VideoTimeout: time.Second, AudioTimeout: time.Second, WatchdogInterval: 10 * time.Millisecond, RestartBackoff: time.Millisecond, GracePeriod: 20 * time.Millisecond, KillTimeout: time.Second, ShutdownTimeout: 2 * time.Second, DiagnosticEvents: 32, DiagnosticBytes: 65536, DiagnosticChunkBytes: 1024, MaxCommandBytes: 8192, MaxCommandArgs: 64}}}
+	c.Monitoring = monitoring.SamplerConfig{MaxSources: 128, StaleAfter: 5 * time.Second, ShutdownTimeout: 3 * time.Second}
+	c.Telemetry = core.TelemetryLimits{Events: core.EventLimits{MaxEvents: 128, MaxBytes: 1 << 20, MaxEventBytes: 65536, MaxPageSize: 64}, MediaStaleAfter: 5 * time.Second, MaxGPUDevices: 8, MaxGPUUUIDBytes: 256, MaxGPUBytes: 1 << 20}
+	c.Group.FFmpeg.Progress = ffmpeg.ProgressConfig{MaxLineBytes: 4096, MaxReportBytes: 65536, MaxFields: 64}
 	c.Group.Player = func(_ context.Context, _ string, _ *os.File, a ffmpeg.Attempt) (ffmpeg.Command, error) {
 		binary, err := os.Executable()
 		return ffmpeg.Command{Binary: binary, Args: []string{"-test.run=^TestSessionMediaProcess$", "--", a.OutputPath}}, err

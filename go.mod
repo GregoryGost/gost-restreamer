@@ -3,6 +3,7 @@ module github.com/GregoryGost/gost-restreamer
 go 1.27.3
 
 require (
+	github.com/NVIDIA/go-nvml v0.13.4-1
 	github.com/abema/go-mp4 v1.7.1
 	github.com/bluenviron/gortmplib v1.0.1
 	github.com/bluenviron/mediacommon/v2 v2.9.3

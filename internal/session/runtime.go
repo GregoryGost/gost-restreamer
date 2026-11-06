@@ -10,6 +10,7 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/media"
 	"github.com/GregoryGost/gost-restreamer/internal/media/group"
 	"github.com/GregoryGost/gost-restreamer/internal/media/publisher"
+	"github.com/GregoryGost/gost-restreamer/internal/monitoring"
 	"github.com/GregoryGost/gost-restreamer/internal/processowner"
 )
 
@@ -27,6 +28,7 @@ type sessionNode struct {
 	scope                    *processowner.Scope
 	router                   *media.Router
 	registry                 *group.Registry
+	sampler                  *monitoring.SessionSampler
 	members                  map[core.ID]*membership
 	outputs                  map[core.ID]*outputNode
 	excluded                 map[core.ID]uint64
@@ -228,9 +230,18 @@ func (n *sessionNode) initialize(ctx context.Context) error {
 		return errors.Join(err, ticket.Complete(ctx))
 	}
 	n.router = router
+	sampler, err := monitoring.NewSessionSampler(n.ctx, m.config.Monitoring)
+	if err != nil {
+		return err
+	}
+	n.sampler = sampler
+	if err = n.registerInputMetrics(); err != nil {
+		return err
+	}
 	config := m.config.Group
 	config.OpenFile = m.config.Files.OpenVerified
 	config.Scope = scope
+	config.Logger, config.Sampler, config.MetricStaleAfter = m.config.Logger.With("stream_id", n.streamID), sampler, m.config.Monitoring.StaleAfter
 	registry, err := group.NewRegistry(ctx, group.RegistryConfig{Core: m.config.Core, Parent: n.fence, Observer: observer, Runtime: config, MaxGroups: m.config.MaxGroups, MaxReferences: m.config.MaxReferences})
 	if err != nil {
 		return errors.Join(err, ticket.Complete(ctx))
@@ -506,6 +517,12 @@ func (n *sessionNode) cleanupWithContext(ctx context.Context) error {
 	}
 	if n.router != nil {
 		result = errors.Join(result, n.router.Close())
+	}
+	if n.sampler != nil {
+		if err := n.sampler.Close(ctx); err != nil {
+			result = errors.Join(result, err)
+			usersJoined = false
+		}
 	}
 	if n.observer != nil {
 		result = errors.Join(result, n.observer.Close(ctx))

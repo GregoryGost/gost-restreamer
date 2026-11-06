@@ -92,7 +92,9 @@ func (m *Manager) startOutput(c core.CommandReceipt) {
 			if ref == nil {
 				err = core.ErrNotReady
 			} else if err = ref.Group().Ready(); err == nil {
-				prepared, err = publisher.Prepare(startup, m.config.Core, owner, member.output.Snapshot, ref.Router(), m.config.Publisher)
+				options := m.config.Publisher
+				options.Logger = m.config.Logger.With("stream_id", parent.streamID)
+				prepared, err = publisher.Prepare(startup, m.config.Core, owner, member.output.Snapshot, ref.Router(), options)
 			}
 		}
 	}
@@ -111,6 +113,12 @@ func (m *Manager) startOutput(c core.CommandReceipt) {
 	}
 	if err == nil {
 		err = prepared.Activate(ctx, observer)
+	}
+	if err == nil {
+		err = parent.registerOutputMetrics(prepared, observer)
+	}
+	if observer != nil {
+		defer parent.sampler.Remove(observer.Token())
 	}
 	stop()
 	if err != nil {

@@ -36,12 +36,22 @@ func (p *Publisher) observe(ctx context.Context, state core.OutputState, reason 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := p.observer.Observe(ctx, core.OutputObservation{State: state, Error: string(reason)}); err != nil {
+	value := core.OutputObservation{State: state, Error: string(reason)}
+	var err error
+	if observer, ok := p.observer.(terminalObservation); ok && (state == core.OutputFailed || state == core.OutputStopped) {
+		err = observer.ObserveTerminal(ctx, value)
+	} else {
+		err = p.observer.Observe(ctx, value)
+	}
+	if err != nil {
 		return err
 	}
 	p.mu.Lock()
 	p.state, p.failure = state, reason
 	p.mu.Unlock()
+	if p.options.Logger != nil {
+		p.options.Logger.Info("publisher_state", "operation", "observe", "state", state, "reason", reason)
+	}
 	return nil
 }
 
@@ -64,7 +74,11 @@ func (p *Publisher) loop(ctx context.Context) error {
 		if err == nil {
 			return nil
 		}
+		if p.options.Logger != nil {
+			p.options.Logger.Error("publisher_attempt", "operation", "publish", "ready", ready, "error", err)
+		}
 		if terminal(err) {
+			_ = p.observe(ctx, core.OutputFailed, failureFor(err))
 			return err
 		}
 		if err = p.observe(ctx, core.OutputRetrying, FailureNetwork); err != nil {
@@ -132,6 +146,12 @@ func (p *Publisher) attempt(ctx context.Context) (ready bool, result error) {
 	// Даже поздно вернувшееся соединение проходит Close и Wait до NetworkJoined.
 	defer func() {
 		if terminal(result) {
+			if ctx.Err() == nil {
+				if p.options.Logger != nil {
+					p.options.Logger.Error("publisher_failure", "operation", "publish", "error", result)
+				}
+				_ = p.observe(ctx, core.OutputFailed, failureFor(result))
+			}
 			p.requestSeal()
 		}
 		cancel()

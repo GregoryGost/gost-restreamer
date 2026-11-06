@@ -4,6 +4,7 @@ package publisher
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -24,6 +25,7 @@ type Options struct {
 	RetryInitial, RetryMax, ResubscribeDelay time.Duration
 	Transport                                rtmp.OutboundOptions
 	Resolver                                 rtmp.OutboundResolver
+	Logger                                   *slog.Logger
 }
 
 func (o Options) Validate() error {
@@ -60,6 +62,10 @@ type execution interface {
 
 type observation interface {
 	Observe(context.Context, core.OutputObservation) error
+}
+
+type terminalObservation interface {
+	ObserveTerminal(context.Context, core.OutputObservation) error
 }
 
 type coreExecution struct {
@@ -158,6 +164,9 @@ func Prepare(ctx context.Context, service *core.Service, owner *core.RuntimeLeas
 	}
 	// Полный снимок артефакта не удерживается после проверки точного исполнения.
 	options.Resolver = nil
+	if options.Logger != nil {
+		options.Logger = options.Logger.With("component", "publisher", "session_id", owner.SessionFence().SessionID, "execution", owner.ExecutionFence(), "destination_id", snapshot.Destination.ID, "endpoint", snapshot.Destination.Endpoint, "stream_key", snapshot.Destination.StreamKey)
+	}
 	p := &Publisher{options: options, router: router, target: target, reservation: reservation, execution: coreExecution{reservation}, done: make(chan struct{}), sealDone: make(chan struct{}), state: core.OutputStopped}
 	p.dial = func(ctx context.Context, t rtmp.OutboundTarget, o rtmp.OutboundOptions) (connection, error) {
 		return rtmp.DialOutbound(ctx, t, o)

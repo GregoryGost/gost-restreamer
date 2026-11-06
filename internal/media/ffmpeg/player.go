@@ -23,5 +23,5 @@ func BuildFileCommand(binary string, file *os.File, a Attempt) (Command, error) 
 	if _, err = file.Seek(0, 0); err != nil {
 		return Command{}, err
 	}
-	return Command{Binary: binary, ExtraFiles: []*os.File{file}, Args: []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-xerror", "-stream_loop", "-1", "-re", "-protocol_whitelist", "fd,unix", "-format_whitelist", "mov,mp4,m4a,3gp,3g2,mj2", "-f", "mp4", "-fd", "3", "-i", "fd:", "-map", "0:v:0", "-map", "0:a:0", "-c", "copy", "-f", "mp4", "-movflags", "delay_moov+default_base_moof+frag_every_frame", "-min_frag_duration", "1", "-use_editlist", "1", "-avoid_negative_ts", "disabled", "unix:" + a.OutputPath}}, nil
+	return Command{Binary: binary, ExtraFiles: []*os.File{file}, Args: []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-progress", "pipe:1", "-stats_period", "2", "-nostats", "-xerror", "-stream_loop", "-1", "-re", "-protocol_whitelist", "fd,unix", "-format_whitelist", "mov,mp4,m4a,3gp,3g2,mj2", "-f", "mp4", "-fd", "3", "-i", "fd:", "-map", "0:v:0", "-map", "0:a:0", "-c", "copy", "-f", "mp4", "-movflags", "delay_moov+default_base_moof+frag_every_frame", "-min_frag_duration", "1", "-use_editlist", "1", "-avoid_negative_ts", "disabled", "unix:" + a.OutputPath}}, nil
 }

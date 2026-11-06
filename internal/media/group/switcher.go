@@ -50,6 +50,7 @@ type Status struct {
 	Available       bool
 	Err             error
 	Epoch, Revision uint64
+	StateRevision   uint64
 }
 type queued struct {
 	packet media.Packet
@@ -87,6 +88,10 @@ type Switcher struct {
 	video, audio    media.CodecConfig
 	closed          bool
 	lastNow         time.Time
+	stateRevision   uint64
+	failureRevision uint64
+	changed         chan struct{}
+	outputCounters  media.CounterSnapshot
 }
 
 func NewSwitcher(c SwitcherConfig) (*Switcher, error) {
@@ -103,7 +108,7 @@ func NewSwitcher(c SwitcherConfig) (*Switcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Switcher{config: c, router: r, base: media.TimeBase{Numerator: 1, Denominator: scale}, status: Status{Err: ErrUnavailable}}, nil
+	return &Switcher{config: c, router: r, base: media.TimeBase{Numerator: 1, Denominator: scale}, status: Status{Err: ErrUnavailable, StateRevision: 1}, stateRevision: 1, changed: make(chan struct{})}, nil
 }
 
 func gcd32(a, b uint32) uint32 {
@@ -115,6 +120,32 @@ func gcd32(a, b uint32) uint32 {
 
 func (s *Switcher) Router() *media.Router { return s.router }
 func (s *Switcher) Status() Status        { s.mu.Lock(); defer s.mu.Unlock(); return s.status }
+
+// StateChange возвращает согласованные последнее состояние и сигнал его изменения.
+func (s *Switcher) StateChange() (Status, <-chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.status, s.changed
+}
+
+func (s *Switcher) recordStateLocked(previous Status, previousFailure uint64) {
+	if previous.Source != s.status.Source || previous.Paused != s.status.Paused || previous.Available != s.status.Available || previous.Epoch != s.status.Epoch || (previous.Err == nil) != (s.status.Err == nil) || (!s.status.Available && previousFailure != s.failureRevision) {
+		if s.stateRevision < math.MaxUint64 {
+			s.stateRevision++
+		}
+		close(s.changed)
+		s.changed = make(chan struct{})
+	}
+	s.status.StateRevision = s.stateRevision
+}
+
+func (s *Switcher) OutputSnapshot() media.CounterSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snapshot := s.outputCounters
+	snapshot.SampledAt = time.Now()
+	return snapshot
+}
 func sameConfig(a, b media.CodecConfig) bool {
 	return a.Info() == b.Info() && bytes.Equal(a.Headers(), b.Headers())
 }
@@ -125,6 +156,7 @@ func index(f Feed) int { return int(f) - 1 }
 func (s *Switcher) Push(feed Feed, attempt uint64, p media.Packet, video, audio media.CodecConfig, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.recordStateLocked(s.status, s.failureRevision)
 	if s.closed {
 		return media.ErrRouterClosed
 	}
@@ -292,6 +324,9 @@ func (s *Switcher) fits(f *feedState, q queued) bool {
 }
 
 func (s *Switcher) reject(feed Feed, err error) error {
+	if s.failureRevision < math.MaxUint64 {
+		s.failureRevision++
+	}
 	f := &s.feeds[index(feed)]
 	f.rejected = true
 	f.ready = false
@@ -326,6 +361,7 @@ func (s *Switcher) healthy(f *feedState, now time.Time) bool {
 func (s *Switcher) BeginAttempt(feed Feed, attempt uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.recordStateLocked(s.status, s.failureRevision)
 	if s.closed {
 		return media.ErrRouterClosed
 	}
@@ -350,6 +386,7 @@ func (s *Switcher) BeginAttempt(feed Feed, attempt uint64) error {
 func (s *Switcher) FallbackReady(attempt uint64, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.recordStateLocked(s.status, s.failureRevision)
 	if s.closed {
 		return media.ErrRouterClosed
 	}
@@ -376,6 +413,7 @@ func (s *Switcher) FallbackReady(attempt uint64, now time.Time) error {
 func (s *Switcher) Tick(now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.recordStateLocked(s.status, s.failureRevision)
 	if s.closed {
 		return media.ErrRouterClosed
 	}
@@ -384,6 +422,7 @@ func (s *Switcher) Tick(now time.Time) error {
 func (s *Switcher) SetPaused(paused bool, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.recordStateLocked(s.status, s.failureRevision)
 	if s.closed {
 		return media.ErrRouterClosed
 	}
@@ -393,6 +432,7 @@ func (s *Switcher) SetPaused(paused bool, now time.Time) error {
 func (s *Switcher) Fail(feed Feed, attempt uint64, err error, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.recordStateLocked(s.status, s.failureRevision)
 	if s.closed {
 		return media.ErrRouterClosed
 	}
@@ -617,6 +657,7 @@ func (s *Switcher) drain(feed Feed) error {
 		if err = s.source.Publish(out); err != nil {
 			return s.reject(feed, err)
 		}
+		s.outputCounters.AddPacket(out, time.Now())
 		if !s.hasHorizon {
 			s.horizon = end
 			s.hasHorizon = true
@@ -656,6 +697,10 @@ func (s *Switcher) mapPacketInfo(p media.Packet, offset int64) (media.PacketInfo
 func (s *Switcher) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.recordStateLocked(s.status, s.failureRevision)
+	if !s.closed && s.failureRevision < math.MaxUint64 {
+		s.failureRevision++
+	}
 	s.closed = true
 	s.status = Status{Paused: s.paused, Err: media.ErrRouterClosed, Epoch: s.status.Epoch, Revision: s.revision}
 	for i := range s.feeds {

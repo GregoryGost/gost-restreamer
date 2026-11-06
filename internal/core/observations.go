@@ -15,8 +15,9 @@ import (
 var ErrObservationLimit = errors.New("исчерпан бюджет оперативных наблюдений")
 
 // ObservationLimits ограничивает число владельцев и логический вес удерживаемых данных.
-// Вес узла равен 256 байтам плюс длины всех его строк; связь с родителем включена
-// в постоянную часть. Это бюджет реестра, а не измерение размера Go heap.
+// Вес узла включает 256 байт и длины строк; при включении телеметрии
+// дополнительно резервируются все её типизированные поля. Связь с родителем
+// включена в постоянную часть. Это бюджет реестра, а не размер кучи Go.
 type ObservationLimits struct {
 	MaxSessions        int
 	MaxGroups          int
@@ -76,9 +77,10 @@ type SessionObservation struct {
 	Error string
 }
 type GroupObservation struct {
-	State  ObservationState
-	Source ObservationSource
-	Error  string
+	SourceRevision uint64
+	State          ObservationState
+	Source         ObservationSource
+	Error          string
 }
 type OutputObservation struct {
 	State OutputState
@@ -100,27 +102,37 @@ type SessionObservationSnapshot struct {
 	Value *SessionObservation
 }
 type GroupObservationSnapshot struct {
+	Metrics         *GroupMetrics
+	MetricsStamp    ObservationStamp
 	Stamp           ObservationStamp
 	ConfigGroupID   ID
 	ConfigProfileID ID
 	Value           *GroupObservation
 }
 type OutputObservationSnapshot struct {
-	Stamp     ObservationStamp
-	Execution ExecutionFence
-	Value     *OutputObservation
+	Metrics      *OutputMetrics
+	MetricsStamp ObservationStamp
+	Stamp        ObservationStamp
+	Execution    ExecutionFence
+	Value        *OutputObservation
 }
 type FFmpegObservationSnapshot struct {
+	Metrics         *FFmpegMetrics
+	MetricsStamp    ObservationStamp
+	Role            FFmpegRole
 	Stamp           ObservationStamp
 	GroupInstanceID uint64
 	Value           *FFmpegObservation
 }
 type SessionRuntimeSnapshot struct {
-	Fence   RuntimeSessionFence
-	Session *SessionObservationSnapshot
-	Groups  []GroupObservationSnapshot
-	Outputs []OutputObservationSnapshot
-	FFmpeg  []FFmpegObservationSnapshot
+	Fence       RuntimeSessionFence
+	Input       *InputSnapshot
+	Cursor      RuntimeCursor
+	CursorValid bool
+	Session     *SessionObservationSnapshot
+	Groups      []GroupObservationSnapshot
+	Outputs     []OutputObservationSnapshot
+	FFmpeg      []FFmpegObservationSnapshot
 }
 
 type observationKind uint8
@@ -133,24 +145,33 @@ const (
 )
 
 type observationNode struct {
-	authority   *RuntimeAuthority
-	token       uint64
-	parent      uint64
-	kind        observationKind
-	session     RuntimeSessionFence
-	execution   ExecutionFence
-	lease       *RuntimeLease
-	groupID     ID
-	profileID   ID
-	stamp       ObservationStamp
-	state       string
-	source      ObservationSource
-	failure     string
-	present     bool
-	weight      uint64
-	valid       atomic.Bool
-	done        chan struct{}
-	attemptDone chan struct{}
+	authority      *RuntimeAuthority
+	token          uint64
+	parent         uint64
+	kind           observationKind
+	session        RuntimeSessionFence
+	execution      ExecutionFence
+	lease          *RuntimeLease
+	groupID        ID
+	profileID      ID
+	stamp          ObservationStamp
+	state          string
+	source         ObservationSource
+	failure        string
+	present        bool
+	weight         uint64
+	valid          atomic.Bool
+	done           chan struct{}
+	attemptDone    chan struct{}
+	sourceRevision uint64
+	input          *InputSnapshot
+	groupMetrics   *GroupMetrics
+	outputMetrics  *OutputMetrics
+	ffmpegMetrics  *FFmpegMetrics
+	metricsStamp   ObservationStamp
+	role           FFmpegRole
+	sampleTimes    [3]time.Time
+	progressTime   time.Time
 }
 type observerHandle struct{ node *observationNode }
 type SessionObserver struct{ observerHandle }
@@ -163,6 +184,12 @@ type FFmpegAttemptObserver struct {
 	done      <-chan struct{}
 }
 
+func (h observerHandle) Token() uint64 {
+	if h.node == nil {
+		return 0
+	}
+	return h.node.token
+}
 func (h observerHandle) Valid() bool {
 	return h.node != nil && h.node.valid.Load() && h.node.lease.Valid()
 }
@@ -221,11 +248,16 @@ func (o *FFmpegAttemptObserver) Close(ctx context.Context) error {
 	}
 	close(o.node.attemptDone)
 	o.node.attemptDone = nil
+	o.node.sampleTimes = [3]time.Time{}
+	o.node.progressTime = time.Time{}
+	o.node.ffmpegMetrics = nil
+	o.node.metricsStamp = ObservationStamp{}
 	o.node.present = false
 	o.node.state = ""
 	o.node.failure = ""
 	o.node.stamp.ObservedAt = time.Time{}
 	o.node.weight, _ = a.observationWeight(o.node)
+	a.appendEventLocked(a.nodeEvent(o.node, RuntimeAttemptEvent))
 	return nil
 }
 func (o *FFmpegAttemptObserver) current() error {
@@ -252,6 +284,9 @@ func (n *observationNode) strings() []string {
 }
 func (a *RuntimeAuthority) observationWeight(n *observationNode) (uint64, error) {
 	weight := uint64(256)
+	if a.telemetry != nil {
+		weight += telemetryNodeWeight(n.kind)
+	}
 	for i, s := range n.strings() {
 		if i < 8 && uint64(len(s)) > a.limits.MaxIdentifierBytes {
 			return 0, ErrObservationLimit
@@ -316,6 +351,9 @@ func (a *RuntimeAuthority) removeObservation(n *observationNode) {
 	if n == nil || a.observations[n.token] != n {
 		return
 	}
+	if n.kind == observationSession {
+		a.purgeSessionEventsLocked(n.session)
+	}
 	for token := range a.observationSubtree(n) {
 		other := a.observations[token]
 		if other == nil {
@@ -336,7 +374,17 @@ func (a *RuntimeAuthority) removeObservation(n *observationNode) {
 		other.failure = ""
 		other.state = ""
 		other.present = false
+		other.input = nil
+		other.groupMetrics = nil
+		other.outputMetrics = nil
+		other.ffmpegMetrics = nil
+		other.metricsStamp = ObservationStamp{}
+		other.sampleTimes = [3]time.Time{}
+		other.progressTime = time.Time{}
 	}
+	e := a.nodeEvent(n, RuntimeRemovedEvent)
+	e.Stamp.ObservedAt = time.Now().UTC()
+	a.appendEventLocked(e)
 }
 func (a *RuntimeAuthority) registerObservation(n *observationNode, replace *observationNode) (*observationNode, error) {
 	removed := map[uint64]bool{}
@@ -364,6 +412,14 @@ func (a *RuntimeAuthority) registerObservation(n *observationNode, replace *obse
 	}
 	n.valid.Store(true)
 	a.observations[n.token] = n
+	if a.telemetry != nil && n.kind == observationSession {
+		n.input = &InputSnapshot{}
+		for _, publication := range a.publications {
+			if publication.session == n.session && publication.Valid() {
+				a.connectInputNodeLocked(n, publication)
+			}
+		}
+	}
 	return n, nil
 }
 func (s *Service) openObserver(ctx context.Context, f ExecutionFence, kind observationKind) (*observationNode, error) {
@@ -451,7 +507,7 @@ func (s *Service) OpenOutputObserver(ctx context.Context, f ExecutionFence) (*Ou
 	}
 	return &OutputObserver{observerHandle{n}}, nil
 }
-func (h observerHandle) child(ctx context.Context, kind observationKind, group, profile ID) (*observationNode, error) {
+func (h observerHandle) child(ctx context.Context, kind observationKind, group, profile ID, role FFmpegRole) (*observationNode, error) {
 	if h.node == nil {
 		return nil, ErrInvalid
 	}
@@ -463,7 +519,7 @@ func (h observerHandle) child(ctx context.Context, kind observationKind, group, 
 	if !h.Valid() {
 		return nil, ErrStale
 	}
-	return a.registerObservation(&observationNode{kind: kind, parent: h.node.token, session: h.node.session, lease: h.node.lease, groupID: group, profileID: profile}, nil)
+	return a.registerObservation(&observationNode{kind: kind, parent: h.node.token, session: h.node.session, lease: h.node.lease, groupID: group, profileID: profile, role: role}, nil)
 }
 func (o *SessionObserver) OpenGroup(ctx context.Context, group, profile ID) (*GroupObserver, error) {
 	if o == nil {
@@ -475,7 +531,7 @@ func (o *SessionObserver) OpenGroup(ctx context.Context, group, profile ID) (*Gr
 	if err := profile.Validate(); err != nil {
 		return nil, err
 	}
-	n, err := o.child(ctx, observationGroup, group, profile)
+	n, err := o.child(ctx, observationGroup, group, profile, "")
 	if err != nil {
 		return nil, err
 	}
@@ -485,7 +541,7 @@ func (o *GroupObserver) OpenFFmpeg(ctx context.Context) (*FFmpegObserver, error)
 	if o == nil {
 		return nil, ErrInvalid
 	}
-	n, err := o.child(ctx, observationFFmpeg, "", "")
+	n, err := o.child(ctx, observationFFmpeg, "", "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -509,13 +565,20 @@ func (o *FFmpegObserver) BeginAttempt(ctx context.Context, attemptID uint64) (*F
 	o.node.attemptDone = make(chan struct{})
 	o.node.stamp.AttemptID = attemptID
 	o.node.stamp.ObservedAt = time.Time{}
+	o.node.sampleTimes = [3]time.Time{}
+	o.node.progressTime = time.Time{}
+	o.node.ffmpegMetrics = nil
+	o.node.metricsStamp = ObservationStamp{}
 	o.node.present = false
 	o.node.failure = ""
 	o.node.state = ""
 	o.node.weight, _ = a.observationWeight(o.node)
+	e := a.nodeEvent(o.node, RuntimeAttemptEvent)
+	e.AttemptActive = true
+	a.appendEventLocked(e)
 	return &FFmpegAttemptObserver{observerHandle: o.observerHandle, attemptID: attemptID, done: o.node.attemptDone}, nil
 }
-func (h observerHandle) observe(ctx context.Context, state string, source ObservationSource, failure string, attempt uint64) error {
+func (h observerHandle) observe(ctx context.Context, state string, source ObservationSource, failure string, attempt uint64, sourceRevision uint64) error {
 	if h.node == nil {
 		return ErrInvalid
 	}
@@ -527,10 +590,14 @@ func (h observerHandle) observe(ctx context.Context, state string, source Observ
 	if !h.Valid() || (h.node.kind == observationFFmpeg && (h.node.stamp.AttemptID != attempt || h.node.attemptDone == nil)) {
 		return ErrStale
 	}
+	if (sourceRevision > 0 && sourceRevision <= h.node.sourceRevision) || (h.node.kind == observationGroup && h.node.sourceRevision > 0 && sourceRevision == 0) {
+		return ErrStale
+	}
 	if !utf8.ValidString(failure) || strings.ContainsRune(failure, 0) {
 		return ErrInvalid
 	}
 	n := h.node
+	changed := !n.present || n.state != state || n.source != source || n.failure != failure
 	candidate := &observationNode{kind: n.kind, session: n.session, execution: n.execution, groupID: n.groupID, profileID: n.profileID, state: state, source: source, failure: failure}
 	if err := a.budgetObservation(candidate, map[uint64]bool{n.token: true}); err != nil {
 		return err
@@ -545,6 +612,23 @@ func (h observerHandle) observe(ctx context.Context, state string, source Observ
 	n.present = true
 	n.stamp.Revision = revision
 	n.stamp.ObservedAt = time.Now().UTC()
+	if sourceRevision > 0 {
+		n.sourceRevision = sourceRevision
+	}
+	if changed {
+		e := a.nodeEvent(n, RuntimeStateEvent)
+		e.Source = n.source
+		e.SourceRevision = n.sourceRevision
+		if n.kind == observationOutput {
+			e.OutputState = OutputState(n.state)
+		} else {
+			e.State = ObservationState(n.state)
+		}
+		if failure != "" {
+			e.Reason = ReasonObservationFailed
+		}
+		a.appendEventLocked(e)
+	}
 	n.weight, _ = a.observationWeight(n)
 	return nil
 }
@@ -552,25 +636,34 @@ func (o *SessionObserver) Observe(ctx context.Context, v SessionObservation) err
 	if o == nil || !v.State.valid() {
 		return ErrInvalid
 	}
-	return o.observe(ctx, string(v.State), "", v.Error, 0)
+	return o.observe(ctx, string(v.State), "", v.Error, 0, 0)
 }
 func (o *GroupObserver) Observe(ctx context.Context, v GroupObservation) error {
 	if o == nil || !v.State.valid() || (v.Source != ObservationSourceNone && v.Source != ObservationSourceLive && v.Source != ObservationSourceFallback) {
 		return ErrInvalid
 	}
-	return o.observe(ctx, string(v.State), v.Source, v.Error, 0)
+	return o.observe(ctx, string(v.State), v.Source, v.Error, 0, v.SourceRevision)
 }
 func (o *OutputObserver) Observe(ctx context.Context, v OutputObservation) error {
 	if o == nil || (v.State != OutputConnecting && v.State != OutputPublishing && v.State != OutputRetrying) {
 		return ErrInvalid
 	}
-	return o.observe(ctx, string(v.State), "", v.Error, 0)
+	return o.observe(ctx, string(v.State), "", v.Error, 0, 0)
+}
+
+// ObserveTerminal публикует терминальное RAM-состояние, не освобождая физическое выполнение.
+// Долговечный отказ и очистка остаются отдельными операциями владельца.
+func (o *OutputObserver) ObserveTerminal(ctx context.Context, v OutputObservation) error {
+	if o == nil || (v.State != OutputFailed && v.State != OutputStopped) {
+		return ErrInvalid
+	}
+	return o.observe(ctx, string(v.State), "", v.Error, 0, 0)
 }
 func (o *FFmpegAttemptObserver) Observe(ctx context.Context, v FFmpegObservation) error {
 	if o == nil || !v.State.valid() {
 		return ErrInvalid
 	}
-	return o.observe(ctx, string(v.State), "", v.Error, o.attemptID)
+	return o.observe(ctx, string(v.State), "", v.Error, o.attemptID, 0)
 }
 
 func (s *Service) RuntimeSnapshot(ctx context.Context, f RuntimeSessionFence) (SessionRuntimeSnapshot, error) {
@@ -582,7 +675,10 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, f RuntimeSessionFence) (S
 		return SessionRuntimeSnapshot{}, err
 	}
 	defer a.release()
-	result := SessionRuntimeSnapshot{}
+	return a.runtimeSnapshotLocked(f)
+}
+func (a *RuntimeAuthority) runtimeSnapshotLocked(f RuntimeSessionFence) (SessionRuntimeSnapshot, error) {
+	result := SessionRuntimeSnapshot{Cursor: a.cursorLocked(), CursorValid: a.events != nil && !a.events.exhausted}
 	tokens := make([]uint64, 0)
 	for token, n := range a.observations {
 		if n.session == f {
@@ -602,24 +698,52 @@ func (s *Service) RuntimeSnapshot(ctx context.Context, f RuntimeSessionFence) (S
 			if n.present {
 				v.Value = &SessionObservation{State: ObservationState(n.state), Error: strings.Clone(n.failure)}
 			}
+			result.Input = cloneInput(n.input)
+			if result.Input != nil && result.Input.Metrics != nil {
+				result.Input.Metrics.MediaMetrics = a.freshMediaLocked(result.Input.Metrics.MediaMetrics, n.sampleTimes[0])
+			}
 			result.Session = &v
 		case observationGroup:
 			v := GroupObservationSnapshot{Stamp: n.stamp, ConfigGroupID: ID(strings.Clone(string(n.groupID))), ConfigProfileID: ID(strings.Clone(string(n.profileID)))}
 			if n.present {
-				v.Value = &GroupObservation{State: ObservationState(n.state), Source: n.source, Error: strings.Clone(n.failure)}
+				v.Value = &GroupObservation{State: ObservationState(n.state), Source: n.source, SourceRevision: n.sourceRevision, Error: strings.Clone(n.failure)}
 			}
+			if n.groupMetrics != nil {
+				m := *n.groupMetrics
+				m.LiveInput = a.freshMediaLocked(m.LiveInput, n.sampleTimes[0])
+				m.FallbackInput = a.freshMediaLocked(m.FallbackInput, n.sampleTimes[1])
+				m.Output = a.freshMediaLocked(m.Output, n.sampleTimes[2])
+				v.Metrics = &m
+			}
+			v.MetricsStamp = n.metricsStamp
 			result.Groups = append(result.Groups, v)
 		case observationOutput:
 			v := OutputObservationSnapshot{Stamp: n.stamp, Execution: cloneExecutionFence(n.execution)}
 			if n.present {
 				v.Value = &OutputObservation{State: OutputState(n.state), Error: strings.Clone(n.failure)}
 			}
+			if n.outputMetrics != nil {
+				m := *n.outputMetrics
+				m.MediaMetrics = a.freshMediaLocked(m.MediaMetrics, n.sampleTimes[0])
+				v.Metrics = &m
+			}
+			v.MetricsStamp = n.metricsStamp
 			result.Outputs = append(result.Outputs, v)
 		case observationFFmpeg:
 			v := FFmpegObservationSnapshot{Stamp: n.stamp, GroupInstanceID: n.parent}
 			if n.present {
 				v.Value = &FFmpegObservation{State: ObservationState(n.state), Error: strings.Clone(n.failure)}
 			}
+			if n.ffmpegMetrics != nil {
+				m := *n.ffmpegMetrics
+				if a.telemetry != nil && m.HasProgress && time.Since(n.progressTime) >= a.telemetry.MediaStaleAfter {
+					m.Status = MetricStale
+					m.Reason = ReasonStale
+				}
+				v.Metrics = &m
+			}
+			v.MetricsStamp = n.metricsStamp
+			v.Role = n.role
 			result.FFmpeg = append(result.FFmpeg, v)
 		}
 	}

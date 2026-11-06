@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"math"
 	"net"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/media/codec"
 	"github.com/GregoryGost/gost-restreamer/internal/media/ffmpeg"
 	"github.com/GregoryGost/gost-restreamer/internal/media/fmp4"
+	"github.com/GregoryGost/gost-restreamer/internal/monitoring"
 	"github.com/GregoryGost/gost-restreamer/internal/processowner"
 )
 
@@ -32,6 +34,9 @@ type RuntimeConfig struct {
 	OpenFile                                             FileOpener
 	Player                                               PlayerBuilder
 	Transcode                                            TranscodeBuilder
+	Logger                                               *slog.Logger
+	Sampler                                              *monitoring.SessionSampler
+	MetricStaleAfter                                     time.Duration
 	ResubscribeBackoff, ControlInterval, ShutdownTimeout time.Duration
 }
 
@@ -270,26 +275,29 @@ func (r *Registry) ApplyControl(revision uint64, paused bool) error {
 }
 
 type Group struct {
-	refs            uint32
-	closing         bool
-	config          RuntimeConfig
-	service         *core.Service
-	parent          core.ExecutionFence
-	owner           *core.RuntimeLease
-	observer        *core.GroupObserver
-	id              core.ID
-	manifest        core.ArtifactManifest
-	live            *media.Router
-	switcher        *Switcher
-	cancel          context.CancelFunc
-	done            chan struct{}
-	mu              sync.Mutex
-	result          error
-	attempts        [2]atomic.Uint64
-	controlMu       sync.Mutex
-	controlRevision uint64
-	fallbackEnded   bool
-	fallbackError   error
+	refs             uint32
+	closing          bool
+	config           RuntimeConfig
+	service          *core.Service
+	parent           core.ExecutionFence
+	owner            *core.RuntimeLease
+	observer         *core.GroupObserver
+	id               core.ID
+	manifest         core.ArtifactManifest
+	live             *media.Router
+	switcher         *Switcher
+	cancel           context.CancelFunc
+	done             chan struct{}
+	mu               sync.Mutex
+	result           error
+	attempts         [2]atomic.Uint64
+	controlMu        sync.Mutex
+	controlRevision  uint64
+	fallbackEnded    bool
+	fallbackError    error
+	metricsMu        sync.Mutex
+	liveCounters     media.CounterSnapshot
+	fallbackCounters media.CounterSnapshot
 }
 
 func newGroup(c RuntimeConfig, service *core.Service, parent core.ExecutionFence, owner *core.RuntimeLease, observer *core.GroupObserver, id core.ID, manifest core.ArtifactManifest, live *media.Router, paused bool, revision uint64) (*Group, error) {
@@ -303,6 +311,11 @@ func newGroup(c RuntimeConfig, service *core.Service, parent core.ExecutionFence
 	// Срок работы принадлежит выданному владельцу Session; ctx запроса Acquire не удерживается.
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Group{config: c, service: service, parent: parent, owner: owner, observer: observer, id: id, manifest: manifest, live: live, switcher: sw, cancel: cancel, done: make(chan struct{})}
+	if err := g.registerMetrics(); err != nil {
+		cancel()
+		_ = sw.Close()
+		return nil, err
+	}
 	_ = g.applyControl(revision, paused)
 	go g.run(ctx)
 	return g, nil
@@ -369,6 +382,25 @@ func (g *Group) WaitReady(ctx context.Context) error {
 func (g *Group) Router() *media.Router { return g.switcher.Router() }
 func (g *Group) Status() Status        { return g.switcher.Status() }
 func (g *Group) Done() <-chan struct{} { return g.done }
+
+// MediaSnapshots копирует каждый источник под его собственной блокировкой.
+func (g *Group) MediaSnapshots() (live, fallback, output media.CounterSnapshot) {
+	g.metricsMu.Lock()
+	live, fallback = g.liveCounters, g.fallbackCounters
+	live.SampledAt, fallback.SampledAt = time.Now(), time.Now()
+	g.metricsMu.Unlock()
+	return live, fallback, g.switcher.OutputSnapshot()
+}
+
+func (g *Group) noteInput(feed Feed, p media.Packet) {
+	g.metricsMu.Lock()
+	defer g.metricsMu.Unlock()
+	counter := &g.liveCounters
+	if feed == Fallback {
+		counter = &g.fallbackCounters
+	}
+	counter.AddPacket(p, time.Now())
+}
 func (g *Group) Stop(ctx context.Context) error {
 	g.cancel()
 	if g.switcher != nil {
@@ -396,9 +428,10 @@ func (g *Group) Stop(ctx context.Context) error {
 }
 func (g *Group) run(ctx context.Context) {
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() { defer wg.Done(); g.play(ctx) }()
 	go func() { defer wg.Done(); g.consumeLive(ctx) }()
+	go func() { defer wg.Done(); g.observeChanges(ctx) }()
 	ticker := time.NewTicker(g.config.ControlInterval)
 	running := true
 	for running {
@@ -423,12 +456,14 @@ func (g *Group) run(ctx context.Context) {
 			now := time.Now()
 			_ = g.applyControl(session.Revision, session.DesiredPaused)
 			_ = g.switcher.Tick(now)
-			g.observe(ctx)
 		}
 	}
 	ticker.Stop()
 	g.cancel()
 	wg.Wait()
+	if g.config.Sampler != nil {
+		g.config.Sampler.Remove(g.observer.Token())
+	}
 	err := g.switcher.Close()
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), g.config.ShutdownTimeout)
 	defer cancel()
@@ -438,8 +473,19 @@ func (g *Group) run(ctx context.Context) {
 	close(g.done)
 	g.mu.Unlock()
 }
-func (g *Group) observe(ctx context.Context) {
-	status := g.switcher.Status()
+
+func (g *Group) observeChanges(ctx context.Context) {
+	for {
+		status, changed := g.switcher.StateChange()
+		g.observeStatus(ctx, status)
+		select {
+		case <-ctx.Done():
+			return
+		case <-changed:
+		}
+	}
+}
+func (g *Group) observeStatus(ctx context.Context, status Status) {
 	state, source := core.ObservationReady, core.ObservationSourceNone
 	failure := ""
 	if status.Source == Live {
@@ -453,9 +499,12 @@ func (g *Group) observe(ctx context.Context) {
 		source = core.ObservationSourceNone
 		if status.Err != nil {
 			failure = status.Err.Error()
+			if g.config.Logger != nil {
+				g.config.Logger.Error("group_state", "component", "group", "operation", "switch", "session_id", g.parent.SessionID, "group_id", g.id, "group_instance_id", g.observer.Token(), "source_revision", status.StateRevision, "error", status.Err)
+			}
 		}
 	}
-	_ = g.observer.Observe(ctx, core.GroupObservation{State: state, Source: source, Error: failure})
+	_ = g.observer.Observe(ctx, core.GroupObservation{State: state, Source: source, Error: failure, SourceRevision: status.StateRevision})
 }
 func (g *Group) push(ctx context.Context, feed Feed, attempt uint64, p media.Packet, v, a media.CodecConfig) error {
 	return g.owner.Do(ctx, func() error { return g.switcher.Push(feed, attempt, p, v, a, time.Now()) })
@@ -488,6 +537,7 @@ func (g *Group) consumeLive(ctx context.Context) {
 				if !d.IsCurrent() {
 					continue
 				}
+				g.noteInput(Live, d.Packet)
 				e = g.push(ctx, Live, attempt, d.Packet, d.VideoConfig, d.AudioConfig)
 				if e != nil && !errors.Is(e, ErrUnavailable) && !errors.Is(e, ErrFeed) {
 					err = e
@@ -515,7 +565,7 @@ func delay(ctx context.Context, d time.Duration) bool {
 	}
 }
 func (g *Group) play(ctx context.Context) {
-	observer, err := g.observer.OpenFFmpeg(ctx)
+	observer, err := g.observer.OpenFFmpegRole(ctx, core.FFmpegFallbackPlayer)
 	if err != nil {
 		g.fail(Fallback, err)
 		return
@@ -530,21 +580,29 @@ func (g *Group) play(ctx context.Context) {
 		g.fail(Fallback, err)
 		return
 	}
-	var attempt atomic.Uint64
-	var observation atomic.Pointer[core.FFmpegAttemptObserver]
+	logger := g.ffmpegLogger(observer, core.FFmpegFallbackPlayer)
+	diagnostics := g.drainDiagnostics(supervisor, logger)
+	defer g.joinDiagnostics(supervisor, diagnostics)
+	var binding atomic.Pointer[attemptBinding]
+	if err := g.registerFFmpegMetrics(supervisor, observer, &binding); err != nil {
+		g.fail(Fallback, err)
+		return
+	}
+	if g.config.Sampler != nil {
+		defer g.config.Sampler.Remove(observer.Token())
+	}
 	worker := ffmpeg.Worker{SessionID: string(g.parent.SessionID), GroupID: string(g.id), Owner: g.owner, ProcessScope: g.config.Scope, Topology: ffmpeg.FileInput}
 	worker.Command = func(ctx context.Context, a ffmpeg.Attempt) (ffmpeg.Command, error) {
 		current, err := g.nextAttempt(Fallback)
 		if err != nil {
 			return ffmpeg.Command{}, err
 		}
-		attempt.Store(current)
 		ao, err := observer.BeginAttempt(ctx, current)
 		if err != nil {
 			return ffmpeg.Command{}, err
 		}
 		_ = ao.Observe(ctx, core.FFmpegObservation{State: core.ObservationStarting})
-		observation.Store(ao)
+		binding.Store(bindFFmpegAttempt(a.ID, current, ao, logger))
 		file, err := g.config.OpenFile(ctx, g.manifest)
 		if err != nil {
 			return ffmpeg.Command{}, err
@@ -561,8 +619,13 @@ func (g *Group) play(ctx context.Context) {
 		}
 		return command, nil
 	}
+	worker.OnAttemptResult = g.observeAttemptResult(&binding)
 	worker.Output = func(ctx context.Context, c net.Conn, progress ffmpeg.Progress) error {
-		return g.readOutputObserved(ctx, c, Fallback, attempt.Load(), g.manifest.VerifiedFormat, progress, observation.Load())
+		current := binding.Load()
+		if current == nil {
+			return core.ErrNotReady
+		}
+		return g.readOutputObserved(ctx, c, Fallback, current.coreID, g.manifest.VerifiedFormat, progress, current)
 	}
 	if err = supervisor.Start(ctx, worker); err != nil {
 		g.fail(Fallback, err)
@@ -616,24 +679,16 @@ func (g *Group) addCleanup(err error) {
 func (g *Group) readOutput(ctx context.Context, c net.Conn, feed Feed, attempt uint64, verified core.MediaFormat, progress ffmpeg.Progress) error {
 	return g.readOutputObserved(ctx, c, feed, attempt, verified, progress, nil)
 }
-func (g *Group) readOutputObserved(ctx context.Context, c net.Conn, feed Feed, attempt uint64, verified core.MediaFormat, progress ffmpeg.Progress, observation *core.FFmpegAttemptObserver) (result error) {
+func (g *Group) readOutputObserved(ctx context.Context, c net.Conn, feed Feed, attempt uint64, verified core.MediaFormat, progress ffmpeg.Progress, binding *attemptBinding) (result error) {
+	var observation *core.FFmpegAttemptObserver
+	if binding != nil {
+		observation = binding.observer
+	}
 	defer func() { _ = g.switcher.Fail(feed, attempt, result, time.Now()) }()
 	defer func() {
-		if observation == nil {
-			return
+		if binding != nil && binding.logger != nil && result != nil {
+			binding.logger.Error("ffmpeg_output", "operation", "read_output", "error", result)
 		}
-		state := core.ObservationFailed
-		failure := ""
-		if result != nil {
-			failure = result.Error()
-		}
-		if ctx.Err() != nil {
-			state = core.ObservationStopped
-			failure = ""
-		}
-		cleanup, cancel := context.WithTimeout(context.Background(), g.config.ShutdownTimeout)
-		defer cancel()
-		_ = observation.Observe(cleanup, core.FFmpegObservation{State: state, Error: failure})
 	}()
 	seen := [2]bool{}
 	ready := false
@@ -658,6 +713,9 @@ func (g *Group) readOutputObserved(ctx context.Context, c net.Conn, feed Feed, a
 		}
 		if _, err = inspector.Inspect(p); err != nil {
 			return err
+		}
+		if feed == Fallback {
+			g.noteInput(Fallback, p)
 		}
 		track := ffmpeg.Video
 		if p.Config().Info().Track == media.TrackAudio {
@@ -685,7 +743,8 @@ func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt 
 	if !first.IsCurrent() {
 		return ErrFeed
 	}
-	observer, err := g.observer.OpenFFmpeg(ctx)
+	g.noteInput(Live, first.Packet)
+	observer, err := g.observer.OpenFFmpegRole(ctx, core.FFmpegLiveTranscode)
 	if err != nil {
 		return err
 	}
@@ -701,8 +760,17 @@ func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt 
 	if err != nil {
 		return err
 	}
+	logger := g.ffmpegLogger(observer, core.FFmpegLiveTranscode)
+	diagnostics := g.drainDiagnostics(supervisor, logger)
+	defer g.joinDiagnostics(supervisor, diagnostics)
 	input := core.MediaFormat{Video: first.VideoConfig.Info().Video, Audio: first.AudioConfig.Info().Audio}
-	var observation atomic.Pointer[core.FFmpegAttemptObserver]
+	var binding atomic.Pointer[attemptBinding]
+	if err := g.registerFFmpegMetrics(supervisor, observer, &binding); err != nil {
+		return err
+	}
+	if g.config.Sampler != nil {
+		defer g.config.Sampler.Remove(observer.Token())
+	}
 	worker := ffmpeg.Worker{SessionID: string(g.parent.SessionID), GroupID: string(g.id), Owner: g.owner, ProcessScope: g.config.Scope}
 	worker.Command = func(ctx context.Context, a ffmpeg.Attempt) (ffmpeg.Command, error) {
 		ao, err := observer.BeginAttempt(ctx, attempt)
@@ -710,13 +778,14 @@ func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt 
 			return ffmpeg.Command{}, err
 		}
 		_ = ao.Observe(ctx, core.FFmpegObservation{State: core.ObservationStarting})
-		observation.Store(ao)
+		binding.Store(bindFFmpegAttempt(a.ID, attempt, ao, logger))
 		config := ffmpeg.NVIDIAConfig{Binary: g.config.Binary, Input: input, Profile: g.config.Switcher.Profile, VideoTimeBase: first.VideoConfig.Info().TimeBase, AudioTimeBase: first.AudioConfig.Info().TimeBase}
 		if g.config.Transcode != nil {
 			return g.config.Transcode(ctx, config, a)
 		}
 		return ffmpeg.BuildNVIDIACommand(config, a)
 	}
+	worker.OnAttemptResult = g.observeAttemptResult(&binding)
 	worker.Input = func(ctx context.Context, c net.Conn, _ ffmpeg.Progress) error {
 		origin, err := transportOrigin(first)
 		if err != nil {
@@ -742,13 +811,16 @@ func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt 
 			if err != nil {
 				return err
 			}
+			if delivery.IsCurrent() {
+				g.noteInput(Live, delivery.Packet)
+			}
 			if !sameConfig(delivery.VideoConfig, first.VideoConfig) || !sameConfig(delivery.AudioConfig, first.AudioConfig) {
 				return media.ErrStaleSource
 			}
 		}
 	}
 	worker.Output = func(ctx context.Context, c net.Conn, progress ffmpeg.Progress) error {
-		return g.readOutputObserved(ctx, c, Live, attempt, core.MediaFormat{}, progress, observation.Load())
+		return g.readOutputObserved(ctx, c, Live, attempt, core.MediaFormat{}, progress, binding.Load())
 	}
 	if err = supervisor.Start(ctx, worker); err != nil {
 		return err

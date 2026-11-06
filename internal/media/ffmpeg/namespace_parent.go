@@ -1,0 +1,94 @@
+package ffmpeg
+
+import (
+	"errors"
+	"fmt"
+	"math"
+	"os"
+	"sync"
+	"syscall"
+)
+
+type namespaceParent struct {
+	path    string
+	info    os.FileInfo
+	users   uint64
+	created bool
+}
+
+// Учёт охватывает только активные Namespace без Scope в этом процессе.
+var namespaceParents struct {
+	sync.Mutex
+	active map[string]*namespaceParent
+}
+
+func acquireNamespaceParent(path string) (*namespaceParent, error) {
+	namespaceParents.Lock()
+	defer namespaceParents.Unlock()
+	if parent := namespaceParents.active[path]; parent != nil {
+		info, err := verifyDirectory(path)
+		if err != nil {
+			return nil, err
+		}
+		if !os.SameFile(parent.info, info) {
+			return nil, fmt.Errorf("%w: %s", ErrResourceOwnership, path)
+		}
+		return retainNamespaceParent(parent)
+	}
+	created := false
+	if err := os.Mkdir(path, 0700); err == nil {
+		created = true
+	} else if !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	info, err := verifyDirectory(path)
+	if err != nil {
+		return nil, err
+	}
+	for _, parent := range namespaceParents.active {
+		if os.SameFile(parent.info, info) {
+			if err := sameDirectory(parent.path, parent.info); err != nil {
+				return nil, err
+			}
+			return retainNamespaceParent(parent)
+		}
+	}
+	parent := &namespaceParent{path: path, info: info, users: 1, created: created}
+	if namespaceParents.active == nil {
+		namespaceParents.active = make(map[string]*namespaceParent)
+	}
+	namespaceParents.active[path] = parent
+	return parent, nil
+}
+
+// Удержание добавляется только под блокировкой namespaceParents.
+func retainNamespaceParent(parent *namespaceParent) (*namespaceParent, error) {
+	if parent.users == math.MaxUint64 {
+		return nil, fmt.Errorf("%w: превышен предел владельцев каталога", ErrInvalidSupervisor)
+	}
+	parent.users++
+	return parent, nil
+}
+
+func releaseNamespaceParent(parent *namespaceParent) error {
+	if parent == nil {
+		return nil
+	}
+	namespaceParents.Lock()
+	defer namespaceParents.Unlock()
+	parent.users--
+	if parent.users != 0 {
+		return nil
+	}
+	delete(namespaceParents.active, parent.path)
+	if len(namespaceParents.active) == 0 {
+		namespaceParents.active = nil
+	}
+	if parent.created {
+		// Чужие дочерние ресурсы сохраняются вместе с непустым родителем.
+		if err := removeOwned(parent.path, parent.info); err != nil && !errors.Is(err, syscall.ENOTEMPTY) && !errors.Is(err, syscall.EEXIST) {
+			return err
+		}
+	}
+	return nil
+}

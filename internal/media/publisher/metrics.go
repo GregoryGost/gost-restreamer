@@ -34,6 +34,7 @@ type DeliveryDrops struct {
 // WireBufferBytes до получения соединения показывает зарезервированный предел
 // транспортной попытки, затем — логический резерв самого транспорта; это не RSS.
 type Snapshot struct {
+	SampledAt                                                 time.Time
 	State                                                     core.OutputState
 	Failure                                                   FailureReason
 	Attempts, Connections, Reconnects                         uint64
@@ -45,8 +46,12 @@ type Snapshot struct {
 	QueueDrops                                                media.SubscriptionDrops
 	DeliveryDrops                                             DeliveryDrops
 	LastWrite, LastMedia                                      time.Time
+	LastFrame                                                 time.Time
+	Format                                                    core.ObservedFormat
 	Saturated                                                 bool
 	NetworkJoined                                             bool
+	QueueCapacityPackets, QueueCapacityBytes                  uint64
+	ConfigCapacityBytes                                       uint64
 }
 
 // Snapshot согласует активную подписку с переносом её окончательных счётчиков.
@@ -72,8 +77,16 @@ func (p *Publisher) Snapshot() Snapshot {
 	p.writeMu.Lock()
 	s.WrittenBytes, s.LastWrite = p.writtenBytes, p.lastWrite
 	s.Saturated = s.Saturated || p.writeSaturated
+	s.SampledAt = time.Now()
 	p.writeMu.Unlock()
 	p.metrics.Saturated = s.Saturated
+	s.QueueCapacityPackets, s.QueueCapacityBytes = uint64(p.options.Queue.MaxPackets), p.options.Queue.MaxBytes
+	s.ConfigCapacityBytes = p.options.Queue.MaxConfigBytes
+	if s.ConfigCapacityBytes > p.options.Queue.MaxBytes-s.ConfigCapacityBytes {
+		s.ConfigCapacityBytes = p.options.Queue.MaxBytes
+	} else {
+		s.ConfigCapacityBytes *= 2
+	}
 	return s
 }
 
@@ -141,6 +154,12 @@ func (p *Publisher) delivered(d media.Delivery, bytes uint64) {
 	saturate(&p.metrics.AccessUnits, 1, &p.metrics.Saturated)
 	if d.Packet.Config().Info().Track == media.TrackVideo {
 		saturate(&p.metrics.VideoFrames, 1, &p.metrics.Saturated)
+		v := d.Packet.Config().Info().Video
+		p.metrics.Format.VideoCodec, p.metrics.Format.Width, p.metrics.Format.Height = v.Codec, v.Width, v.Height
+		p.metrics.LastFrame = time.Now()
+	} else {
+		a := d.Packet.Config().Info().Audio
+		p.metrics.Format.AudioCodec, p.metrics.Format.SampleRateHz, p.metrics.Format.Channels = a.Codec, a.SampleRateHz, a.Channels
 	}
 	p.metrics.LastMedia = time.Now().UTC()
 	p.metrics.InFlightPacketBytes, p.metrics.InFlightConfigBytes = 0, 0

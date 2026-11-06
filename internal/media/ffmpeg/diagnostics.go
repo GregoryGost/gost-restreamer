@@ -124,11 +124,13 @@ type diagnosticWriter struct {
 	kind     string
 	chunk    int
 	sequence uint64
+	progress *progressParser
 }
 
 func (w *diagnosticWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.progress.write(p)
 	n := len(p)
 	for len(p) != 0 {
 		size := min(len(p), w.chunk)
