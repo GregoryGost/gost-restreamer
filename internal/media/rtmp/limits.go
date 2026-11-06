@@ -44,6 +44,17 @@ func (l Limits) Validate() error {
 	return nil
 }
 
+// ValidateIngress проверяет полный резерв входного сервера до открытия ресурсов.
+func (l Limits) ValidateIngress() error {
+	if err := l.Validate(); err != nil {
+		return err
+	}
+	if l.baseRetained() > l.MaxRetainedBytes {
+		return ErrLimit
+	}
+	return nil
+}
+
 func (l Limits) baseRetained() uint64 {
 	// Два ограниченных графа AMF покрывают сохранённую команду публикации и
 	// следующее типизированное сообщение, включая внутренние массивы и заголовки элементов.

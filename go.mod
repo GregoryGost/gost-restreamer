@@ -11,6 +11,7 @@ require (
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/pressly/goose/v3 v3.27.0
+	go.yaml.in/yaml/v3 v3.0.5
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.2
 )

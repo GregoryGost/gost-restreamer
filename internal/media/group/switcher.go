@@ -38,7 +38,15 @@ type SwitcherConfig struct {
 }
 
 func (c SwitcherConfig) Validate() error {
-	if c.Queue.MaxPackets < 4 || c.Profile.Validate() != nil || c.Watchdog.Validate() != nil || c.Queue.Validate() != nil || c.Router.Validate() != nil || c.MaxAVSkew <= 0 || c.MaxTransitionGap <= 0 {
+	if c.Profile.Validate() != nil || c.Watchdog.Validate() != nil {
+		return core.ErrInvalid
+	}
+	return c.ValidateTemplate()
+}
+
+// ValidateTemplate проверяет серверные бюджеты до выбора профиля и политики Stream.
+func (c SwitcherConfig) ValidateTemplate() error {
+	if c.Queue.MaxPackets < 4 || c.Queue.Validate() != nil || c.Router.Validate() != nil || c.MaxAVSkew <= 0 || c.MaxTransitionGap <= 0 {
 		return core.ErrInvalid
 	}
 	return nil

@@ -1,0 +1,218 @@
+# Начальные конечные бюджеты сервера; значения не являются обещанием производительности.
+# Один выбранный файл переопределяет только указанные поля. Изменения применяются после перезапуска.
+# Пути данных и runtime должны быть абсолютными. Helper разрешается через PATH или абсолютный путь.
+# Stream, Destination, Profile и политика watchdog каждого Stream хранятся в SQLite и задаются через API.
+# Размеры указаны в байтах; интервалы — строками с единицей. Level использует DEBUG, INFO, WARN, ERROR.
+paths:
+    data: /var/lib/gost-restreamer
+    runtime: /run/gost-restreamer
+executables:
+    ffmpeg: ffmpeg
+    ffprobe: ffprobe
+    helper: gost-process-helper
+lifecycle:
+    startup_timeout: 30s
+    shutdown_timeout: 30s
+http:
+    address: :8080
+    read_header_timeout: 5s
+    idle_timeout: 1m0s
+    max_header_bytes: 1048576
+ingest_address: :1935
+storage:
+    max_open_conns: 4
+    max_idle_conns: 4
+    conn_max_lifetime: 30m0s
+    conn_max_idle_time: 5m0s
+    busy_timeout: 1s
+    retry_attempts: 3
+    retry_timeout: 5s
+    retry_delay: 50ms
+session:
+    max_sessions: 2
+    max_outputs: 16
+    max_commands: 32
+    page_size: 100
+    max_groups: 8
+    max_references: 16
+    reconcile_interval: 250ms
+    startup_timeout: 30s
+    operation_timeout: 5s
+    shutdown_timeout: 30s
+group:
+    max_av_skew: 250ms
+    max_transition_gap: 1s
+    resubscribe_backoff: 1s
+    control_interval: 250ms
+    shutdown_timeout: 30s
+ffmpeg:
+    startup_timeout: 15s
+    video_timeout: 3s
+    audio_timeout: 3s
+    watchdog_interval: 250ms
+    max_restarts: 3
+    restart_backoff: 1s
+    grace_period: 2s
+    kill_timeout: 3s
+    shutdown_timeout: 30s
+    diagnostic_events: 128
+    diagnostic_bytes: 1048576
+    diagnostic_chunk_bytes: 16384
+    max_command_bytes: 16384
+    max_command_args: 256
+    progress:
+        max_line_bytes: 4096
+        max_report_bytes: 65536
+        max_fields: 64
+container:
+    max_box_bytes: 16777216
+    max_init_bytes: 1048576
+    max_moof_bytes: 1048576
+    max_mdat_bytes: 16777216
+    max_sample_bytes: 8388608
+    max_extradata_bytes: 65536
+    max_samples: 4096
+router:
+    max_consumers: 16
+    max_retained_bytes: 537001984
+    max_config_bytes: 65536
+queue:
+    max_packets: 512
+    max_bytes: 33554432
+    max_packet_bytes: 10485760
+    max_config_bytes: 65536
+    resync_timeout: 5s
+publisher:
+    queue:
+        max_packets: 512
+        max_bytes: 33554432
+        max_packet_bytes: 10485760
+        max_config_bytes: 65536
+        resync_timeout: 5s
+    retry_initial: 1s
+    retry_max: 30s
+    resubscribe_delay: 1s
+    transport:
+        max_chunk_streams: 32
+        max_message_bytes: 10485760
+        max_chunk_bytes: 65536
+        max_fragments: 131072
+        max_control_bytes: 65536
+        max_config_bytes: 65536
+        max_amf_bytes: 65536
+        max_amf_depth: 16
+        max_amf_elements: 1024
+        chunk_size: 4096
+        max_control_pending: 32
+        max_retained_bytes: 134217728
+        dial_timeout: 5s
+        tls_timeout: 5s
+        startup_timeout: 10s
+        message_timeout: 30s
+        write_timeout: 5s
+ingress:
+    max_connections: 4
+    max_chunk_streams: 32
+    max_message_bytes: 10485760
+    max_chunk_bytes: 65536
+    max_fragments: 131072
+    max_retained_bytes: 134217728
+    max_control_bytes: 65536
+    max_config_bytes: 65536
+    max_amf_bytes: 65536
+    max_amf_depth: 16
+    max_amf_elements: 1024
+    max_read_ahead_bytes: 65536
+    handshake_timeout: 10s
+    read_timeout: 10s
+    write_timeout: 5s
+    shutdown_timeout: 30s
+fallback:
+    max_upload_bytes: 1073741824
+    max_output_bytes: 2147483648
+    prepare_timeout: 10m0s
+    shutdown_timeout: 30s
+    queue_interval: 250ms
+    runner:
+        timeout: 5m0s
+        max_args: 256
+        max_command_bytes: 16384
+        max_diagnostic_bytes: 1048576
+    probe:
+        max_json_bytes: 4194304
+        max_width: 8192
+        max_height: 8192
+        max_pixels: 33554432
+        max_duration: 5m0s
+        image_duration: 10s
+        max_packets: 1000000
+        container:
+            max_box_bytes: 16777216
+            max_init_bytes: 1048576
+            max_moof_bytes: 1048576
+            max_mdat_bytes: 16777216
+            max_sample_bytes: 8388608
+            max_extradata_bytes: 65536
+            max_samples: 4096
+    reconcile_limit: 100
+process:
+    limits:
+        max_operations: 10000
+        max_record_bytes: 131072
+        max_command_args: 256
+        max_command_bytes: 16384
+        max_extra_files: 4
+        page_size: 100
+    grace_period: 2s
+monitoring:
+    max_sources: 64
+    stale_after: 6s
+    shutdown_timeout: 30s
+telemetry:
+    media_stale_after: 6s
+    events:
+        max_events: 2048
+        max_bytes: 16777216
+        max_event_bytes: 262144
+        max_page_size: 100
+    max_gpu_devices: 8
+    max_gpu_uuid_bytes: 128
+    max_gpu_bytes: 65536
+gpu:
+    max_devices: 8
+    max_uuid_bytes: 128
+    max_snapshot_bytes: 16384
+    stale_after: 6s
+    shutdown_timeout: 30s
+logging:
+    max_records: 1024
+    max_bytes: 8388608
+    max_record_bytes: 1048576
+    shutdown_timeout: 30s
+    level: INFO
+api:
+    json_bytes: 1048576
+    upload_bytes: 1073741824
+    upload_read_timeout: 5m0s
+    operation_timeout: 10s
+    shutdown_timeout: 30s
+    sse_clients: 16
+    sse_page_size: 100
+    sse_frame_bytes: 1048576
+    sse_write_timeout: 5s
+    sse_heartbeat: 15s
+observation:
+    max_sessions: 2
+    max_groups: 16
+    max_outputs: 32
+    max_ffmpeg_workers: 32
+    max_identifier_bytes: 256
+    max_error_bytes: 65536
+    max_bytes: 16777216
+output_execution:
+    max_reservations: 32
+    max_identifier_bytes: 256
+    max_bytes: 1048576
+preparation:
+    max_queued: 8
+    max_profiles: 16

@@ -48,18 +48,25 @@ type Config struct {
 	ReconcileInterval, StartupTimeout, OperationTimeout, ShutdownTimeout time.Duration
 }
 
-func (c Config) validate() error {
+// ValidateSettings проверяет серверные настройки без приобретения зависимостей.
+func (c Config) ValidateSettings() error {
 	if c.Telemetry.Validate() != nil || c.Monitoring.Validate() != nil || c.Group.FFmpeg.Progress.MaxLineBytes <= 0 || c.Group.FFmpeg.Progress.MaxReportBytes <= 0 || c.Group.FFmpeg.Progress.MaxFields <= 0 {
 		return core.ErrInvalid
 	}
 	if c.MaxOutputs > 0 && uint64(c.Monitoring.MaxSources) < 1+3*uint64(c.MaxGroups)+uint64(c.MaxOutputs) {
 		return core.ErrInvalid
 	}
-	if c.Core == nil || c.Files == nil || c.Processes == nil || c.GeneratorVersion == "" || c.Logger == nil || c.Ingress == nil || c.Preparation == nil || c.MaxSessions <= 0 || c.MaxOutputs <= 0 || c.MaxCommands <= 0 || c.PageSize <= 0 || c.PageSize > core.MaxPageLimit || c.MaxGroups == 0 || c.MaxReferences == 0 || c.ReconcileInterval <= 0 || c.StartupTimeout <= 0 || c.OperationTimeout <= 0 || c.ShutdownTimeout <= 0 || c.Router.Validate() != nil || c.Publisher.Validate() != nil {
+	if c.GeneratorVersion == "" || c.MaxSessions <= 0 || c.MaxOutputs <= 0 || c.MaxCommands <= 0 || c.PageSize <= 0 || c.PageSize > core.MaxPageLimit || c.MaxGroups == 0 || c.MaxReferences == 0 || c.ReconcileInterval <= 0 || c.StartupTimeout <= 0 || c.OperationTimeout <= 0 || c.ShutdownTimeout <= 0 || c.Router.Validate() != nil || c.Publisher.Validate() != nil {
 		return core.ErrInvalid
 	}
-	c.Group.OpenFile = c.Files.OpenVerified
-	return c.Group.Validate()
+	return c.Group.ValidateTemplate()
+}
+
+func (c Config) validate() error {
+	if c.Core == nil || c.Files == nil || c.Processes == nil || c.Logger == nil || c.Ingress == nil || c.Preparation == nil {
+		return core.ErrInvalid
+	}
+	return c.ValidateSettings()
 }
 
 // Manager владеет диспетчером, Session и командами; БД и FileStore закрывает владелец приложения.

@@ -41,7 +41,15 @@ type RuntimeConfig struct {
 }
 
 func (c RuntimeConfig) Validate() error {
-	if c.Switcher.Validate() != nil || c.FFmpeg.Validate() != nil || c.Container.Validate() != nil || c.Binary == "" || c.OpenFile == nil || c.ResubscribeBackoff <= 0 || c.ControlInterval <= 0 || c.ShutdownTimeout <= 0 {
+	if c.Switcher.Validate() != nil || c.OpenFile == nil {
+		return core.ErrInvalid
+	}
+	return c.ValidateTemplate()
+}
+
+// ValidateTemplate проверяет статические настройки без фиктивных доменных данных.
+func (c RuntimeConfig) ValidateTemplate() error {
+	if c.Switcher.ValidateTemplate() != nil || c.FFmpeg.Validate() != nil || c.Container.Validate() != nil || c.Binary == "" || c.ResubscribeBackoff <= 0 || c.ControlInterval <= 0 || c.ShutdownTimeout <= 0 {
 		return core.ErrInvalid
 	}
 	return nil
@@ -66,7 +74,7 @@ type Registry struct {
 }
 
 func NewRegistry(ctx context.Context, c RegistryConfig) (*Registry, error) {
-	if c.Core == nil || c.Observer == nil || !c.Observer.Valid() || c.Observer.SessionFence() != (core.RuntimeSessionFence{SessionID: c.Parent.SessionID, Incarnation: c.Parent.Incarnation, Lifecycle: c.Parent.Lifecycle}) || c.Parent.Validate() != nil || c.Parent.OutputID != "" || c.MaxGroups == 0 || c.MaxReferences == 0 || c.Runtime.Validate() != nil {
+	if c.Core == nil || c.Observer == nil || !c.Observer.Valid() || c.Observer.SessionFence() != (core.RuntimeSessionFence{SessionID: c.Parent.SessionID, Incarnation: c.Parent.Incarnation, Lifecycle: c.Parent.Lifecycle}) || c.Parent.Validate() != nil || c.Parent.OutputID != "" || c.MaxGroups == 0 || c.MaxReferences == 0 || c.Runtime.OpenFile == nil || c.Runtime.ValidateTemplate() != nil {
 		return nil, core.ErrInvalid
 	}
 	owner, err := c.Core.BindExecutionOwner(ctx, c.Parent)
@@ -301,6 +309,9 @@ type Group struct {
 }
 
 func newGroup(c RuntimeConfig, service *core.Service, parent core.ExecutionFence, owner *core.RuntimeLease, observer *core.GroupObserver, id core.ID, manifest core.ArtifactManifest, live *media.Router, paused bool, revision uint64) (*Group, error) {
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
 	if c.Switcher.Profile.Mode == core.ModeCopy && c.Switcher.Profile.Format.Video.Codec != core.CodecAV1 || c.Switcher.Profile.Mode == core.ModeTranscode && c.Switcher.Profile.Format.Video.Codec != core.CodecH264 {
 		return nil, core.ErrInvalid
 	}

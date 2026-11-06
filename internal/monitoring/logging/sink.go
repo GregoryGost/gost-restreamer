@@ -53,18 +53,19 @@ type Stats struct {
 
 // Sink владеет ровно одним работником записи; физический io.Writer закрывает вызывающий код.
 type Sink struct {
-	config  Config
-	writer  io.Writer
-	logger  *slog.Logger
-	mu      sync.Mutex
-	queue   [][]byte
-	head    int
-	count   int
-	stats   Stats
-	closed  bool
-	wake    chan struct{}
-	done    chan struct{}
-	release func()
+	config         Config
+	writer         io.Writer
+	logger         *slog.Logger
+	priorityLogger *slog.Logger
+	mu             sync.Mutex
+	queue          [][]byte
+	head           int
+	count          int
+	stats          Stats
+	closed         bool
+	wake           chan struct{}
+	done           chan struct{}
+	release        func()
 }
 
 func New(c Config, writer io.Writer) (*Sink, error) {
@@ -80,6 +81,7 @@ func newSink(c Config, writer io.Writer, release func()) (*Sink, error) {
 	}
 	s := &Sink{config: c, writer: writer, queue: make([][]byte, c.MaxRecords), wake: make(chan struct{}, 1), done: make(chan struct{}), release: release}
 	s.logger = slog.New(slog.NewJSONHandler(queueWriter{s}, &slog.HandlerOptions{Level: c.Level}))
+	s.priorityLogger = slog.New(slog.NewJSONHandler(queueWriter{s}, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	go s.run()
 	return s, nil
 }
@@ -108,6 +110,10 @@ func NewStderr(c Config) (*Sink, error) {
 
 func (s *Sink) Logger() *slog.Logger  { return s.logger }
 func (s *Sink) Done() <-chan struct{} { return s.done }
+
+func (s *Sink) LogConfigFilePriorityWarning(yamlPath, ymlPath, selected string) {
+	s.priorityLogger.Warn("config_file_priority", "yaml_path", yamlPath, "yml_path", ymlPath, "selected", selected)
+}
 
 func (s *Sink) Stats() Stats {
 	s.mu.Lock()

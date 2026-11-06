@@ -21,7 +21,7 @@ OBS отправляет один поток на сервер. Группы о�
 
 ## Технологии
 
-Go, FFmpeg и SQLite с GORM/Goose. Обмен с FFmpeg идёт через Unix-сокеты в формате fMP4; исходящие RTMP/RTMPS-соединения обслуживаются в Go. Для серверного аппаратного перекодирования используется NVIDIA NVDEC/NVENC. Целевая серверная среда — Debian 12, `linux/amd64`, с возможной последующей миграцией на Debian 13.
+Go, FFmpeg и SQLite с GORM/Goose. Обмен с FFmpeg идёт через Unix-сокеты в формате fMP4; исходящие RTMP/RTMPS-соединения обслуживаются в Go. Для серверного аппаратного перекодирования используется NVIDIA NVDEC/NVENC. Целевая серверная среда — Debian 13, `linux/amd64`.
 
 ## Среда разработки
 
@@ -44,7 +44,36 @@ make check
 | `make coverage` | Свежий полный набор тестов и проверка покрытия ≥85% без исключений. |
 | `make vet` / `make lint` | Статический анализ. |
 | `make build` | Сборка Go-пакетов. |
+| `make binary` | Сборка сервиса в `bin/gost-restreamer`. |
 | `make process-helper` | Сборка `bin/gost-process-helper` для управления дочерними FFmpeg/ffprobe. |
+
+### Запуск сервиса
+
+Собираются оба исполняемых файла:
+
+```sh
+make binary process-helper
+```
+
+Настройки инсталляции задаются YAML-файлом на основе [примера](configs/example.yaml). Перед локальным запуском нужно выбрать доступные абсолютные каталоги данных и runtime и настроить путь к собранному helper. Параметр `--config` выбирает файл:
+
+```sh
+./bin/gost-restreamer --config /absolute/path/to/config.yaml
+```
+
+Файл может содержать только нужные переопределения, например:
+
+```yaml
+paths:
+  data: /absolute/path/to/local-data
+  runtime: /tmp/gost-restreamer
+executables:
+  helper: /absolute/path/to/gost-restreamer/bin/gost-process-helper
+```
+
+Без параметра используются `/etc/gost-restreamer/config.yaml` и, при его отсутствии, `config.yml` в том же каталоге. При наличии обоих выбирается `.yaml` и выводится предупреждение. Встроенные defaults заполняют пропущенные поля, неизвестные настройки останавливают запуск. Изменения файла применяются после перезапуска.
+
+HTTP API доступен под `/api/v1`; стандартные адреса — HTTP `:8080` и ingest `:1935`. Управление работает без авторизации в локальном контуре владельца. Отсутствие NVIDIA или FFmpeg отражается отдельно от готовности управления; для медиазапуска нужны соответствующие компоненты. Полный контракт выбора конфигурации, OBS-маршрута и остановки — в [документации приложения](docs/application-contracts.md).
 
 ### Медиапроверки с FFmpeg
 
@@ -86,4 +115,6 @@ go test -count=1 ./tests/integration -run '^TestAcceptanceProfileConversionCPUAn
 - [Домен, хранение и жизненный цикл данных](docs/domain-storage-contracts.md).
 - [Сессии, процессы и восстановление ресурсов](docs/session-manager-contracts.md).
 - [Оперативные измерения, события, NVML и журнал](docs/monitoring-contracts.md).
+- [Управляющий REST/SSE API](docs/api-contracts.md).
+- [Приложение, конфигурация, запуск и остановка](docs/application-contracts.md).
 - [CI и окружение сборки](.github/CI.md).

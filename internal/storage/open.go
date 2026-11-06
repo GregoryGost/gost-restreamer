@@ -43,7 +43,8 @@ type Options struct {
 	RetryDelay            time.Duration
 }
 
-func (o Options) validate() error {
+// Validate проверяет бюджеты без открытия хранилища.
+func (o Options) Validate() error {
 	if err := o.OutputExecutionLimits.Validate(); err != nil {
 		return err
 	}
@@ -78,7 +79,7 @@ type Store struct {
 
 // Open открывает файловую БД и применяет встроенные миграции под блокировкой.
 func Open(ctx context.Context, path string, options Options) (_ *Store, retErr error) {
-	if err := options.validate(); err != nil {
+	if err := options.Validate(); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {

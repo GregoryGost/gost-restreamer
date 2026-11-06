@@ -54,15 +54,11 @@ type Server struct {
 
 // NewServer проверяет бюджеты до первого сетевого выделения ресурсов.
 func NewServer(opts Options) (*Server, error) {
-	if err := opts.Limits.Validate(); err != nil {
+	if err := opts.Limits.ValidateIngress(); err != nil {
 		return nil, err
 	}
 	if opts.Core == nil || opts.Route == nil || opts.Feed == nil {
 		return nil, core.ErrInvalid
-	}
-	base := opts.Limits.baseRetained()
-	if base > opts.Limits.MaxRetainedBytes {
-		return nil, ErrLimit
 	}
 	return &Server{opts: opts, active: make(map[net.Conn]struct{}), listeners: make(map[net.Listener]struct{}), changed: make(chan struct{}), results: make(chan Result, opts.Limits.MaxConnections)}, nil
 }
