@@ -162,7 +162,9 @@ func TestManagerAddResolvesAmbiguousAdmissionWithoutDuplicate(t *testing.T) {
 func TestManagerConcurrentAddPriorSurvivesFreshAdmissionFailure(t *testing.T) {
 	for _, failure := range []string{"selection", "file"} {
 		t.Run(failure, func(t *testing.T) {
-			f := newManagerFixture(t, false, nil)
+			f := newManagerFixture(t, false, func(c *Config) {
+				c.Group.FFmpeg.StartupTimeout = c.StartupTimeout
+			})
 			wrapped := &delayedPriorStore{Store: f.store, requestID: "concurrent-add", entered: make(chan struct{}), release: make(chan struct{})}
 			f = replaceAdmissionManager(t, f, wrapped)
 			var released sync.Once

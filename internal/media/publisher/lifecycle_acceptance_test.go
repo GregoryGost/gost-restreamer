@@ -83,7 +83,7 @@ func TestPublisherAcceptanceStopDuringRealAuthorityGateWait(t *testing.T) {
 				}}
 				entered, release, writeDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 				go func() {
-					writeDone <- a.GuardWrite(ctx, u, func() (bool, error) { close(entered); <-release; return false, nil })
+					writeDone <- a.GuardWrite(ctx, u, time.Second, func() (bool, error) { close(entered); <-release; return false, nil })
 				}()
 				<-entered
 				activationDone := make(chan error, 1)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type runtimeSnapshotRepository struct {
@@ -73,7 +74,7 @@ func TestRuntimeReconciliationFailsClosedWithoutReplacingWriteOutcome(t *testing
 			t.Fatal(err)
 		}
 		calls := 0
-		err = authority.GuardWrite(context.Background(), uow, func() (bool, error) {
+		err = authority.GuardWrite(context.Background(), uow, time.Second, func() (bool, error) {
 			calls++
 			uow.viewErr = errors.New("состояние не удалось подтвердить")
 			return true, operationErr

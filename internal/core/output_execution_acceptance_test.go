@@ -217,7 +217,7 @@ func TestOutputExecutionAcceptanceQuarantineCannotReplay(t *testing.T) {
 			case "uncertain_reconciliation":
 				uncertain := errors.New("синтетический неоднозначный COMMIT")
 				f.u.viewErr = errors.New("синтетический отказ чтения")
-				err = f.u.RuntimeAuthority().GuardWrite(ctx, f.u, func() (bool, error) { return true, uncertain })
+				err = f.u.RuntimeAuthority().GuardWrite(ctx, f.u, time.Second, func() (bool, error) { return true, uncertain })
 				requireExecutionError(t, err, uncertain)
 				if l.Valid() || o.Valid() {
 					t.Fatal("ошибка сверки не закрыла допуск")

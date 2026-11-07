@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"sync/atomic"
+	"time"
 )
 
 var ErrRuntimeCapability = errors.New("UnitOfWork не предоставляет общую RuntimeAuthority")
@@ -84,8 +85,10 @@ func (a *RuntimeAuthority) release() { a.gate <- struct{}{} }
 // GuardWrite вызывается только владельцем UnitOfWork. write завершает все
 // транзакции до возврата; первый результат сообщает о возможном COMMIT.
 // Сверка не заменяет результат записи и никогда не повторяет её callback.
-func (a *RuntimeAuthority) GuardWrite(ctx context.Context, uow UnitOfWork, write func() (bool, error)) error {
-	if uow == nil || write == nil {
+// reconcileTimeout ограничивает общую сверку после записи; её контекст сохраняет
+// значения ctx, но не наследует его отмену и срок завершения.
+func (a *RuntimeAuthority) GuardWrite(ctx context.Context, uow UnitOfWork, reconcileTimeout time.Duration, write func() (bool, error)) error {
+	if uow == nil || reconcileTimeout <= 0 || write == nil {
 		return ErrInvalid
 	}
 	if err := a.acquire(ctx); err != nil {
@@ -95,7 +98,7 @@ func (a *RuntimeAuthority) GuardWrite(ctx context.Context, uow UnitOfWork, write
 	uncertain := true
 	defer func() {
 		if uncertain {
-			a.reconcile(ctx, uow)
+			a.reconcile(ctx, uow, reconcileTimeout)
 		}
 	}()
 	var err error
@@ -103,7 +106,9 @@ func (a *RuntimeAuthority) GuardWrite(ctx context.Context, uow UnitOfWork, write
 	return err
 }
 
-func (a *RuntimeAuthority) reconcile(ctx context.Context, uow UnitOfWork) {
+func (a *RuntimeAuthority) reconcile(ctx context.Context, uow UnitOfWork, reconcileTimeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout)
+	defer cancel()
 	a.reconcilePreparations(ctx, uow)
 	if len(a.leases) == 0 {
 		return

@@ -39,31 +39,31 @@ func newDomainFixture(t *testing.T, outputs int) domainFixture {
 	s := openTestStore(t)
 	svc, err := core.NewService(s, s.Incarnation())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("создать сервис домена: %v", err)
 	}
 	ctx := context.Background()
 	a, err := svc.ReserveAsset(ctx, core.FallbackAsset{Name: "Оригинал", Kind: core.AssetImage, OriginalPath: "originals/source.png"})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("зарезервировать исходный ресурс: %v", err)
 	}
 	stream, err := svc.CreateStream(ctx, core.Stream{Name: "Поток", PublicationKey: "synthetic-publication-key", Fallback: core.FallbackPolicy{AssetID: a.ID, Watchdog: core.WatchdogPolicy{VideoTimeout: time.Second, AudioTimeout: time.Second, RecoveryWindow: time.Second, KeyframeTimeout: time.Second}}})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("создать поток: %v", err)
 	}
 	p, err := svc.CreateProfile(ctx, core.TranscodeProfile{Name: "Профиль", Profile: storageProfile()})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("создать профиль транскодирования: %v", err)
 	}
 	g, err := svc.CreateGroup(ctx, core.TranscodeGroup{StreamID: stream.ID, ProfileID: p.ID, Name: "Группа"})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("создать группу транскодирования: %v", err)
 	}
 	a, v := publishFixtureGeneration(t, svc, a, "synthetic-source-hash", "synthetic-content-hash")
 	f := domainFixture{store: s, service: svc, asset: a, stream: stream, profile: p, group: g, variant: v}
 	for i := 0; i < outputs; i++ {
 		d, err := svc.CreateDestination(ctx, core.Destination{StreamID: stream.ID, GroupID: g.ID, Name: "Назначение", Platform: "custom", Endpoint: "rtmps://example.invalid/live", StreamKey: "synthetic-destination-key", Enabled: true})
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("создать назначение %d: %v", i+1, err)
 		}
 		f.destinations = append(f.destinations, d)
 	}
@@ -200,34 +200,34 @@ func publishFixtureGeneration(t *testing.T, svc *core.Service, a core.FallbackAs
 	ctx := context.Background()
 	g, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: a.ID, ExpectedRevision: a.Revision, Kind: core.AssetImage, GeneratorVersion: "generator-v1"})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("зарезервировать подготовку поколения: %v", err)
 	}
 	fence, err := svc.ClaimPreparation(ctx, g.ID)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("получить право на подготовку поколения: %v", err)
 	}
 	if err = svc.MarkPreparationIssued(ctx, fence); err != nil {
-		t.Fatal(err)
+		t.Fatalf("отметить выдачу подготовки поколения: %v", err)
 	}
 	publication := core.GenerationPublication{SourceHash: sourceHash, SizeBytes: 1024, SourceFormat: core.SourceFormat{ImageFormat: "png"}}
 	for _, p := range g.RequiredProfiles {
 		publication.Variants = append(publication.Variants, core.FallbackVariant{Record: core.Record{ID: p.VariantID}, GenerationID: g.ID, AssetID: a.ID, SourceHash: sourceHash, Profile: p.Profile, GeneratorVersion: g.GeneratorVersion, ManagedPath: p.ManagedPath, SizeBytes: 2048, ContentHash: contentHash, VerifiedFormat: p.Profile.Format})
 	}
 	if _, err = svc.PublishPreparation(ctx, fence, publication); err != nil {
-		t.Fatal(err)
+		t.Fatalf("опубликовать подготовленное поколение: %v", err)
 	}
 	if err = svc.AcknowledgePreparationCleanup(ctx, fence); err != nil {
-		t.Fatal(err)
+		t.Fatalf("подтвердить очистку подготовки поколения: %v", err)
 	}
 	a, err = svc.GetAsset(ctx, a.ID)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("прочитать исходный ресурс после публикации: %v", err)
 	}
 	var v core.FallbackVariant
 	if len(g.RequiredProfiles) > 0 {
 		v, err = svc.GetVariant(ctx, g.RequiredProfiles[0].VariantID)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("прочитать опубликованный вариант: %v", err)
 		}
 	}
 	return a, v
