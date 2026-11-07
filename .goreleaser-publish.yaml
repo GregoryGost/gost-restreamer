@@ -1,0 +1,21 @@
+version: 2
+project_name: gost-restreamer
+# Очистка этого каталога не затрагивает уже проверенные пакеты в dist/.
+dist: dist/publish
+builds:
+  - skip: true
+changelog:
+  disable: true
+checksum:
+  disable: true
+release:
+  draft: true
+  prerelease: false
+  replace_existing_draft: false
+  use_existing_draft: false
+  replace_existing_artifacts: false
+  name_template: '{{ .Tag }}'
+  extra_files:
+    - glob: 'dist/gost-restreamer_{{ .Env.DEB_VERSION }}_amd64.deb'
+    - glob: 'dist/gost-restreamer-{{ .Env.VERSION }}-linux-amd64.tar.gz'
+    - glob: 'dist/gost-restreamer-{{ .Env.VERSION }}-SHA256SUMS'

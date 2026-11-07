@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+    remove|purge|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload
+        fi
+        ;;
+esac
+# Постоянные данные и runtime-доказательства не принадлежат скрипту удаления.
+exit 0

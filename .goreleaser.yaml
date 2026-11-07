@@ -1,0 +1,101 @@
+version: 2
+project_name: gost-restreamer
+dist: dist
+
+builds:
+  - id: gost-restreamer
+    main: ./cmd/gost-restreamer
+    binary: gost-restreamer
+    env: [CGO_ENABLED=1]
+    goos: [linux]
+    goarch: [amd64]
+    goamd64: [v1]
+    flags: [-trimpath, -buildvcs=true]
+    ldflags:
+      - -X github.com/GregoryGost/gost-restreamer/internal/buildinfo.version={{ .Env.VERSION }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+  - id: gost-process-helper
+    main: ./cmd/gost-process-helper
+    binary: gost-process-helper
+    env: [CGO_ENABLED=1]
+    goos: [linux]
+    goarch: [amd64]
+    goamd64: [v1]
+    flags: [-trimpath, -buildvcs=true]
+    ldflags:
+      - -X github.com/GregoryGost/gost-restreamer/internal/buildinfo.version={{ .Env.VERSION }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+snapshot:
+  version_template: '{{ trimprefix .Env.VERSION "v" }}'
+
+archives:
+  - id: distribution
+    ids: [gost-restreamer, gost-process-helper]
+    formats: [tar.gz]
+    name_template: 'gost-restreamer-{{ .Env.VERSION }}-linux-amd64'
+    builds_info:
+      owner: root
+      group: root
+      mode: 0755
+      mtime: '{{ .CommitDate }}'
+    files:
+      - src: configs/example.yaml
+        info:
+          owner: root
+          group: root
+          mode: 0644
+          mtime: '{{ .CommitDate }}'
+      - src: deploy/systemd/gost-restreamer.service
+        info:
+          owner: root
+          group: root
+          mode: 0644
+          mtime: '{{ .CommitDate }}'
+
+nfpms:
+  - id: debian
+    package_name: gost-restreamer
+    ids: [gost-restreamer, gost-process-helper]
+    formats: [deb]
+    file_name_template: 'gost-restreamer_{{ .Env.DEB_VERSION }}_amd64'
+    homepage: https://github.com/GregoryGost/gost-restreamer
+    maintainer: GregoryGost
+    description: Сервер рестриминга с независимыми выходами и подготовленной заглушкой.
+    bindir: /opt/gost-restreamer
+    section: video
+    priority: optional
+    mtime: '{{ .CommitDate }}'
+    dependencies:
+      - libc6 (>= 2.41)
+      - systemd
+    contents:
+      - dst: /etc/gost-restreamer
+        type: dir
+        file_info:
+          mode: 0700
+      - src: configs/example.yaml
+        dst: /etc/gost-restreamer/config.yaml
+        type: config
+        file_info:
+          mode: 0600
+      - src: deploy/systemd/gost-restreamer.service
+        dst: /etc/systemd/system/gost-restreamer.service
+        type: config
+        file_info:
+          mode: 0644
+    scripts:
+      postinstall: deploy/debian/postinst
+      preremove: deploy/debian/prerm
+      postremove: deploy/debian/postrm
+
+checksum:
+  name_template: 'gost-restreamer-{{ .Env.VERSION }}-SHA256SUMS'
+  algorithm: sha256
+
+changelog:
+  disable: true
+
+# Формирование пакетов никогда не обращается к GitHub Releases.
+release:
+  disable: true

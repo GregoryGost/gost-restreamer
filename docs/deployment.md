@@ -2,20 +2,21 @@
 
 Целевая установка — Debian 13 / `linux/amd64` в домашней VM Proxmox владельца; фактически проверенная версия VM — Debian 13.4 (`trixie`). Оба бинарника устанавливаются в `/opt/gost-restreamer`. Сервис, `gost-process-helper`, FFmpeg и ffprobe запускаются от `root`. Отдельный системный пользователь не создаётся. Фактическая установка, доступ к RTX A1000 и эфиры проверяются в T11.
 
-## Состав поставки
+## Состав поставки и скачивание
 
-`make package VERSION=<версия>` собирает оба бинарника и создаёт в `dist/` архив `gost-restreamer-<версия>-<GOOS>-<GOARCH>.tar.gz` и соседний `.sha256`. Платформа берётся из окружения Go: локальная сборка на macOS получает имя `darwin-arm64`, а CI — `linux-amd64`. Нативный архив macOS нельзя устанавливать на Debian.
+CI формирует один `.deb` с обоими бинарниками, `.tar.gz` с теми же бинарниками, примером YAML и unit, а также общий `gost-restreamer-<Git-версия>-SHA256SUMS`. Рабочие конфигурации, БД, медиа и журналы в поставку не входят. В Debian-пакет не включены FFmpeg, ffprobe, драйверы NVIDIA и NVML.
 
-В архив входят только:
+| Файл | Пример имени |
+| --- | --- |
+| Debian package | `gost-restreamer_0.2.0~dev.1+abc123_amd64.deb` или `gost-restreamer_0.2.0_amd64.deb` |
+| Архив | `gost-restreamer-v0.2.0-dev.1+abc123-linux-amd64.tar.gz` или `gost-restreamer-v0.2.0-linux-amd64.tar.gz` |
+| Контрольные суммы | `gost-restreamer-v0.2.0-dev.1+abc123-SHA256SUMS` или `gost-restreamer-v0.2.0-SHA256SUMS` |
 
-- `gost-restreamer`;
-- `gost-process-helper`;
-- `configs/example.yaml`;
-- `deploy/systemd/gost-restreamer.service`.
+После merge в `develop` скачайте ZIP из Actions → успешный запуск → Artifacts и распакуйте его. Артефакты хранятся 14 дней с учётом настроек GitHub; Git-тег остаётся после их истечения. Dev GitHub Releases не создаются. После merge в `main` файлы прикрепляются к **Draft Release**, доступному владельцу до ручной публикации. Владелец проверяет успешность workflow и файлы, затем нажимает Publish release. CI не публикует draft, не заменяет его существующие файлы и не изменяет уже опубликованный релиз. Не публикуйте вручную одновременно с выполняющимся повтором workflow.
 
-Рабочая БД, медиа, журналы, ключи и конфигурация установленного сервиса в архив не включаются. Make проверяет SHA-256, распаковывает архив во временный каталог и сравнивает каждый поставляемый файл с исходным. CI дополнительно сверяет `--version` обоих бинарников с назначенной версией и точным commit слияния. Правила назначения версии описаны в [контракте версионирования](versioning.md).
+`make package-debian VERSION=<Git-версия>` использует GoReleaser Community `2.19.0` и nFPM. Нужны Debian 13/amd64, Go `1.27.3`, C-компилятор, CGO=1 и чистый checkout с соответствующим локальным тегом на HEAD. Цель не отправляет тег и ничего не публикует. `make package` сохранён как прежняя локальная сборка архива текущей платформы; его `.sha256` не является форматом новой поставки CI, а Darwin-архив не подходит для Debian.
 
-Сборка CI настроена на Go `1.27.3`, CGO и Debian 13 (`golang:1.27.3-trixie`). База и версия подтверждены [Dockerfile официального образа](https://github.com/docker-library/golang/blob/41d9b4da70324ae7b6461ac2cc401b06719ff57d/1.27/trixie/Dockerfile). Наличие образа и workflow не является результатом исполнения Linux-сборки. Приведённые ниже результаты T10 относятся к прежнему образу `bookworm`; проверка сборки в `trixie` требует отдельного успешного запуска CI.
+CI сверяет реальные версии/commit обоих бинарников, состав пакета, права, conffiles и SHA256. Новая сборка настроена на `golang:1.27.3-trixie`. Исторический успешный запуск T10 ниже использовал Debian 12; он не подтверждает новую GoReleaser/CGO-сборку и установку на Debian 13.
 
 ## Требования к VM
 
@@ -25,35 +26,19 @@
 
 ## Новая установка
 
-Следующие команды предназначены для целевой Debian VM и выполняются от root. Имя `v0.1.0` — пример: используйте точное имя полученного Linux-архива. Сначала проверьте сумму рядом с архивом, затем распакуйте его в новый временный каталог:
+Команды выполняются от root на целевой Debian 13/amd64 VM. Скачайте все три файла в один каталог; `v0.2.0` ниже — пример стабильной версии:
 
 ```sh
 cd /root/downloads
-sha256sum -c gost-restreamer-v0.1.0-linux-amd64.tar.gz.sha256
-release_dir="$(mktemp -d /tmp/gost-restreamer-install.XXXXXXXX)"
-tar -xzf gost-restreamer-v0.1.0-linux-amd64.tar.gz -C "$release_dir"
-"$release_dir/gost-restreamer" --version
-"$release_dir/gost-process-helper" --version
+sha256sum --strict -c gost-restreamer-v0.2.0-SHA256SUMS
+apt install ./gost-restreamer_0.2.0_amd64.deb
+/opt/gost-restreamer/gost-restreamer --version
+/opt/gost-restreamer/gost-process-helper --version
 ```
 
-Установите оба бинарника и unit:
+APT устанавливает объявленные зависимости `libc6 (>= 2.41)` и `systemd`. FFmpeg/NVIDIA подготавливаются отдельно по требованиям VM. Пакет помещает бинарники с режимом `0755`, YAML — `0600` в каталог `0700`, unit — `0644`. Владелец файлов — root. YAML и unit зарегистрированы как Debian conffiles; уже существующий локально изменённый файл требует обычного решения dpkg о сохранении. Для сохранения прежних настроек можно явно передать `-o Dpkg::Options::=--force-confold` команде APT.
 
-```sh
-install -d -m 0755 /opt/gost-restreamer
-install -m 0755 "$release_dir/gost-restreamer" /opt/gost-restreamer/gost-restreamer
-install -m 0755 "$release_dir/gost-process-helper" /opt/gost-restreamer/gost-process-helper
-install -d -m 0700 /etc/gost-restreamer
-install -m 0644 "$release_dir/deploy/systemd/gost-restreamer.service" /etc/systemd/system/gost-restreamer.service
-```
-
-Для новой установки скопируйте пример в `/etc/gost-restreamer/config.yaml`, предварительно убедившись, что этот путь ещё не существует:
-
-```sh
-test ! -e /etc/gost-restreamer/config.yaml &&
-    install -m 0600 "$release_dir/configs/example.yaml" /etc/gost-restreamer/config.yaml
-```
-
-Настройте файл до запуска. Unit явно выбирает `config.yaml`; для существующего `config.yml` измените `ExecStart` через `systemctl edit gost-restreamer`, сбросив прежний `ExecStart=` и указав нужный полный путь. Правила YAML и встроенных значений — в [контракте приложения](application-contracts.md).
+Установка выполняет `systemctl daemon-reload`, если запущен systemd. Автоматического enable/start нет. Настройте `/etc/gost-restreamer/config.yaml` до явного запуска. Unit выбирает `config.yaml`; для существующего `config.yml` измените `ExecStart` через `systemctl edit gost-restreamer`, сбросив прежний `ExecStart=` и указав нужный полный путь. Правила YAML и defaults — в [контракте приложения](application-contracts.md).
 
 Стандартные пути:
 
@@ -93,9 +78,29 @@ journalctl -u gost-restreamer -f
 
 Каталог `/run` временный и теряется при перезагрузке VM. Сохранение при restart службы не обещает сохранение после reboot. Утраченные доказательства не позволяют объявить прежний cleanup успешным; новый ручной start использует отдельное выполнение по существующему контракту. История и долговечное управление остаются в каталоге данных. Протокол описан в [контракте SessionManager](session-manager-contracts.md).
 
-## Обновление
+## Обновление и удаление
 
-Проверьте SHA-256 и версии нового Linux-архива, распакуйте его в новый временный каталог и остановите службу. После завершения остановки замените оба бинарника и поставляемый unit командами `install` выше. Сохраните настроенный YAML и весь каталог данных. Затем выполните `systemctl daemon-reload`, `systemd-analyze verify`, запуск и проверку readiness. Изменения конфигурации применяются при следующем запуске.
+Проверьте SHA256 новых файлов, затем установите `.deb` поверх прежней версии:
+
+```sh
+sha256sum --strict -c gost-restreamer-v0.2.0-SHA256SUMS
+apt -o Dpkg::Options::=--force-confold install ./gost-restreamer_0.2.0_amd64.deb
+systemd-analyze verify /etc/systemd/system/gost-restreamer.service
+systemctl start gost-restreamer
+curl --fail http://127.0.0.1:8080/api/v1/health/ready
+```
+
+Перед заменой бинарников maintainer script останавливает службу через systemd. При ошибке старого `prerm upgrade` dpkg вызывает новый `prerm failed-upgrade`: он также проверяет остановку и распространяет ошибку, если остановить службу не удалось. Уже отсутствующий и неактивный unit пропускается. При удалении отключение выполняется только для существующего unit-файла. После установки перечитываются unit; автоматического старта нет, в том числе при восстановлении после неудачного обновления. Настроенные YAML и unit сохраняются по правилам conffiles; при `--force-confold` изменённая старая версия остаётся, а новая может появиться как `.dpkg-dist`. Неизменённые conffiles dpkg обновляет автоматически. Предпочитайте systemd drop-in через `systemctl edit` для локальных настроек unit. Проверьте новые параметры и явно запустите службу. Прежний эфир автоматически не возобновляется.
+
+Стандартное удаление останавливает и отключает службу, удаляет бинарники, сохраняя conffiles и пользовательские данные:
+
+```sh
+apt remove gost-restreamer
+```
+
+`apt purge gost-restreamer` дополнительно удаляет принадлежащие пакету conffiles YAML и unit. SQLite, медиа и остальные постоянные данные в `/var/lib/gost-restreamer/` сохраняются и при purge. Скрипты не удаляют `/run/gost-restreamer/`: доказательства runtime должны оставаться до штатной очистки приложения или reboot. Пользовательские systemd drop-in не удаляются скриптами. Новая установка и обновление не выполняют миграции сами; хранилище открывает приложение при следующем запуске.
+
+Debian-версии упорядочены как `0.2.0~dev.1+… < 0.2.0~dev.2+… < 0.2.0 < 0.3.0~dev.1+…`. Точный Git-тег, включая `v` и `+commit`, остаётся внутри обоих бинарников. [Правила версионирования](versioning.md) также описывают повторные сборки и отсутствие смены номера при повторе CI.
 
 Текущая разработка использует одну первичную схему. Несовместимая development-БД отклоняется без автоматического пересоздания; искусственная миграция старых development-форматов не поставляется. Отказ миграции или открытия БД завершает startup. До успешной готовности не считайте обновление принятым и не удаляйте прежние данные для обхода ошибки.
 

@@ -18,7 +18,7 @@ jobs:
     name: Go и сборка для Debian 13
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: write
     container:
@@ -68,6 +68,7 @@ jobs:
           dryrun: true
 
       - name: Проверка выделенной версии
+        id: version
         env:
           EXPECTED_VERSION: ${{ steps.plan.outputs.version }}
           GENERATED_VERSION: ${{ steps.tagger.outputs.newtag }}
@@ -77,6 +78,8 @@ jobs:
             echo 'Вычисленная версия не совпала с планом; выпуск остановлен.' >&2
             exit 1
           fi
+          deb_version="$(printf '%s' "$EXPECTED_VERSION" | sed 's/^v//; s/-dev\./~dev./')"
+          printf 'deb_version=%s\n' "$deb_version" >> "$GITHUB_OUTPUT"
           printf 'Версия обоих бинарников: %s\n' "$EXPECTED_VERSION" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Установка инструментов проекта
@@ -115,16 +118,56 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Сборка и проверка архива поставки
+      - name: Установка GoReleaser Community
+        if: steps.source.outputs.binary == 'true'
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # Версия v6.
+        with:
+          distribution: goreleaser
+          version: v2.19.0
+          install-only: true
+
+      - name: Проверка конфигураций и повторных выпусков
+        if: steps.source.outputs.binary == 'true'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # Версия v8.0.0.
+        with:
+          script: |
+            const { spawnSync } = require('node:child_process');
+            const result = spawnSync('make', ['release-check', `NODE=${process.execPath}`], { stdio: 'inherit' });
+            if (result.status !== 0) throw new Error('Проверки выпуска завершились ошибкой.');
+
+      - name: Подготовка локального тега сборки
         if: steps.source.outputs.binary == 'true'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          REUSE: ${{ steps.plan.outputs.reuse }}
         run: |
-          make package VERSION="$VERSION"
-          expected="$VERSION commit=$MERGE_SHA dirty=false go=$(go env GOVERSION)"
-          test "$(bin/gost-restreamer --version)" = "$expected"
-          test "$(bin/gost-process-helper --version)" = "$expected"
+          if [ "$REUSE" != true ]; then
+            git tag "$VERSION" "$MERGE_SHA"
+          fi
+          test "$(git rev-parse "refs/tags/$VERSION^{commit}")" = "$MERGE_SHA"
+
+      - name: Сборка и проверка установочных пакетов
+        if: steps.source.outputs.binary == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          DEB_VERSION: ${{ steps.version.outputs.deb_version }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          make package-debian VERSION="$VERSION"
+          sh .github/scripts/verify-packages.sh
+
+      - name: Проверка повторной упаковки при новых датах checkout
+        if: steps.source.outputs.binary == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: sh .github/scripts/package-reproducibility.sh
+
+      - name: Установка, обновление и удаление в одноразовом Debian-контейнере
+        if: steps.source.outputs.binary == 'true'
+        env:
+          DEB_VERSION: ${{ steps.version.outputs.deb_version }}
+        run: sh .github/scripts/package-lifecycle.sh --disposable-ci "dist/gost-restreamer_${DEB_VERSION}_amd64.deb"
 
       - name: Публикация проверенного тега
         if: steps.source.outputs.binary == 'true'
@@ -147,16 +190,54 @@ jobs:
             exit 1
           fi
           if [ "$REUSE" != true ]; then
-            git tag "$VERSION" "$MERGE_SHA"
+            test "$(git rev-parse "refs/tags/$VERSION^{commit}")" = "$MERGE_SHA"
             git push origin "refs/tags/$VERSION:refs/tags/$VERSION"
             published="$(git ls-remote --tags --refs origin "refs/tags/$VERSION")"
             test "$published" = "$(printf '%s\t%s' "$MERGE_SHA" "refs/tags/$VERSION")"
           fi
 
-      - name: Сохранение артефактов
-        if: steps.source.outputs.binary == 'true'
+      - name: Проверка существующего стабильного релиза
+        if: steps.source.outputs.binary == 'true' && github.event.pull_request.base.ref == 'main'
+        id: release
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # Версия v8.0.0.
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        with:
+          script: |
+            await require('./.github/scripts/release.cjs').prepare({
+              github, context, core, version: process.env.VERSION, commit: process.env.MERGE_SHA,
+            });
+
+      - name: Создание Draft Release с проверенными файлами
+        if: steps.source.outputs.binary == 'true' && github.event.pull_request.base.ref == 'main' && steps.release.outputs.create == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          DEB_VERSION: ${{ steps.version.outputs.deb_version }}
+          GORELEASER_CURRENT_TAG: ${{ steps.plan.outputs.version }}
+        run: goreleaser release --config .goreleaser-publish.yaml --clean --skip=archive,nfpm
+
+      - name: Проверка полного Draft Release
+        if: steps.source.outputs.binary == 'true' && github.event.pull_request.base.ref == 'main'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # Версия v8.0.0.
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        with:
+          script: |
+            await require('./.github/scripts/release.cjs').verify({
+              github, context, core, version: process.env.VERSION, commit: process.env.MERGE_SHA,
+            });
+
+      - name: Сохранение dev-артефактов
+        if: steps.source.outputs.binary == 'true' && github.event.pull_request.base.ref == 'develop'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # Версия v7.0.2.
         with:
-          name: gost-restreamer-${{ steps.plan.outputs.version }}-linux-amd64
-          path: dist/*
+          name: gost-restreamer-${{ steps.plan.outputs.version }}-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+            dist/*-SHA256SUMS
           if-no-files-found: error
+          retention-days: 14

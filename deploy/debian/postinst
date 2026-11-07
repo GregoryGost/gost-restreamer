@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+    configure|abort-upgrade|abort-remove|abort-deconfigure)
+        if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload
+        fi
+        ;;
+esac
+# Настройка и запуск службы остаются явными действиями владельца.
+exit 0

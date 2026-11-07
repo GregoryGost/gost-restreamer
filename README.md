@@ -47,6 +47,8 @@ make check
 | `make binary` | Сборка сервиса в `bin/gost-restreamer`. |
 | `make process-helper` | Сборка `bin/gost-process-helper` для управления дочерними FFmpeg/ffprobe. |
 | `make package VERSION=<версия>` | Оба бинарника, пример YAML, systemd-unit, архив текущей платформы и проверенная SHA-256. |
+| `make package-debian VERSION=<версия>` | GoReleaser Community `2.19.0`: `.deb`, `.tar.gz` и SHA256 для Debian 13/amd64; нужен чистый checkout с соответствующим локальным тегом. |
+| `make release-check` | Проверка конфигураций GoReleaser и тесты повторного выпуска; нужны GoReleaser `2.19.0` и Node.js `24`. |
 
 ### Запуск сервиса
 
@@ -87,7 +89,9 @@ HTTP API доступен под `/api/v1`; стандартные адреса 
 
 ### Установка на Debian 13
 
-Linux CI готовит архив `gost-restreamer-<версия>-linux-amd64.tar.gz` и `.sha256`. Оба бинарника устанавливаются в `/opt/gost-restreamer`, конфигурация — в `/etc/gost-restreamer/config.yaml`. Unit запускает приложение от root, создаёт рабочие каталоги и передаёт JSON-журнал в journald. [Инструкция установки, обновления и диагностики](docs/deployment.md) описывает пути, FFmpeg/helper, остановку и ограничения runtime.
+После merge в `develop` CI выдаёт `.deb`, `.tar.gz` и `SHA256SUMS` через GitHub Actions → нужный запуск → Artifacts. Срок хранения — 14 дней; каждый повтор имеет отдельное имя артефакта. GitHub Release для dev не создаётся. Merge в `main` создаёт стабильный тег и **Draft Release** с теми же видами файлов; владелец публикует его вручную после завершения workflow. Повтор CI сохраняет существующий draft и не изменяет опубликованный релиз.
+
+Устанавливайте `.deb` на Debian 13/amd64: проверьте `sha256sum -c gost-restreamer-<Git-версия>-SHA256SUMS`, затем выполните `apt install ./gost-restreamer_<Debian-версия>_amd64.deb` от root. Оба бинарника устанавливаются в `/opt/gost-restreamer`, конфигурация — в `/etc/gost-restreamer/config.yaml`. После настройки службу нужно явно запустить через `systemctl enable --now gost-restreamer`. Обновление останавливает службу; после проверки настроек запустите её вручную. Debian conffiles сохраняют изменённые YAML и unit; SQLite и медиа сохраняются при обновлении и удалении. [Инструкция установки, обновления и диагностики](docs/deployment.md) описывает точные команды и зависимости FFmpeg/NVIDIA.
 
 Для отдельного OBS-плагина подготовлены [примеры настройки, команд и REST/SSE](docs/obs-client-guide.md). OBS использует один штатный AV1/AAC-выход; группы и независимые назначения обслуживает backend.
 

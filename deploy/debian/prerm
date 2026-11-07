@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+    remove|upgrade|deconfigure|failed-upgrade)
+        if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+            load_state="$(systemctl show --property=LoadState --value gost-restreamer.service)"
+            active_state="$(systemctl show --property=ActiveState --value gost-restreamer.service)"
+            test -n "$load_state"
+            test -n "$active_state"
+            # Удалённый conffile не должен мешать удалению уже остановленной службы.
+            if [ "$load_state:$active_state" != not-found:inactive ]; then
+                systemctl stop gost-restreamer.service
+            fi
+            if [ "$1" = remove ]; then
+                unit_files="$(systemctl list-unit-files --no-legend --no-pager --full gost-restreamer.service)"
+                if [ -n "$unit_files" ]; then
+                    systemctl disable gost-restreamer.service
+                fi
+            fi
+        fi
+        ;;
+esac
+exit 0

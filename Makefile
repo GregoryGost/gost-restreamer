@@ -8,6 +8,9 @@ VERSION ?=
 VERSION_LDFLAGS = $(if $(strip $(VERSION)),-X github.com/GregoryGost/gost-restreamer/internal/buildinfo.version=$(VERSION))
 BIN_DIR ?= bin
 DIST_DIR ?= dist
+GORELEASER ?= goreleaser
+GORELEASER_VERSION := 2.19.0
+NODE ?= node
 
 export GOTOOLCHAIN := local
 export GOWORK := off
@@ -16,7 +19,7 @@ export GOFLAGS ?= -mod=readonly
 
 .PHONY: help toolchain-check tools require-linter require-packages fmt fmt-check \
 	tidy tidy-check mod-verify vet test coverage test-race lint-config lint build binary \
-	bootstrap-check check process-helper package
+	bootstrap-check check process-helper package package-debian release-check
 
 help:
 	@printf '%s\n' \
@@ -29,6 +32,8 @@ help:
 		'make binary           — собрать сервис в ./bin/gost-restreamer.'
 	@printf '%s\n' 'make process-helper   — собрать владельца native-процессов в ./bin/gost-process-helper.'
 	@printf '%s\n' 'make package VERSION=… — собрать оба бинарника, архив поставки и проверенную SHA256.'
+	@printf '%s\n' 'make package-debian VERSION=… — GoReleaser: .deb, архив и SHA256 для Debian 13/amd64.'
+	@printf '%s\n' 'make release-check     — проверить конфигурации GoReleaser и безопасные повторы выпуска.'
 
 toolchain-check:
 	@$(GO) version
@@ -139,6 +144,32 @@ package: binary process-helper
 		for asset in configs/example.yaml deploy/systemd/gost-restreamer.service; do \
 			cmp "$$asset" "$$verify_dir/$$asset"; \
 		done
+
+package-debian: toolchain-check
+	@test "$$($(GO) env GOHOSTOS)/$$($(GO) env GOHOSTARCH)" = linux/amd64 || { \
+		printf '%s\n' 'Для Debian-пакета нужен нативный компилятор Linux/amd64.' >&2; exit 1; \
+	}
+	@set -eu; test -r /etc/os-release; . /etc/os-release; \
+		test "$$ID:$$VERSION_ID" = debian:13 || { \
+			printf '%s\n' 'Для Debian-пакета нужна Debian 13 (trixie).' >&2; exit 1; \
+		}
+	@test "$$($(GO) env GOOS)/$$($(GO) env GOARCH)/$$($(GO) env CGO_ENABLED)" = linux/amd64/1 || { \
+		printf '%s\n' 'Пакет собирается нативно на Debian 13/linux/amd64 с CGO=1.' >&2; exit 1; \
+	}
+	@test "$$($(GORELEASER) --version | sed -n 's/^GitVersion: *//p')" = "$(GORELEASER_VERSION)"
+	@set -eu; \
+		printf '%s\n' '$(VERSION)' | LC_ALL=C grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-dev\.[1-9][0-9]*\+[0-9a-f]{7,40})?$$'; \
+		test -z "$$(git status --porcelain)" || { printf '%s\n' 'Для поставки нужно чистое дерево Git.' >&2; exit 1; }; \
+		test "$$(git rev-parse 'refs/tags/$(VERSION)^{commit}')" = "$$(git rev-parse HEAD)"; \
+		debian_version="$$(printf '%s' '$(VERSION)' | sed 's/^v//; s/-dev\./~dev./')"; \
+		set --; case '$(VERSION)' in *-dev.*) set -- --snapshot ;; esac; \
+		VERSION='$(VERSION)' DEB_VERSION="$$debian_version" GORELEASER_CURRENT_TAG='$(VERSION)' \
+			$(GORELEASER) release --config .goreleaser.yaml --clean --skip=publish "$$@"
+
+release-check:
+	$(GORELEASER) check --config .goreleaser.yaml
+	$(GORELEASER) check --config .goreleaser-publish.yaml
+	$(NODE) --test .github/scripts/release.test.cjs
 
 bootstrap-check: toolchain-check fmt-check tidy-check mod-verify lint-config
 
