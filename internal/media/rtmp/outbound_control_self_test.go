@@ -278,7 +278,7 @@ func TestOutboundStaleAfterAdmissionPreservesSocket(t *testing.T) {
 func TestOutboundCommandPreflightAndDenialDetails(t *testing.T) {
 	c := transportSelfConn(t, &transportSelfMemory{})
 	for _, raw := range [][]byte{{10, 255, 255, 255, 255}, {2, 0, 10, 'x'}, {5}, {0, 0, 0, 0, 0, 0, 0, 0, 0}} {
-		if _, err := c.decodeCommand(&rawmessage.Message{Body: raw}); !IsOutboundTerminal(err) {
+		if _, err := c.decodeCommand(&rawmessage.Message{Body: raw}, 0); !IsOutboundTerminal(err) {
 			t.Fatalf("AMF command принят: %x %v", raw, err)
 		}
 	}

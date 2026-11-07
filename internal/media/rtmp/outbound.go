@@ -214,7 +214,7 @@ func DialOutbound(ctx context.Context, target OutboundTarget, opts OutboundOptio
 		return fail(err)
 	}
 	if m.name != "_result" || m.transaction != 1 || m.streamID != 0 || !outboundStatus(m.args, "NetConnection.Connect.Success") {
-		return fail(outboundError(OutboundProtocol, ErrFraming))
+		return fail(outboundStartupMismatch("connect", m, 0))
 	}
 	var size [4]byte
 	binary.BigEndian.PutUint32(size[:], opts.Limits.ChunkSize)
@@ -230,11 +230,11 @@ func DialOutbound(ctx context.Context, target OutboundTarget, opts OutboundOptio
 		return fail(err)
 	}
 	if m.name != "_result" || m.transaction != 2 || m.streamID != 0 || len(m.args) != 2 {
-		return fail(outboundError(OutboundProtocol, ErrFraming))
+		return fail(outboundStartupMismatch("createStream", m, 0))
 	}
 	id, ok := m.args[1].(float64)
 	if !ok || math.IsNaN(id) || math.IsInf(id, 0) || id < 1 || id > math.MaxUint32 || math.Trunc(id) != id {
-		return fail(outboundError(OutboundProtocol, ErrFraming))
+		return fail(outboundError(OutboundProtocol, fmt.Errorf("некорректный идентификатор потока: phase=createStream check=stream_id value_type=%T stream_id_value=%g: %w", m.args[1], id, ErrFraming)))
 	}
 	c.streamID.Store(uint32(id))
 	if err = c.command(startupCtx, uint32(id), amf0.Data{"publish", float64(0), nil, target.key, "live"}); err != nil {
@@ -245,7 +245,7 @@ func DialOutbound(ctx context.Context, target OutboundTarget, opts OutboundOptio
 		return fail(err)
 	}
 	if m.name != "onStatus" || m.transaction != 0 || m.streamID != uint32(id) || !outboundStatus(m.args, "NetStream.Publish.Start") {
-		return fail(outboundError(OutboundProtocol, ErrFraming))
+		return fail(outboundStartupMismatch("publish", m, uint32(id)))
 	}
 	if err = ctx.Err(); err != nil {
 		return fail(err)
@@ -582,10 +582,10 @@ func (c *OutboundConn) readLoop() {
 			continue
 		}
 		if m.Type != 20 {
-			c.fail(outboundError(OutboundProtocol, ErrFraming))
+			c.fail(outboundError(OutboundProtocol, outboundMessageError("message_type", m, r.messageChunkStreamID, fmt.Errorf("неподдерживаемый тип сообщения: expected_type=20: %w", ErrFraming))))
 			return
 		}
-		cmd, err := c.decodeCommand(m)
+		cmd, err := c.decodeCommand(m, r.messageChunkStreamID)
 		if err != nil {
 			c.fail(err)
 			return
@@ -602,7 +602,7 @@ func (c *OutboundConn) readLoop() {
 			return
 		}
 		if !startup {
-			c.fail(outboundError(OutboundProtocol, ErrFraming))
+			c.fail(outboundError(OutboundProtocol, outboundMessageError("post_publish", m, r.messageChunkStreamID, fmt.Errorf("неожиданная команда после публикации: command=%q transaction=%g args_len=%d: %w", cmd.name, cmd.transaction, len(cmd.args), ErrFraming))))
 			return
 		}
 		if cmd.name == "onStatus" && cmd.transaction == 0 && cmd.streamID == c.streamID.Load() && cmd.streamID != 0 && outboundStatus(cmd.args, "NetStream.Publish.Start") {
@@ -617,28 +617,37 @@ func (c *OutboundConn) readLoop() {
 	}
 }
 
-func (c *OutboundConn) control(r *outboundReader, m *rawmessage.Message) error {
+func (c *OutboundConn) control(r *outboundReader, m *rawmessage.Message) (err error) {
+	defer func() {
+		if err != nil {
+			csid := uint32(m.ChunkStreamID)
+			if csid == 0 && r.messageChunkStreamID > 255 {
+				csid = r.messageChunkStreamID
+			}
+			err = fmt.Errorf("ошибка управляющего сообщения: phase=control type=%d csid=%d stream_id=%d body_len=%d: %w", m.Type, csid, m.MessageStreamID, len(m.Body), err)
+		}
+	}()
 	b := m.Body
 	if m.MessageStreamID != 0 || m.ChunkStreamID != 2 {
-		return ErrFraming
+		return fmt.Errorf("неверная адресация: check=control_address expected_stream_id=0 expected_csid=2: %w", ErrFraming)
 	}
 	switch m.Type {
 	case 1:
 		if len(b) != 4 {
-			return ErrFraming
+			return fmt.Errorf("неверная длина SetChunkSize: check=body_length expected_body_len=4: %w", ErrFraming)
 		}
 		size := binary.BigEndian.Uint32(b)
 		if size == 0 || size > c.opts.Limits.MaxChunkBytes {
-			return ErrLimit
+			return fmt.Errorf("недопустимый размер чанка: check=chunk_size chunk_size=%d max_chunk_bytes=%d: %w", size, c.opts.Limits.MaxChunkBytes, ErrLimit)
 		}
 		r.chunkSize = size
 	case 2:
 		if len(b) != 4 {
-			return ErrFraming
+			return fmt.Errorf("неверная длина Abort: check=body_length expected_body_len=4: %w", ErrFraming)
 		}
 		id := binary.BigEndian.Uint32(b)
 		if id < 2 || id > 65599 {
-			return ErrFraming
+			return fmt.Errorf("недопустимый поток Abort: check=abort_csid abort_csid=%d: %w", id, ErrFraming)
 		}
 		if s := r.streams[id]; s != nil && s.active {
 			r.retained -= uint64(len(s.body))
@@ -649,14 +658,15 @@ func (c *OutboundConn) control(r *outboundReader, m *rawmessage.Message) error {
 		}
 	case 3:
 		if len(b) != 4 {
-			return ErrFraming
+			return fmt.Errorf("неверная длина ACK: check=body_length expected_body_len=4: %w", ErrFraming)
 		}
 		c.mu.Lock()
 		delta := uint64(binary.BigEndian.Uint32(b) - uint32(c.peerAcknowledged))
 		upper := c.protocolBytes + c.inFlightBytes
 		if c.peerAcknowledged > upper || delta >= 1<<31 || delta > upper-c.peerAcknowledged {
+			err := fmt.Errorf("недопустимая последовательность ACK: check=ack_sequence received_ack=%d previous_ack=%d written_bytes=%d protocol_bytes=%d in_flight_bytes=%d upper=%d delta=%d: %w", binary.BigEndian.Uint32(b), c.peerAcknowledged, c.stats.WrittenBytes, c.protocolBytes, c.inFlightBytes, upper, delta, ErrFraming)
 			c.mu.Unlock()
-			return ErrFraming
+			return err
 		}
 		c.peerAcknowledged += delta
 		close(c.flowChanged)
@@ -664,7 +674,7 @@ func (c *OutboundConn) control(r *outboundReader, m *rawmessage.Message) error {
 		c.mu.Unlock()
 	case 4:
 		if len(b) < 2 {
-			return ErrFraming
+			return fmt.Errorf("отсутствует тип UserControl: check=event_header min_body_len=2: %w", ErrFraming)
 		}
 		event := binary.BigEndian.Uint16(b)
 		want := 6
@@ -672,7 +682,7 @@ func (c *OutboundConn) control(r *outboundReader, m *rawmessage.Message) error {
 			want = 10
 		}
 		if len(b) != want {
-			return ErrFraming
+			return fmt.Errorf("неверная длина UserControl: check=body_length event=%d expected_body_len=%d: %w", event, want, ErrFraming)
 		}
 		switch event {
 		case 0, 1, 2, 3, 4, 7:
@@ -681,24 +691,27 @@ func (c *OutboundConn) control(r *outboundReader, m *rawmessage.Message) error {
 			binary.BigEndian.PutUint16(response, 7)
 			return c.queueControl(4, response)
 		default:
-			return ErrFraming
+			return fmt.Errorf("неподдерживаемое событие UserControl: check=event_type event=%d: %w", event, ErrFraming)
 		}
 	case 5:
 		if len(b) != 4 {
-			return ErrFraming
+			return fmt.Errorf("неверная длина WindowAcknowledgementSize: check=body_length expected_body_len=4: %w", ErrFraming)
 		}
 		r.window = binary.BigEndian.Uint32(b)
 		if r.window == 0 {
-			return ErrFraming
+			return fmt.Errorf("нулевое окно подтверждения: check=ack_window window=%d: %w", r.window, ErrFraming)
 		}
 		return r.ack()
 	case 6:
-		if len(b) != 5 || b[4] > 2 || binary.BigEndian.Uint32(b) == 0 {
-			return ErrFraming
+		if len(b) != 5 {
+			return fmt.Errorf("неверная длина SetPeerBandwidth: check=body_length expected_body_len=5: %w", ErrFraming)
+		}
+		if b[4] > 2 || binary.BigEndian.Uint32(b) == 0 {
+			return fmt.Errorf("недопустимое окно или тип ограничения: check=peer_bandwidth window=%d limit_type=%d: %w", binary.BigEndian.Uint32(b), b[4], ErrFraming)
 		}
 		window, kind := binary.BigEndian.Uint32(b), b[4]
 		if window > math.MaxInt32 {
-			return ErrLimit
+			return fmt.Errorf("слишком большое окно: check=peer_window window=%d max_window=%d: %w", window, math.MaxInt32, ErrLimit)
 		}
 		c.mu.Lock()
 		previous := c.peerWindow
@@ -730,28 +743,45 @@ func (c *OutboundConn) control(r *outboundReader, m *rawmessage.Message) error {
 			return c.queueControl(5, value[:])
 		}
 	default:
-		return ErrFraming
+		return fmt.Errorf("неподдерживаемое управляющее сообщение: check=control_type: %w", ErrFraming)
 	}
 	return nil
 }
 
-func (c *OutboundConn) decodeCommand(m *rawmessage.Message) (outboundCommand, error) {
+func (c *OutboundConn) decodeCommand(m *rawmessage.Message, csid uint32) (outboundCommand, error) {
 	if err := preflightAMF(m.Body, c.opts.Limits.amfLimits()); err != nil {
-		return outboundCommand{}, outboundError(OutboundProtocol, err)
+		return outboundCommand{}, outboundError(OutboundProtocol, outboundMessageError("amf_preflight", m, csid, err))
 	}
 	a, err := amf0.Unmarshal(m.Body)
-	if err != nil || len(a) < 3 {
-		return outboundCommand{}, outboundError(OutboundProtocol, ErrFraming)
+	if err != nil {
+		return outboundCommand{}, outboundError(OutboundProtocol, outboundMessageError("amf_decode", m, csid, fmt.Errorf("ошибка декодирования AMF: decoder_error=%v: %w", err, ErrFraming)))
+	}
+	if len(a) < 3 {
+		return outboundCommand{}, outboundError(OutboundProtocol, outboundMessageError("command_shape", m, csid, fmt.Errorf("недостаточно элементов команды: values_len=%d min_values_len=3: %w", len(a), ErrFraming)))
 	}
 	name, ok := a[0].(string)
 	if !ok {
-		return outboundCommand{}, outboundError(OutboundProtocol, ErrFraming)
+		return outboundCommand{}, outboundError(OutboundProtocol, outboundMessageError("command_name", m, csid, fmt.Errorf("неверный тип имени команды: value_type=%T: %w", a[0], ErrFraming)))
 	}
 	txn, ok := a[1].(float64)
 	if !ok || math.IsNaN(txn) || math.IsInf(txn, 0) {
-		return outboundCommand{}, outboundError(OutboundProtocol, ErrFraming)
+		return outboundCommand{}, outboundError(OutboundProtocol, outboundMessageError("command_transaction", m, csid, fmt.Errorf("некорректная транзакция команды: command=%q value_type=%T transaction=%g: %w", name, a[1], txn, ErrFraming)))
 	}
 	return outboundCommand{name: name, transaction: txn, streamID: m.MessageStreamID, args: a[2:]}, nil
+}
+
+func outboundMessageError(phase string, m *rawmessage.Message, csid uint32, err error) error {
+	return fmt.Errorf("ошибка входящего сообщения: phase=%s type=%d csid=%d stream_id=%d body_len=%d: %w", phase, m.Type, csid, m.MessageStreamID, len(m.Body), err)
+}
+
+func outboundStartupMismatch(phase string, m outboundCommand, expectedStreamID uint32) error {
+	var code string
+	if len(m.args) > 1 {
+		if status, ok := m.args[1].(amf0.Object); ok {
+			code, _ = status.GetString("code")
+		}
+	}
+	return outboundError(OutboundProtocol, fmt.Errorf("неожиданный ответ при установке публикации: phase=%s command=%q transaction=%g stream_id=%d expected_stream_id=%d args_len=%d status_code=%q: %w", phase, m.name, m.transaction, m.streamID, expectedStreamID, len(m.args), code, ErrFraming))
 }
 
 func outboundStatus(args amf0.Data, code string) bool {
