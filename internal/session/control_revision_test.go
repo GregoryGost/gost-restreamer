@@ -18,6 +18,7 @@ func TestManagerLatestDesiredControlReachesLateGroupWithoutLiveSource(t *testing
 	var enteredOnce, releasedOnce sync.Once
 	release := func() { releasedOnce.Do(func() { close(released) }) }
 	f := newManagerFixture(t, false, func(c *Config) {
+		c.Group.FFmpeg.StartupTimeout = c.StartupTimeout
 		original := c.Group.Player
 		c.Group.Player = func(ctx context.Context, binary string, file *os.File, attempt ffmpeg.Attempt) (ffmpeg.Command, error) {
 			enteredOnce.Do(func() { close(entered) })

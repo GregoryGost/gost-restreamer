@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -191,7 +192,7 @@ func TestOutputExecutionObserverReplacementAndAmbiguityHold(t *testing.T) {
 				}
 			case "unreadable-reconcile":
 				ambiguous := errors.New("неоднозначный COMMIT")
-				err = u.authority.GuardWrite(ctx, u, func() (bool, error) { u.viewErr = errors.New("read failure"); return true, ambiguous })
+				err = u.authority.GuardWrite(ctx, u, time.Second, func() (bool, error) { u.viewErr = errors.New("read failure"); return true, ambiguous })
 				if !errors.Is(err, ambiguous) {
 					t.Fatal(err)
 				}

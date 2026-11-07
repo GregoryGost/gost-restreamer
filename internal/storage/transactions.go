@@ -86,7 +86,7 @@ func (s *Store) Write(ctx context.Context, callback func(core.Repositories) erro
 	}
 	budget, cancel := context.WithTimeout(ctx, s.options.RetryTimeout)
 	defer cancel()
-	return s.authority.GuardWrite(budget, s, func() (bool, error) {
+	return s.authority.GuardWrite(budget, s, s.options.RetryTimeout, func() (bool, error) {
 		return s.writeWithBudget(budget, callback)
 	})
 }
@@ -220,7 +220,7 @@ func (s *Store) WriteOwned(ctx context.Context, owner *core.OutputObserver, call
 	}
 	budget, cancel := context.WithTimeout(ctx, s.options.RetryTimeout)
 	defer cancel()
-	return s.authority.GuardOwnedWrite(budget, s, owner, func() (bool, error) { return s.writeWithBudget(budget, callback) })
+	return s.authority.GuardOwnedWrite(budget, s, owner, s.options.RetryTimeout, func() (bool, error) { return s.writeWithBudget(budget, callback) })
 }
 
 var _ core.RuntimeOwnedUnitOfWork = (*Store)(nil)

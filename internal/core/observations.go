@@ -755,8 +755,10 @@ type RuntimeOwnedUnitOfWork interface {
 	WriteOwned(context.Context, *OutputObserver, func(Repositories) error) error
 }
 
-func (a *RuntimeAuthority) GuardOwnedWrite(ctx context.Context, uow UnitOfWork, owner *OutputObserver, write func() (bool, error)) error {
-	if owner == nil || owner.node == nil || owner.node.authority != a || write == nil || uow == nil {
+// GuardOwnedWrite проверяет наблюдателя перед записью и сверяет состояние после неё.
+// reconcileTimeout ограничивает послезаписную сверку независимо от срока операции.
+func (a *RuntimeAuthority) GuardOwnedWrite(ctx context.Context, uow UnitOfWork, owner *OutputObserver, reconcileTimeout time.Duration, write func() (bool, error)) error {
+	if owner == nil || owner.node == nil || owner.node.authority != a || reconcileTimeout <= 0 || write == nil || uow == nil {
 		return ErrInvalid
 	}
 	if err := a.acquire(ctx); err != nil {
@@ -769,7 +771,7 @@ func (a *RuntimeAuthority) GuardOwnedWrite(ctx context.Context, uow UnitOfWork, 
 	uncertain := true
 	defer func() {
 		if uncertain {
-			a.reconcile(ctx, uow)
+			a.reconcile(ctx, uow, reconcileTimeout)
 		}
 	}()
 	var err error

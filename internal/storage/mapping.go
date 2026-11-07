@@ -295,7 +295,7 @@ func insertValue(ctx context.Context, r *repositories, table string, value any) 
 	if err != nil {
 		return err
 	}
-	if err = db.Table(table).Create(f).Error; err != nil {
+	if err = db.Table(table).Model(&metadataRow{}).Create(f).Error; err != nil {
 		return translate(err)
 	}
 
@@ -338,7 +338,7 @@ func updateValue(ctx context.Context, r *repositories, table string, value any, 
 	}
 	delete(f, "id")
 	delete(f, "created_at")
-	result := db.Table(table).Where("id = ? AND revision = ?", rec.ID, decimal(expected)).Updates(f)
+	result := db.Table(table).Model(&metadataRow{}).Where("id = ? AND revision = ?", rec.ID, decimal(expected)).Updates(f)
 	if result.Error != nil {
 		return translate(result.Error)
 	}

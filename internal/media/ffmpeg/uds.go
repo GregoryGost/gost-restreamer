@@ -261,7 +261,7 @@ func removeOwned(path string, original os.FileInfo) error {
 	if err != nil {
 		return err
 	}
-	if !os.SameFile(original, current) {
+	if !os.SameFile(original, current) || original.Mode().Type() != current.Mode().Type() {
 		return fmt.Errorf("%w: %s", ErrResourceOwnership, path)
 	}
 	return os.Remove(path)

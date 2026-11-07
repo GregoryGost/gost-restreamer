@@ -329,7 +329,7 @@ func TestAcceptanceOwnedWriteRollbackAndUncertainOutcome(t *testing.T) {
 			}
 			failure := errors.New("неоднозначный COMMIT")
 			calls := 0
-			err = u.authority.GuardOwnedWrite(ctx, u, o, func() (bool, error) {
+			err = u.authority.GuardOwnedWrite(ctx, u, o, time.Second, func() (bool, error) {
 				calls++
 				if outcome == "committed" {
 					current := u.repository.outputs[f.OutputID]
