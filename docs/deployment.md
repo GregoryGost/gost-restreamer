@@ -1,6 +1,6 @@
 # Установка и обслуживание
 
-Целевая установка — Debian 12 / `linux/amd64` в домашней VM Proxmox владельца. Оба бинарника устанавливаются в `/opt/gost-restreamer`. Сервис, `gost-process-helper`, FFmpeg и ffprobe запускаются от `root`. Отдельный системный пользователь не создаётся. Фактическая установка, доступ к RTX A1000 и эфиры проверяются в T11.
+Целевая установка — Debian 13 / `linux/amd64` в домашней VM Proxmox владельца; фактически проверенная версия VM — Debian 13.4 (`trixie`). Оба бинарника устанавливаются в `/opt/gost-restreamer`. Сервис, `gost-process-helper`, FFmpeg и ffprobe запускаются от `root`. Отдельный системный пользователь не создаётся. Фактическая установка, доступ к RTX A1000 и эфиры проверяются в T11.
 
 ## Состав поставки
 
@@ -15,7 +15,7 @@
 
 Рабочая БД, медиа, журналы, ключи и конфигурация установленного сервиса в архив не включаются. Make проверяет SHA-256, распаковывает архив во временный каталог и сравнивает каждый поставляемый файл с исходным. CI дополнительно сверяет `--version` обоих бинарников с назначенной версией и точным commit слияния. Правила назначения версии описаны в [контракте версионирования](versioning.md).
 
-Сборка CI использует Go `1.27.3`, CGO и Debian 12 (`golang:1.27.3-bookworm`). База и версия подтверждены [Dockerfile официального образа](https://github.com/docker-library/golang/blob/41d9b4da70324ae7b6461ac2cc401b06719ff57d/1.27/bookworm/Dockerfile). Наличие образа и workflow не является результатом исполнения Linux-сборки.
+Сборка CI настроена на Go `1.27.3`, CGO и Debian 13 (`golang:1.27.3-trixie`). База и версия подтверждены [Dockerfile официального образа](https://github.com/docker-library/golang/blob/41d9b4da70324ae7b6461ac2cc401b06719ff57d/1.27/trixie/Dockerfile). Наличие образа и workflow не является результатом исполнения Linux-сборки. Приведённые ниже результаты T10 относятся к прежнему образу `bookworm`; проверка сборки в `trixie` требует отдельного успешного запуска CI.
 
 ## Требования к VM
 
@@ -85,9 +85,9 @@ systemctl restart gost-restreamer
 journalctl -u gost-restreamer -f
 ```
 
-Служба создаёт каталоги данных и runtime с владельцем `root:root` и режимом `0700`, задаёт `UMask=0077`. `RuntimeDirectoryPreserve=yes` сохраняет runtime-каталог при stop/start и restart: его содержимое участвует в доказательствах безопасной очистки. Семантика параметров задана [systemd.exec Debian 12](https://manpages.debian.org/bookworm/systemd/systemd.exec.5.en.html).
+Служба создаёт каталоги данных и runtime с владельцем `root:root` и режимом `0700`, задаёт `UMask=0077`. `RuntimeDirectoryPreserve=yes` сохраняет runtime-каталог при stop/start и restart: его содержимое участвует в доказательствах безопасной очистки. Семантика параметров задана [systemd.exec Debian 13](https://manpages.debian.org/trixie/systemd/systemd.exec.5.en.html).
 
-`KillMode=mixed` сначала направляет SIGTERM основному процессу, позволяя приложению завершить собственных пользователей и helper. Если основной процесс уже вышел либо истёк `TimeoutStopSec`, оставшиеся процессы группы могут получить SIGKILL. Это следует из [systemd.kill Debian 12](https://manpages.debian.org/bookworm/systemd/systemd.kill.5.en.html). Принудительное завершение не записывает от имени приложения успешное подтверждение cleanup.
+`KillMode=mixed` сначала направляет SIGTERM основному процессу, позволяя приложению завершить собственных пользователей и helper. Если основной процесс уже вышел либо истёк `TimeoutStopSec`, оставшиеся процессы группы могут получить SIGKILL. Это следует из [systemd.kill Debian 13](https://manpages.debian.org/trixie/systemd/systemd.kill.5.en.html). Принудительное завершение не записывает от имени приложения успешное подтверждение cleanup.
 
 В примере `lifecycle.shutdown_timeout=30s`, а `TimeoutStopSec=40s`. При увеличении срока приложения увеличьте и предел systemd с запасом. Если приложение сообщает ошибку или неподтверждённое завершение, сохраняются его журналы и удержания; удаление каталогов вручную не заменяет подтверждения. Отдельная systemd-служба для helper не нужна: его запускает приложение для управляемой команды.
 
