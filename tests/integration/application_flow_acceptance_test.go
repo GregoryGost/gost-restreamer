@@ -82,6 +82,9 @@ func applicationFlowReceipt(t *testing.T, a http.Handler, r api.ReceiptDTO) api.
 	sessionAcceptanceWait(t, func() bool {
 		v = applicationFlowRequest[api.ReceiptDTO](t, a, "GET", "/commands/"+r.ID, nil, 200)
 		if v.Status == string(core.CommandFailed) || v.Status == string(core.CommandInterrupted) {
+			if v.Failure != nil {
+				t.Fatalf("команда завершилась ошибкой: %+v; failure=%+v", v, *v.Failure)
+			}
 			t.Fatalf("команда завершилась ошибкой: %+v", v)
 		}
 		return v.Status == string(core.CommandSucceeded)

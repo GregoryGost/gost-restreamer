@@ -91,7 +91,7 @@ func (m *Manager) startOutput(c core.CommandReceipt) {
 			member.mu.Unlock()
 			if ref == nil {
 				err = core.ErrNotReady
-			} else if err = ref.Group().Ready(); err == nil {
+			} else if err = ref.Group().WaitReady(startup); err == nil {
 				options := m.config.Publisher
 				options.Logger = m.config.Logger.With("stream_id", parent.streamID)
 				prepared, err = publisher.Prepare(startup, m.config.Core, owner, member.output.Snapshot, ref.Router(), options)
