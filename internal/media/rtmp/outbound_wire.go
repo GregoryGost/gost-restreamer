@@ -2,6 +2,7 @@ package rtmp
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"math"
 	"time"
@@ -27,6 +28,7 @@ type outboundReader struct {
 	retained                uint64
 	readBytes, acknowledged uint64
 	window                  uint32
+	messageChunkStreamID    uint32
 }
 
 func (r *outboundReader) earliest(candidate time.Time) time.Time {
@@ -53,10 +55,10 @@ func (r *outboundReader) read(p []byte) error {
 	for len(p) > 0 {
 		n, err := r.c.conn.Read(p)
 		if n < 0 || n > len(p) {
-			return ErrFraming
+			return fmt.Errorf("некорректный результат чтения: phase=read received=%d requested=%d: %w", n, len(p), ErrFraming)
 		}
 		if uint64(n) > math.MaxUint64-r.readBytes {
-			return ErrLimit
+			return fmt.Errorf("переполнение счётчика чтения: phase=read received=%d read_bytes=%d: %w", n, r.readBytes, ErrLimit)
 		}
 		r.readBytes += uint64(n)
 		p = p[n:]
@@ -134,13 +136,13 @@ func (r *outboundReader) chunk() (*rawmessage.Message, error) {
 	s := r.streams[id]
 	if s == nil {
 		if uint32(len(r.streams)) >= l.MaxChunkStreams {
-			return nil, ErrLimit
+			return nil, fmt.Errorf("превышено число потоков чанков: phase=chunk_header check=stream_limit fmt=%d csid=%d streams=%d max_chunk_streams=%d: %w", fmtID, id, len(r.streams), l.MaxChunkStreams, ErrLimit)
 		}
 		s = &outboundChunkStream{}
 		r.streams[id] = s
 	}
 	if fmtID != 0 && !s.known || fmtID != 3 && s.active {
-		return nil, ErrFraming
+		return nil, fmt.Errorf("недопустимая история чанка: phase=chunk_header check=history fmt=%d csid=%d known=%t active=%t received=%d message_len=%d read_bytes=%d: %w", fmtID, id, s.known, s.active, s.received, s.length, r.readBytes, ErrFraming)
 	}
 	newMessage := !s.active
 	n := [...]int{11, 7, 3, 0}[fmtID]
@@ -165,7 +167,7 @@ func (r *outboundReader) chunk() (*rawmessage.Message, error) {
 		}
 		value = binary.BigEndian.Uint32(header[11:15])
 		if fmtID == 3 && value != s.extendedValue {
-			return nil, ErrFraming
+			return nil, fmt.Errorf("не совпала расширенная временная метка: phase=extended_timestamp check=timestamp_match fmt=%d csid=%d active=%t extended_timestamp=%d expected_extended_timestamp=%d received=%d message_len=%d read_bytes=%d: %w", fmtID, id, s.active, value, s.extendedValue, s.received, s.length, r.readBytes, ErrFraming)
 		}
 	}
 	if fmtID <= 2 {
@@ -182,10 +184,10 @@ func (r *outboundReader) chunk() (*rawmessage.Message, error) {
 	s.known = true
 	if newMessage {
 		if s.length > l.MaxMessageBytes || s.typ <= 6 && s.length > l.MaxControlBytes || (s.typ == 18 || s.typ == 20 || s.typ == 17 || s.typ == 15) && s.length > l.MaxAMFBytes {
-			return nil, ErrLimit
+			return nil, fmt.Errorf("превышен размер сообщения: phase=chunk_message check=message_limit fmt=%d csid=%d type=%d stream_id=%d message_len=%d max_message_bytes=%d max_control_bytes=%d max_amf_bytes=%d: %w", fmtID, id, s.typ, s.streamID, s.length, l.MaxMessageBytes, l.MaxControlBytes, l.MaxAMFBytes, ErrLimit)
 		}
 		if uint64(s.length) > l.MaxRetainedBytes-l.baseBytes()-r.c.target.retainedBytes()-r.retained {
-			return nil, ErrLimit
+			return nil, fmt.Errorf("превышен резерв чтения: phase=chunk_message check=retained_limit csid=%d message_len=%d retained_bytes=%d base_bytes=%d target_bytes=%d max_retained_bytes=%d: %w", id, s.length, r.retained, l.baseBytes(), r.c.target.retainedBytes(), l.MaxRetainedBytes, ErrLimit)
 		}
 		r.retained += uint64(s.length)
 		r.c.setReadBuffer(r.retained)
@@ -196,7 +198,7 @@ func (r *outboundReader) chunk() (*rawmessage.Message, error) {
 		s.deadline = started
 	}
 	if s.fragments >= l.MaxFragments {
-		return nil, ErrLimit
+		return nil, fmt.Errorf("превышено число фрагментов: phase=chunk_body check=fragment_limit csid=%d fragments=%d max_fragments=%d received=%d message_len=%d: %w", id, s.fragments, l.MaxFragments, s.received, s.length, ErrLimit)
 	}
 	s.fragments++
 	amount := min(s.length-s.received, r.chunkSize)
@@ -217,6 +219,7 @@ func (r *outboundReader) chunk() (*rawmessage.Message, error) {
 	s.body = nil
 	s.active = false
 	r.c.setReadBuffer(r.retained)
+	r.messageChunkStreamID = id
 	return m, nil
 }
 
