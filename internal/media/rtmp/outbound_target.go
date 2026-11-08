@@ -316,12 +316,16 @@ const (
 // OnWrite вызывается синхронно вне блокировки полномочий для каждого положительного n,
 // включая частичную запись с ошибкой и неудавшееся согласование соединения. Обработчик не должен
 // повторно входить в соединение или блокировать его остановку.
+// OnACKAnomaly вызывается читателем после обновления снимка, без блокировок транспорта.
+// Оба обработчика выполняют только короткое локальное обновление без I/O,
+// журналирования и обращения к полномочиям.
 type OutboundOptions struct {
-	Limits      OutboundLimits
-	TLSConfig   *tls.Config
-	DialContext func(context.Context, string, string) (net.Conn, error)
-	Admit       func(context.Context, OutboundOperation) (func(), error)
-	OnWrite     func(n int)
+	Limits       OutboundLimits
+	TLSConfig    *tls.Config
+	DialContext  func(context.Context, string, string) (net.Conn, error)
+	Admit        func(context.Context, OutboundOperation) (func(), error)
+	OnWrite      func(n int)
+	OnACKAnomaly func(bytes uint64, at time.Time)
 }
 
 // Validate проверяет подготовку без сети. nil DialContext выбирает net.Dialer.

@@ -121,7 +121,7 @@ func acceptanceOutboundLocal(t *testing.T, conn net.Conn, av1 bool) (*OutboundCo
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &OutboundConn{conn: conn, ctx: context.Background(), opts: OutboundOptions{Limits: acceptanceOutboundLimits(), Admit: func(context.Context, OutboundOperation) (func(), error) { return func() {}, nil }}, target: target, done: make(chan struct{}), flowChanged: make(chan struct{}), outboundChunkSize: 128, controls: make(chan outboundControl, 16)}
+	c := &OutboundConn{conn: conn, ctx: context.Background(), opts: OutboundOptions{Limits: acceptanceOutboundLimits(), Admit: func(context.Context, OutboundOperation) (func(), error) { return func() {}, nil }}, target: target, done: make(chan struct{}), outboundChunkSize: 128, controls: make(chan outboundControl, 16)}
 	c.streamID.Store(0x765432)
 	return c, v, a
 }

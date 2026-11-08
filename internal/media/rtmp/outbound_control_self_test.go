@@ -89,16 +89,16 @@ func TestOutboundPeerWindowAndAcknowledgements(t *testing.T) {
 	if len(c.controls) != 5 {
 		t.Fatalf("ответы WindowAckSize: %d", len(c.controls))
 	}
-	c.protocolBytes = (1 << 32) + 8
+	c.stats.WrittenBytes = (1 << 32) + 8
 	c.peerAcknowledged = (1 << 32) - 8
 	if err := c.control(&r, transportSelfControl(3, []byte{0, 0, 0, 8})); err != nil || c.peerAcknowledged != (1<<32)+8 {
 		t.Fatalf("ACK wrap: %d %v", c.peerAcknowledged, err)
 	}
-	if err := c.control(&r, transportSelfControl(3, []byte{0, 0, 0, 9})); !errors.Is(err, ErrFraming) {
-		t.Fatal("ACK будущих bytes принят")
+	if err := c.control(&r, transportSelfControl(3, []byte{0, 0, 0, 9})); err != nil || c.Snapshot().AckAheadBytesLast != 1 {
+		t.Fatal("опережающий ACK не учтён")
 	}
-	if err := c.control(&r, transportSelfControl(3, []byte{0x80, 0, 0, 8})); !errors.Is(err, ErrFraming) {
-		t.Fatal("неоднозначный ACK принят")
+	if err := c.control(&r, transportSelfControl(3, []byte{0x80, 0, 0, 9})); err != nil || c.peerAcknowledged != (1<<32)+9 {
+		t.Fatal("неоднозначный ACK изменил якорь")
 	}
 	for _, m := range []*rawmessage.Message{transportSelfControl(0, nil), transportSelfControl(1, []byte{0, 0, 0, 0}), transportSelfControl(1, []byte{0xff, 0xff, 0xff, 0xff}), transportSelfControl(2, []byte{0, 0, 0, 1}), transportSelfControl(3, []byte{1}), transportSelfControl(4, []byte{0, 99, 0, 0, 0, 0}), transportSelfControl(5, []byte{0, 0, 0, 0}), transportSelfControl(6, []byte{0, 0, 0, 1, 3}), {ChunkStreamID: 4, Type: 3, Body: make([]byte, 4)}} {
 		if err := c.control(&r, m); err == nil {
@@ -107,11 +107,10 @@ func TestOutboundPeerWindowAndAcknowledgements(t *testing.T) {
 	}
 }
 
-func TestOutboundWindowWaitResumesWithoutDiscardingConnection(t *testing.T) {
+func TestOutboundAcknowledgementsDuringWritePreserveConnection(t *testing.T) {
 	left, right := net.Pipe()
 	defer func() { _ = right.Close(); _ = left.Close() }()
 	c := transportSelfConn(t, left)
-	c.countProtocol = true
 	c.peerWindow = 20
 	c.peerLimitKnown = true
 	c.opts.Limits.WriteTimeout = time.Second
@@ -146,17 +145,16 @@ func TestOutboundWindowWaitResumesWithoutDiscardingConnection(t *testing.T) {
 	}
 }
 
-func TestOutboundWindowWaitHasFixedDeadline(t *testing.T) {
+func TestOutboundPeerWindowDoesNotGateWrites(t *testing.T) {
 	m := &transportSelfMemory{}
 	c := transportSelfConn(t, m)
-	c.countProtocol = true
 	c.peerWindow = 12
 	c.opts.Limits.WriteTimeout = 20 * time.Millisecond
-	if err := c.writeMessage(context.Background(), 6, 9, 1, 0, []byte{1}); !errors.Is(err, context.DeadlineExceeded) || IsOutboundTerminal(err) || c.Snapshot().WrittenBytes != 12 {
-		t.Fatalf("window timeout: %v %+v", err, c.Snapshot())
+	if err := c.writeMessage(context.Background(), 6, 9, 1, 0, []byte{1}); err != nil || c.Snapshot().WrittenBytes != 13 {
+		t.Fatalf("окно задержало запись: %v %+v", err, c.Snapshot())
 	}
-	if !m.closed {
-		t.Fatal("незавершённое сообщение не закрыло соединение")
+	if m.closed {
+		t.Fatal("здоровое соединение закрылось")
 	}
 }
 

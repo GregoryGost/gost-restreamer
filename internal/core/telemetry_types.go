@@ -112,12 +112,15 @@ type OutputMetrics struct {
 	InFlightPacketBytes, InFlightConfigBytes, WireBufferBytes uint64
 	ConfigBytes, ConfigByteCapacity                           uint64
 	MediaMetrics
-	Attempts, Connections, Reconnects uint64
-	QueueDrops                        QueueDropMetrics
-	DeliveryDrops                     DeliveryDropMetrics
-	QueuePackets, QueueCapacity       uint64
-	QueueBytes, QueueByteCapacity     uint64
-	LastWrite, LastMedia              time.Time
+	Attempts, Connections, Reconnects   uint64
+	QueueDrops                          QueueDropMetrics
+	DeliveryDrops                       DeliveryDropMetrics
+	QueuePackets, QueueCapacity         uint64
+	QueueBytes, QueueByteCapacity       uint64
+	LastWrite, LastMedia                time.Time
+	AckAheadEventsTotal                 uint64
+	AckAheadBytesLast, AckAheadBytesMax uint64
+	AckLastAnomalyAt                    time.Time
 }
 
 type QueueDropMetrics struct{ Overflow, Oversized, ConfigRejected, AwaitingKeyframe, AudioBeforeCut, SourceReset, ConfigReset, Closed uint64 }

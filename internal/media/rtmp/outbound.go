@@ -23,10 +23,14 @@ import (
 // OutboundSnapshot считает принятые байты RTMP до шифрования, включая согласование
 // соединения, управляющие сообщения и частичные записи с ошибкой. BufferBytes задаёт логический резерв, не RSS.
 type OutboundSnapshot struct {
-	WrittenBytes uint64
-	Saturated    bool
-	BufferBytes  uint64
-	LastWrite    time.Time
+	WrittenBytes        uint64
+	Saturated           bool
+	BufferBytes         uint64
+	LastWrite           time.Time
+	AckAheadEventsTotal uint64
+	AckAheadBytesLast   uint64
+	AckAheadBytesMax    uint64
+	AckLastAnomalyAt    time.Time
 }
 
 // OutboundConn владеет одним читателем, сериализатором записи и наблюдателем отмены.
@@ -52,16 +56,13 @@ type OutboundConn struct {
 	headersPending, requireIndependent    bool
 	clock                                 outboundClock
 	outboundChunkSize                     uint32
-	protocolBytes, peerAcknowledged       uint64
-	inFlightBytes                         uint64
+	peerAcknowledged                      uint64
+	writeActive                           bool
+	writtenOverflow, ackEpochUnknown      bool
 	peerWindow                            uint32
 	peerLimitType                         byte
 	peerLimitKnown                        bool
-	flowChanged                           chan struct{}
-	countProtocol                         bool
 	handshakeRead                         uint64
-	writeDeadline                         time.Time
-	writeContext                          context.Context
 	controls                              chan outboundControl
 	controlDone                           chan struct{}
 }
@@ -127,7 +128,7 @@ func DialOutbound(ctx context.Context, target OutboundTarget, opts OutboundOptio
 		_ = raw.Close()
 		return nil, err
 	}
-	c := &OutboundConn{conn: raw, ctx: ctx, opts: opts, target: target, done: make(chan struct{}), readerDone: make(chan struct{}), watcherDone: make(chan struct{}), joined: make(chan struct{}), commands: make(chan outboundCommand, 1), outboundChunkSize: 128, flowChanged: make(chan struct{}), controls: make(chan outboundControl, opts.Limits.MaxControlPending), controlDone: make(chan struct{}), countProtocol: true}
+	c := &OutboundConn{conn: raw, ctx: ctx, opts: opts, target: target, done: make(chan struct{}), readerDone: make(chan struct{}), watcherDone: make(chan struct{}), joined: make(chan struct{}), commands: make(chan outboundCommand, 1), outboundChunkSize: 128, controls: make(chan outboundControl, opts.Limits.MaxControlPending), controlDone: make(chan struct{})}
 	go func() {
 		defer close(c.watcherDone)
 		select {
@@ -332,8 +333,6 @@ func (c *OutboundConn) withCurrentWriter(ctx context.Context, current func() boo
 		c.fail(err)
 		return err
 	}
-	c.writeDeadline = d
-	c.writeContext = ctx
 	err = f()
 	if err != nil {
 		c.fail(err)
@@ -343,30 +342,34 @@ func (c *OutboundConn) withCurrentWriter(ctx context.Context, current func() boo
 
 func (c *OutboundConn) writeAll(p []byte) error {
 	for len(p) > 0 {
-		allowed, err := c.writeAllowance(len(p))
-		if err != nil {
+		c.mu.Lock()
+		if c.closed {
+			err := c.err
+			c.mu.Unlock()
 			return err
 		}
-		n, err := c.conn.Write(p[:allowed])
-		c.mu.Lock()
-		c.inFlightBytes = 0
-		if c.countProtocol && n > 0 && n <= allowed {
-			c.protocolBytes += uint64(n)
-		}
+		c.writeActive = true
 		c.mu.Unlock()
-		if n < 0 || n > allowed {
-			return outboundError(OutboundProtocol, io.ErrShortWrite)
-		}
-		if n > 0 {
-			c.mu.Lock()
+		n, err := c.conn.Write(p)
+		c.mu.Lock()
+		valid := n >= 0 && n <= len(p)
+		if valid && n > 0 {
 			if uint64(n) > math.MaxUint64-c.stats.WrittenBytes {
 				c.stats.WrittenBytes = math.MaxUint64
 				c.stats.Saturated = true
+				c.writtenOverflow = true
 			} else {
 				c.stats.WrittenBytes += uint64(n)
 			}
 			c.stats.LastWrite = time.Now()
-			c.mu.Unlock()
+		}
+		c.checkACKEpoch()
+		c.writeActive = false
+		c.mu.Unlock()
+		if !valid {
+			return outboundError(OutboundProtocol, io.ErrShortWrite)
+		}
+		if n > 0 {
 			if c.opts.OnWrite != nil {
 				c.opts.OnWrite(n)
 			}
@@ -382,48 +385,48 @@ func (c *OutboundConn) writeAll(p []byte) error {
 	return nil
 }
 
-func (c *OutboundConn) writeAllowance(n int) (int, error) {
-	for {
-		c.mu.Lock()
-		if c.closed {
-			err := c.err
-			c.mu.Unlock()
-			return 0, err
-		}
-		if c.countProtocol && uint64(n) > math.MaxUint64-c.protocolBytes {
-			c.mu.Unlock()
-			return 0, outboundError(OutboundProtocol, ErrLimit)
-		}
-		if !c.countProtocol || c.peerWindow == 0 {
-			c.inFlightBytes = uint64(n)
-			c.mu.Unlock()
-			return n, nil
-		}
-		outstanding := uint64(0)
-		if c.protocolBytes > c.peerAcknowledged {
-			outstanding = c.protocolBytes - c.peerAcknowledged
-		}
-		if outstanding < uint64(c.peerWindow) {
-			allowed := min(n, int(uint64(c.peerWindow)-outstanding))
-			c.inFlightBytes = uint64(allowed)
-			c.mu.Unlock()
-			return allowed, nil
-		}
-		changed := c.flowChanged
+// checkACKEpoch вызывается только под c.mu; потерянная точность не восстанавливается.
+func (c *OutboundConn) checkACKEpoch() {
+	if c.writtenOverflow || c.stats.WrittenBytes > c.peerAcknowledged && c.stats.WrittenBytes-c.peerAcknowledged >= 1<<31 {
+		c.ackEpochUnknown = true
+	}
+}
+
+func (c *OutboundConn) acknowledge(raw uint32) {
+	c.mu.Lock()
+	c.checkACKEpoch()
+	if c.ackEpochUnknown {
 		c.mu.Unlock()
-		timer := time.NewTimer(time.Until(c.writeDeadline))
-		select {
-		case <-changed:
-			timer.Stop()
-		case <-c.done:
-			timer.Stop()
-			return 0, c.Err()
-		case <-c.writeContext.Done():
-			timer.Stop()
-			return 0, c.writeContext.Err()
-		case <-timer.C:
-			return 0, context.DeadlineExceeded
-		}
+		return
+	}
+	delta := uint64(raw - uint32(c.peerAcknowledged))
+	if delta == 0 || delta >= 1<<31 || delta > math.MaxUint64-c.peerAcknowledged {
+		c.mu.Unlock()
+		return
+	}
+	candidate := c.peerAcknowledged + delta
+	written := c.stats.WrittenBytes
+	if candidate > written && candidate-written >= 1<<31 || written > candidate && written-candidate >= 1<<31 {
+		c.mu.Unlock()
+		return
+	}
+	c.peerAcknowledged = candidate
+	if c.writeActive || candidate <= written {
+		c.mu.Unlock()
+		return
+	}
+	ahead, at := candidate-written, time.Now()
+	if c.stats.AckAheadEventsTotal == math.MaxUint64 {
+		c.stats.Saturated = true
+	} else {
+		c.stats.AckAheadEventsTotal++
+	}
+	c.stats.AckAheadBytesLast = ahead
+	c.stats.AckAheadBytesMax = max(c.stats.AckAheadBytesMax, ahead)
+	c.stats.AckLastAnomalyAt = at
+	c.mu.Unlock()
+	if c.opts.OnACKAnomaly != nil {
+		c.opts.OnACKAnomaly(ahead, at)
 	}
 }
 
@@ -660,18 +663,7 @@ func (c *OutboundConn) control(r *outboundReader, m *rawmessage.Message) (err er
 		if len(b) != 4 {
 			return fmt.Errorf("неверная длина ACK: check=body_length expected_body_len=4: %w", ErrFraming)
 		}
-		c.mu.Lock()
-		delta := uint64(binary.BigEndian.Uint32(b) - uint32(c.peerAcknowledged))
-		upper := c.protocolBytes + c.inFlightBytes
-		if c.peerAcknowledged > upper || delta >= 1<<31 || delta > upper-c.peerAcknowledged {
-			err := fmt.Errorf("недопустимая последовательность ACK: check=ack_sequence received_ack=%d previous_ack=%d written_bytes=%d protocol_bytes=%d in_flight_bytes=%d upper=%d delta=%d: %w", binary.BigEndian.Uint32(b), c.peerAcknowledged, c.stats.WrittenBytes, c.protocolBytes, c.inFlightBytes, upper, delta, ErrFraming)
-			c.mu.Unlock()
-			return err
-		}
-		c.peerAcknowledged += delta
-		close(c.flowChanged)
-		c.flowChanged = make(chan struct{})
-		c.mu.Unlock()
+		c.acknowledge(binary.BigEndian.Uint32(b))
 	case 4:
 		if len(b) < 2 {
 			return fmt.Errorf("отсутствует тип UserControl: check=event_header min_body_len=2: %w", ErrFraming)
@@ -710,9 +702,6 @@ func (c *OutboundConn) control(r *outboundReader, m *rawmessage.Message) (err er
 			return fmt.Errorf("недопустимое окно или тип ограничения: check=peer_bandwidth window=%d limit_type=%d: %w", binary.BigEndian.Uint32(b), b[4], ErrFraming)
 		}
 		window, kind := binary.BigEndian.Uint32(b), b[4]
-		if window > math.MaxInt32 {
-			return fmt.Errorf("слишком большое окно: check=peer_window window=%d max_window=%d: %w", window, math.MaxInt32, ErrLimit)
-		}
 		c.mu.Lock()
 		previous := c.peerWindow
 		switch kind {
@@ -734,8 +723,6 @@ func (c *OutboundConn) control(r *outboundReader, m *rawmessage.Message) (err er
 		c.peerLimitType = kind
 		c.peerLimitKnown = true
 		effective := c.peerWindow
-		close(c.flowChanged)
-		c.flowChanged = make(chan struct{})
 		c.mu.Unlock()
 		if previous != effective {
 			var value [4]byte

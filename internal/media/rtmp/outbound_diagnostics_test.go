@@ -123,25 +123,24 @@ func TestOutboundDiagnosticsControlFailures(t *testing.T) {
 
 func TestOutboundDiagnosticsAcknowledgementValues(t *testing.T) {
 	for _, tc := range []struct {
-		name                   string
-		previous, sent, flight uint64
-		ack                    uint32
-		fields                 []string
+		name           string
+		previous, sent uint64
+		ack            uint32
+		want           uint64
+		events         uint64
 	}{
-		{"future", 100, 120, 3, 124, []string{"previous_ack=100", "protocol_bytes=120", "in_flight_bytes=3", "received_ack=124", "upper=123", "delta=24"}},
-		{"backward", 100, 120, 0, 99, []string{"previous_ack=100", "received_ack=99", "delta=4294967295"}},
-		{"half_range", 100, (1 << 31) + 100, 0, (1 << 31) + 100, []string{"received_ack=2147483748", "delta=2147483648"}},
+		{"future", 100, 120, 124, 124, 1},
+		{"backward", 100, 120, 99, 100, 0},
+		{"half_range", 100, (1 << 31) + 100, (1 << 31) + 100, 100, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var body [4]byte
 			binary.BigEndian.PutUint32(body[:], tc.ack)
 			c, err := diagnosticReadLoop(t, diagnosticFrame(2, 3, 0, body[:]), func(c *OutboundConn) {
-				c.peerAcknowledged, c.protocolBytes, c.inFlightBytes = tc.previous, tc.sent, tc.flight
-				c.stats.WrittenBytes = 177
+				c.peerAcknowledged, c.stats.WrittenBytes = tc.previous, tc.sent
 			})
-			diagnosticProtocol(t, err, ErrFraming, append([]string{"phase=control", "type=3", "written_bytes=177"}, tc.fields...)...)
-			if c.peerAcknowledged != tc.previous {
-				t.Fatalf("отклонённый ACK изменил подтверждённые байты: %d", c.peerAcknowledged)
+			if !errors.Is(err, io.EOF) || IsOutboundTerminal(err) || c.peerAcknowledged != tc.want || c.Snapshot().AckAheadEventsTotal != tc.events {
+				t.Fatalf("числовой ACK нарушил диагностику: ack=%d stats=%+v err=%v", c.peerAcknowledged, c.Snapshot(), err)
 			}
 		})
 	}
@@ -224,7 +223,7 @@ func TestOutboundDiagnosticsValidControls(t *testing.T) {
 		{"set_buffer_length", 4, []byte{0, 3, 0, 0, 0, 37, 0, 0, 1, 0}},
 		{"ping_request", 4, []byte{0, 6, 1, 2, 3, 4}},
 		{"minimum_ack_window", 5, []byte{0, 0, 0, 1}},
-		{"maximum_peer_window", 6, []byte{0x7f, 0xff, 0xff, 0xff, 0}},
+		{"maximum_peer_window", 6, []byte{0xff, 0xff, 0xff, 0xff, 0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, err := diagnosticReadLoop(t, diagnosticFrame(2, tc.typ, 0, tc.body), nil)
@@ -291,7 +290,8 @@ func TestOutboundDiagnosticsValidBoundariesAndNetworkEOF(t *testing.T) {
 			var body [4]byte
 			binary.BigEndian.PutUint32(body[:], tc.ack)
 			c, err := diagnosticReadLoop(t, diagnosticFrame(2, 3, 0, body[:]), func(c *OutboundConn) {
-				c.peerAcknowledged, c.protocolBytes, c.inFlightBytes = tc.previous, tc.sent, tc.flight
+				c.peerAcknowledged, c.stats.WrittenBytes = tc.previous, tc.sent
+				c.writeActive = tc.flight > 0
 			})
 			if !errors.Is(err, io.EOF) || IsOutboundTerminal(err) || c.peerAcknowledged != tc.want {
 				t.Fatalf("допустимый ACK отклонён: ack=%d err=%v", c.peerAcknowledged, err)

@@ -96,13 +96,17 @@ func groupMetricsDTO(m *core.GroupMetrics) *GroupMetricsDTO {
 }
 
 type OutputMetricsDTO struct {
-	Media         MediaMetricsDTO    `json:"media"`
-	Counters      map[string]Decimal `json:"counters"`
-	QueueDrops    map[string]Decimal `json:"queue_drops"`
-	DeliveryDrops map[string]Decimal `json:"delivery_drops"`
-	Resync        bool               `json:"resync"`
-	LastWrite     *time.Time         `json:"last_write"`
-	LastMedia     *time.Time         `json:"last_media"`
+	Media               MediaMetricsDTO    `json:"media"`
+	Counters            map[string]Decimal `json:"counters"`
+	QueueDrops          map[string]Decimal `json:"queue_drops"`
+	DeliveryDrops       map[string]Decimal `json:"delivery_drops"`
+	Resync              bool               `json:"resync"`
+	LastWrite           *time.Time         `json:"last_write"`
+	LastMedia           *time.Time         `json:"last_media"`
+	AckAheadEventsTotal Decimal            `json:"ack_ahead_events_total" doc:"Число новых достоверно измеренных опережающих ACK за запуск выхода с сохранением при reconnect; при переполнении насыщается. Нулевое значение не доказывает отсутствия расхождений: наблюдения во время Write и при неизвестной эпохе не измеряются."`
+	AckAheadBytesLast   Decimal            `json:"ack_ahead_bytes_last" doc:"Точный размер последнего измеренного опережения ACK в незашифрованных байтах RTMP; обычный ACK его не обнуляет."`
+	AckAheadBytesMax    Decimal            `json:"ack_ahead_bytes_max" doc:"Максимальный измеренный размер опережения ACK в незашифрованных байтах RTMP за запуск выхода."`
+	AckLastAnomalyAt    *time.Time         `json:"ack_last_anomaly_at" doc:"Время последнего измеренного опережения ACK в UTC; null до первого события."`
 }
 
 func outputMetricsDTO(m *core.OutputMetrics) *OutputMetricsDTO {
@@ -110,7 +114,7 @@ func outputMetricsDTO(m *core.OutputMetrics) *OutputMetricsDTO {
 		return nil
 	}
 	q, d := m.QueueDrops, m.DeliveryDrops
-	return &OutputMetricsDTO{mediaDTO(m.MediaMetrics), map[string]Decimal{"queued_packets": Decimal(m.QueuedPackets), "packet_bytes": Decimal(m.PacketBytes), "access_units": Decimal(m.AccessUnits), "pending_packets": Decimal(m.PendingPackets), "generation": Decimal(m.Generation), "in_flight_packet_bytes": Decimal(m.InFlightPacketBytes), "in_flight_config_bytes": Decimal(m.InFlightConfigBytes), "wire_buffer_bytes": Decimal(m.WireBufferBytes), "config_bytes": Decimal(m.ConfigBytes), "config_byte_capacity": Decimal(m.ConfigByteCapacity), "attempts": Decimal(m.Attempts), "connections": Decimal(m.Connections), "reconnects": Decimal(m.Reconnects), "queue_packets": Decimal(m.QueuePackets), "queue_capacity": Decimal(m.QueueCapacity), "queue_bytes": Decimal(m.QueueBytes), "queue_byte_capacity": Decimal(m.QueueByteCapacity)}, map[string]Decimal{"overflow": Decimal(q.Overflow), "oversized": Decimal(q.Oversized), "config_rejected": Decimal(q.ConfigRejected), "awaiting_keyframe": Decimal(q.AwaitingKeyframe), "audio_before_cut": Decimal(q.AudioBeforeCut), "source_reset": Decimal(q.SourceReset), "config_reset": Decimal(q.ConfigReset), "closed": Decimal(q.Closed)}, map[string]Decimal{"stale": Decimal(d.Stale), "transport": Decimal(d.Transport), "cancelled": Decimal(d.Cancelled), "terminal": Decimal(d.Terminal)}, m.Resync, timestamp(m.LastWrite), timestamp(m.LastMedia)}
+	return &OutputMetricsDTO{mediaDTO(m.MediaMetrics), map[string]Decimal{"queued_packets": Decimal(m.QueuedPackets), "packet_bytes": Decimal(m.PacketBytes), "access_units": Decimal(m.AccessUnits), "pending_packets": Decimal(m.PendingPackets), "generation": Decimal(m.Generation), "in_flight_packet_bytes": Decimal(m.InFlightPacketBytes), "in_flight_config_bytes": Decimal(m.InFlightConfigBytes), "wire_buffer_bytes": Decimal(m.WireBufferBytes), "config_bytes": Decimal(m.ConfigBytes), "config_byte_capacity": Decimal(m.ConfigByteCapacity), "attempts": Decimal(m.Attempts), "connections": Decimal(m.Connections), "reconnects": Decimal(m.Reconnects), "queue_packets": Decimal(m.QueuePackets), "queue_capacity": Decimal(m.QueueCapacity), "queue_bytes": Decimal(m.QueueBytes), "queue_byte_capacity": Decimal(m.QueueByteCapacity)}, map[string]Decimal{"overflow": Decimal(q.Overflow), "oversized": Decimal(q.Oversized), "config_rejected": Decimal(q.ConfigRejected), "awaiting_keyframe": Decimal(q.AwaitingKeyframe), "audio_before_cut": Decimal(q.AudioBeforeCut), "source_reset": Decimal(q.SourceReset), "config_reset": Decimal(q.ConfigReset), "closed": Decimal(q.Closed)}, map[string]Decimal{"stale": Decimal(d.Stale), "transport": Decimal(d.Transport), "cancelled": Decimal(d.Cancelled), "terminal": Decimal(d.Terminal)}, m.Resync, timestamp(m.LastWrite), timestamp(m.LastMedia), Decimal(m.AckAheadEventsTotal), Decimal(m.AckAheadBytesLast), Decimal(m.AckAheadBytesMax), timestamp(m.AckLastAnomalyAt)}
 }
 
 type FFmpegProgressDTO struct {

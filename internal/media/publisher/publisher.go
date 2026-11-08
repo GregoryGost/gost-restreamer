@@ -19,7 +19,7 @@ var (
 )
 
 // Options задаёт явные бюджеты и положительные интервалы восстановления.
-// Admit и OnWrite транспорта принадлежат Publisher и должны быть nil на входе.
+// Admit, OnWrite и OnACKAnomaly транспорта принадлежат Publisher и должны быть nil на входе.
 type Options struct {
 	Queue                                    media.QueueLimits
 	RetryInitial, RetryMax, ResubscribeDelay time.Duration
@@ -29,7 +29,7 @@ type Options struct {
 }
 
 func (o Options) Validate() error {
-	if o.Queue.Validate() != nil || o.Transport.Validate() != nil || o.RetryInitial <= 0 || o.RetryMax < o.RetryInitial || o.ResubscribeDelay <= 0 || o.Transport.Admit != nil || o.Transport.OnWrite != nil {
+	if o.Queue.Validate() != nil || o.Transport.Validate() != nil || o.RetryInitial <= 0 || o.RetryMax < o.RetryInitial || o.ResubscribeDelay <= 0 || o.Transport.Admit != nil || o.Transport.OnWrite != nil || o.Transport.OnACKAnomaly != nil {
 		return ErrOptions
 	}
 	return nil
@@ -127,6 +127,10 @@ type Publisher struct {
 	writtenBytes                      uint64
 	writeSaturated                    bool
 	lastWrite                         time.Time
+	ackAheadEventsTotal               uint64
+	ackAheadBytesLast                 uint64
+	ackAheadBytesMax                  uint64
+	ackLastAnomalyAt                  time.Time
 }
 
 // Prepare проверяет неизменяемый снимок и резервирует исполнение без сетевых операций.

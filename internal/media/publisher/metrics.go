@@ -52,6 +52,8 @@ type Snapshot struct {
 	NetworkJoined                                             bool
 	QueueCapacityPackets, QueueCapacityBytes                  uint64
 	ConfigCapacityBytes                                       uint64
+	AckAheadEventsTotal, AckAheadBytesLast, AckAheadBytesMax  uint64
+	AckLastAnomalyAt                                          time.Time
 }
 
 // Snapshot согласует активную подписку с переносом её окончательных счётчиков.
@@ -76,6 +78,8 @@ func (p *Publisher) Snapshot() Snapshot {
 	}
 	p.writeMu.Lock()
 	s.WrittenBytes, s.LastWrite = p.writtenBytes, p.lastWrite
+	s.AckAheadEventsTotal, s.AckAheadBytesLast, s.AckAheadBytesMax = p.ackAheadEventsTotal, p.ackAheadBytesLast, p.ackAheadBytesMax
+	s.AckLastAnomalyAt = p.ackLastAnomalyAt
 	s.Saturated = s.Saturated || p.writeSaturated
 	s.SampledAt = time.Now()
 	p.writeMu.Unlock()
@@ -118,6 +122,15 @@ func (p *Publisher) noteWrite(n int) {
 	p.writeMu.Lock()
 	saturate(&p.writtenBytes, uint64(n), &p.writeSaturated)
 	p.lastWrite = time.Now().UTC()
+	p.writeMu.Unlock()
+}
+
+func (p *Publisher) noteACKAnomaly(bytes uint64, at time.Time) {
+	p.writeMu.Lock()
+	saturate(&p.ackAheadEventsTotal, 1, &p.writeSaturated)
+	p.ackAheadBytesLast = bytes
+	p.ackAheadBytesMax = max(p.ackAheadBytesMax, bytes)
+	p.ackLastAnomalyAt = at
 	p.writeMu.Unlock()
 }
 
