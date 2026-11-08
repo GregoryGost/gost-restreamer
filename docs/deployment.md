@@ -22,33 +22,46 @@ CI сверяет реальные версии/commit обоих бинарни
 
 GoReleaser нужен только для сборки. На VM устанавливается готовый `.deb`; для скачивания и распаковки ZIP нужны `curl` и `unzip`.
 
-Проверенный 8 ноября 2026 года пример — [успешный GitHub Actions №10](https://github.com/GregoryGost/gost-restreamer/actions/runs/42429626734), версия `v0.1.0-dev.3+09534d305f31`, artifact ID `13596619394`. Для следующей поставки возьмите версию и artifact ID из её успешного запуска. Артефакт примера имеет срок хранения до 22 ноября 2026 года и может быть удалён раньше; повтор CI получает другой ID.
+Проверенная поставка T14 от 8 ноября 2026 года — [успешный GitHub Actions №11](https://github.com/GregoryGost/gost-restreamer/actions/runs/42492920612), версия `v0.1.0-dev.4+0e7ea267e9a2`, artifact ID `13622632373`. Для следующей поставки возьмите версию и artifact ID из её успешного запуска. Артефакт имеет срок хранения до 22 ноября 2026 года и может быть удалён раньше; повтор CI получает другой ID.
 
-Команды выполняются в Bash от root непосредственно на Debian VM. Если `GH_TOKEN` уже задан в этой оболочке, используется его текущее значение; иначе команда запрашивает токен без отображения ввода. Для скачивания Actions Artifact через API нужен токен с доступом на чтение Actions выбранного репозитория; публичность исходников не меняет этот способ скачивания. [Требования GitHub к download endpoint](https://docs.github.com/en/rest/actions/artifacts#download-an-artifact).
+Команды выполняются по отдельным блокам в одной Bash-сессии от root непосредственно на Debian VM, без общей оболочки в круглых скобках. При ошибке не переходите к следующему блоку. Если `GH_TOKEN` уже задан в этой оболочке, используется его текущее значение; иначе команда запрашивает токен без отображения ввода. Для скачивания Actions Artifact через API нужен токен с доступом на чтение Actions выбранного репозитория; публичность исходников не меняет этот способ скачивания. [Требования GitHub к download endpoint](https://docs.github.com/en/rest/actions/artifacts#download-an-artifact).
+
+Создайте каталог поставки и перейдите в него:
 
 ```bash
-(
-  set -eu
-  git_version='v0.1.0-dev.3+09534d305f31'
-  artifact_id='13596619394'
-  download_dir="/root/downloads/gost-restreamer-$git_version"
-  install -d -m 0700 "$download_dir"
-  cd "$download_dir"
+install -d -m 0700 /root/downloads/gost-restreamer-v0.1.0-dev.4+0e7ea267e9a2
+cd /root/downloads/gost-restreamer-v0.1.0-dev.4+0e7ea267e9a2
+```
 
-  if [ -z "${GH_TOKEN:-}" ]; then
-    read -rsp 'GitHub token: ' GH_TOKEN
-    printf '\n'
-  fi
-  test -n "$GH_TOKEN"
-  curl --fail --location --show-error \
-    --header 'Accept: application/vnd.github+json' \
-    --header "Authorization: Bearer $GH_TOKEN" \
-    --output gost-restreamer-artifact.zip \
-    "https://api.github.com/repos/GregoryGost/gost-restreamer/actions/artifacts/$artifact_id/zip"
-  unzip -o gost-restreamer-artifact.zip
-  sha256sum --strict -c "gost-restreamer-$git_version-SHA256SUMS"
-  printf 'Поставка проверена: %s\n' "$download_dir"
-)
+При необходимости введите токен:
+
+```bash
+if [ -z "${GH_TOKEN:-}" ]; then
+  read -rsp 'GitHub token: ' GH_TOKEN
+  printf '\n'
+fi
+```
+
+Скачайте ZIP:
+
+```bash
+curl --fail --location --show-error \
+  --header 'Accept: application/vnd.github+json' \
+  --header "Authorization: Bearer ${GH_TOKEN:?Требуется GitHub token}" \
+  --output gost-restreamer-artifact.zip \
+  'https://api.github.com/repos/GregoryGost/gost-restreamer/actions/artifacts/13622632373/zip'
+```
+
+Распакуйте поставку:
+
+```bash
+unzip -o gost-restreamer-artifact.zip
+```
+
+Проверьте обе контрольные суммы; для каждого файла должно появиться `OK`:
+
+```bash
+sha256sum --strict -c gost-restreamer-v0.1.0-dev.4+0e7ea267e9a2-SHA256SUMS
 ```
 
 В каталоге остаются ZIP и все три файла поставки. Общий `SHA256SUMS` проверяет и `.deb`, и `.tar.gz`, поэтому при распаковке нужны оба файла. Распаковывать внутренний `.tar.gz` для установки `.deb` не требуется. Прежняя команда проверки `<архив>.tar.gz.sha256` относится к старой поставке и локальной цели `make package`.
@@ -117,37 +130,76 @@ journalctl -u gost-restreamer -f
 
 Ранее установленные вручную бинарники из `.tar.gz` и unit можно заменить установкой `.deb` по тем же путям. Перед первой установкой пакета **явно остановите службу**: у ручной установки нет зарегистрированного в dpkg старого `prerm`, который мог бы сделать это перед заменой файлов. Успешный stop сессии через API завершает эфир; остановка systemd-службы отдельно завершает процесс сервиса.
 
-Следующий пример продолжает скачивание версии `v0.1.0-dev.3+09534d305f31` выше. Он подходит и для перехода с ручной установки, и для обновления уже зарегистрированного пакета; команды выполняются от root на VM:
+Следующий пример продолжает скачивание версии `v0.1.0-dev.4+0e7ea267e9a2` выше. Он подходит и для перехода с ручной установки, и для обновления уже зарегистрированного пакета. Выполняйте блоки по порядку в одной Bash-сессии от root на VM; при ошибке остановитесь. Остановка службы прервёт текущий эфир.
+
+Перейдите в каталог и повторно проверьте целостность выбранной поставки:
 
 ```bash
-(
-  set -eu
-  cd /root/downloads/gost-restreamer-v0.1.0-dev.3+09534d305f31
-  deb='./gost-restreamer_0.1.0~dev.3+09534d305f31_amd64.deb'
-  sha256sum --strict -c gost-restreamer-v0.1.0-dev.3+09534d305f31-SHA256SUMS
-  dpkg-deb --field "$deb" Package Version Architecture
-
-  systemctl stop gost-restreamer
-  apt -o Dpkg::Options::=--force-confold install "$deb"
-  /opt/gost-restreamer/gost-restreamer --version
-  /opt/gost-restreamer/gost-process-helper --version
-  dpkg-query --show --showformat='${Package} ${Version} ${Architecture}\n' gost-restreamer
-  systemd-analyze verify /etc/systemd/system/gost-restreamer.service
-  systemctl start gost-restreamer
-  systemctl status gost-restreamer --no-pager --lines=0
-  curl --fail-with-body --silent --show-error \
-    --retry 10 --retry-delay 1 --retry-connrefused \
-    --connect-timeout 2 --max-time 3 \
-    --write-out '\n' \
-    http://127.0.0.1:8080/api/v1/health/ready
-)
+cd /root/downloads/gost-restreamer-v0.1.0-dev.4+0e7ea267e9a2
+sha256sum --strict -c gost-restreamer-v0.1.0-dev.4+0e7ea267e9a2-SHA256SUMS
 ```
 
-Оба `--version` должны показать `v0.1.0-dev.3+09534d305f31` и commit `09534d305f313a6b94fa4aa335fce00c6822f889`; поле Debian Version — `0.1.0~dev.3+09534d305f31`. Для следующего выпуска замените каталог, имя `.deb` и `SHA256SUMS` на файлы одной выбранной поставки.
+Сверьте метаданные пакета:
+
+```bash
+dpkg-deb --field ./gost-restreamer_0.1.0~dev.4+0e7ea267e9a2_amd64.deb Package Version Architecture
+```
+
+Остановите службу:
+
+```bash
+systemctl stop gost-restreamer
+```
+
+Установите обновление с сохранением локально изменённых conffiles:
+
+```bash
+apt -o Dpkg::Options::=--force-confold install ./gost-restreamer_0.1.0~dev.4+0e7ea267e9a2_amd64.deb
+```
+
+Проверьте оба бинарника и зарегистрированную Debian-версию:
+
+```bash
+/opt/gost-restreamer/gost-restreamer --version
+/opt/gost-restreamer/gost-process-helper --version
+dpkg-query --show --showformat='${Package} ${Version} ${Architecture}\n' gost-restreamer
+```
+
+Проверьте unit перед запуском:
+
+```bash
+systemd-analyze verify /etc/systemd/system/gost-restreamer.service
+```
+
+Запустите службу:
+
+```bash
+systemctl start gost-restreamer
+```
+
+Прочитайте её состояние:
+
+```bash
+systemctl status gost-restreamer --no-pager --lines=0
+```
+
+Дождитесь готовности управления и хранилища. Если HTTP-адрес изменён в рабочем YAML, используйте его вместо `127.0.0.1:8080`:
+
+```bash
+curl --fail-with-body --silent --show-error \
+  --retry 10 --retry-delay 1 --retry-connrefused \
+  --connect-timeout 2 --max-time 3 \
+  --write-out '\n' \
+  http://127.0.0.1:8080/api/v1/health/ready
+```
+
+Оба `--version` должны показать `v0.1.0-dev.4+0e7ea267e9a2` и commit `0e7ea267e9a2cc0523022043793b4c074e76d8b8`; поле Debian Version — `0.1.0~dev.4+0e7ea267e9a2`. Для следующего выпуска замените каталог, имя `.deb` и `SHA256SUMS` на файлы одной выбранной поставки.
 
 Флаг `--force-confold` сохраняет существующие локально изменённые YAML и unit, включая файлы прежней ручной установки; новая редакция может появиться как `.dpkg-dist`. Неизменённые conffiles dpkg обновляет автоматически. Существующий рабочий YAML продолжает использоваться; пример из архива предназначен для сверки новых параметров. SQLite и медиа остаются в `/var/lib/gost-restreamer/`, runtime-доказательства — в `/run/gost-restreamer/`. Оба бинарника после перехода обслуживаются пакетным менеджером. [Правила dpkg для conffiles](https://manpages.debian.org/trixie/dpkg/dpkg.1.en.html#confold:).
 
 При последующем обновлении `.deb` старый `prerm upgrade` дополнительно останавливает службу перед заменой бинарников. При ошибке dpkg вызывает новый `prerm failed-upgrade`: он также проверяет остановку и распространяет ошибку, если остановить службу не удалось. Уже отсутствующий и неактивный unit пропускается. После установки перечитываются unit; автоматического старта нет, в том числе при восстановлении после неудачного обновления. Предпочитайте systemd drop-in через `systemctl edit` для локальных настроек unit. Перед запуском проверьте сохранённые локальные настройки и новые параметры поставки. Прежний эфир автоматически не возобновляется; после успешного readiness новый запуск принимается через API в рамках T11.
+
+Прежние профили после установки T14 сохраняют прежние настройки, включая LIVE VBR. Для перехода на CBR или другие новые параметры явно обновите полный профиль через API и подготовьте новые подходящие заглушки до следующего эфира. [Примеры запросов](obs-client-guide.md#профили-кодирования-в-postman) описывают обновление; горячая перенастройка работающей сессии не выполняется.
 
 ## Удаление
 
@@ -206,3 +258,9 @@ Debian-версии упорядочены как `0.2.0~dev.1+… < 0.2.0~dev.2
 - `gost-restreamer-v0.1.0-dev.3+09534d305f31-SHA256SUMS`.
 
 Это подтверждение dev-сборки и контейнерных проверок. Переход с прежней ручной установки на отдельной VM, работа настоящего systemd, OBS/NVIDIA и повторный эфир после исправления ACK относятся к T11; создание и ручная публикация стабильного Draft Release в этом запуске не выполнялись.
+
+## Проверенная Debian-поставка T14
+
+**T14 закрыта решением владельца 8 ноября 2026 года.** [GitHub Actions №11](https://github.com/GregoryGost/gost-restreamer/actions/runs/42492920612) успешно выпустил `v0.1.0-dev.4+0e7ea267e9a2` для merge commit `0e7ea267e9a2cc0523022043793b4c074e76d8b8` после слияния PR №8 в `develop`. Поставка Debian 13/amd64/CGO=1 прошла проверки приложения, GoReleaser, SHA256, версий/VCS, повторной упаковки и установки/обновления/удаления в одноразовом контейнере. [Actions Artifact 13622632373](https://github.com/GregoryGost/gost-restreamer/actions/runs/42492920612/artifacts/13622632373) содержит `.deb`, `.tar.gz` и `SHA256SUMS`, перечисленные в командах выше; текущий срок хранения — до 22 ноября 2026 года.
+
+Linux-покрытие — 14911/17120 (87,096963%), точный порог 85% пройден. [Подробности и границы приёмки](media-contracts.md#поставка-t14-и-закрытие-задачи) отделены от обновления пользовательской VM, настоящего systemd, NVIDIA и повторного эфира в T11.

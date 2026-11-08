@@ -8,5 +8,6 @@
 /dist/
 #
 TASKS.md
+TASKS_ARCHIVE.md
 # video for tests
 *.mkv
