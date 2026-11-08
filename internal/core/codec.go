@@ -50,12 +50,33 @@ type formatMetadata struct {
 	Video   videoMetadata
 	Audio   audioMetadata
 }
-type profileMetadata struct {
+
+// profileMetadataV1 сохраняет точный порядок и типы полей прежнего формата хранения.
+type profileMetadataV1 struct {
+	Version       int
+	Mode          GroupMode
+	Format        formatMetadata
+	VideoEncoding videoEncodingV1
+	AudioEncoding audioEncodingV1
+}
+
+type videoEncodingV1 struct {
+	TargetBitrateBPS uint64
+	MaxBitrateBPS    uint64
+	BufferBits       uint64
+	GOPFrames        uint32
+	MaxBFrames       uint32
+	ClosedGOP        bool
+}
+type audioEncodingV1 struct{ BitrateBPS uint64 }
+
+type profileMetadataV2 struct {
 	Version       int
 	Mode          GroupMode
 	Format        formatMetadata
 	VideoEncoding VideoEncoding
 	AudioEncoding AudioEncoding
+	Encoding      EncodingSettings
 }
 
 func formatDTO(f MediaFormat) formatMetadata {
@@ -87,20 +108,34 @@ func DecodeProfile(data []byte) (GroupProfile, error) {
 	return p, err
 }
 func (p GroupProfile) MarshalJSON() ([]byte, error) {
-	if err := p.Validate(); err != nil {
-		return nil, &MetadataError{Kind: "profile", Version: MetadataVersion, Cause: err}
+	version := MetadataVersion
+	if p.Encoding != (EncodingSettings{}) {
+		version = EncodingVersion
 	}
-	return json.Marshal(profileMetadata{Version: MetadataVersion, Mode: p.Mode, Format: formatDTO(p.Format), VideoEncoding: p.VideoEncoding, AudioEncoding: p.AudioEncoding})
+	if err := p.Validate(); err != nil {
+		return nil, &MetadataError{Kind: "profile", Version: version, Cause: err}
+	}
+	if p.Encoding == (EncodingSettings{}) {
+		return json.Marshal(profileMetadataV1{Version: MetadataVersion, Mode: p.Mode, Format: formatDTO(p.Format), VideoEncoding: videoEncodingV1(p.VideoEncoding), AudioEncoding: audioEncodingV1(p.AudioEncoding)})
+	}
+	return json.Marshal(profileMetadataV2{Version: EncodingVersion, Mode: p.Mode, Format: formatDTO(p.Format), VideoEncoding: p.VideoEncoding, AudioEncoding: p.AudioEncoding, Encoding: p.Encoding})
 }
 func (p *GroupProfile) UnmarshalJSON(data []byte) error {
-	var d profileMetadata
+	var header struct{ Version int }
+	if err := json.Unmarshal(data, &header); err != nil {
+		return &MetadataError{Kind: "profile", Cause: err}
+	}
+	if header.Version == EncodingVersion {
+		return p.unmarshalProfileV2(data)
+	}
+	var d profileMetadataV1
 	if err := strictJSON(data, &d); err != nil {
 		return &MetadataError{Kind: "profile", Cause: err}
 	}
 	if d.Version != MetadataVersion || d.Format.Version != MetadataVersion {
 		return &MetadataError{Kind: "profile", Version: d.Version, Cause: ErrInvalidMetadata}
 	}
-	result := GroupProfile{Mode: d.Mode, Format: d.Format.value(), VideoEncoding: d.VideoEncoding, AudioEncoding: d.AudioEncoding}
+	result := GroupProfile{Mode: d.Mode, Format: d.Format.value(), VideoEncoding: VideoEncoding(d.VideoEncoding), AudioEncoding: AudioEncoding(d.AudioEncoding)}
 	if err := result.Validate(); err != nil {
 		return &MetadataError{Kind: "profile", Version: d.Version, Cause: err}
 	}

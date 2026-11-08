@@ -80,7 +80,10 @@ func (p Prober) NormalizePrepared(ctx context.Context, input *os.File, output io
 			audio = true
 		}
 	}
-	init.Origin = fmp4.OriginMapping{}
+	init.Origin, err = preparedOrigin(*timing.packets[media.TrackVideo][0].DTS, timing.bases[media.TrackVideo], init.Video.Info().TimeBase, init.Audio.Info().TimeBase)
+	if err != nil {
+		return err
+	}
 	mux, err := fmp4.NewMuxer(output, init, p.Limits.Container)
 	if err != nil {
 		return err
@@ -108,8 +111,12 @@ func (p Prober) NormalizePrepared(ctx context.Context, input *os.File, output io
 		if e != nil {
 			return e
 		}
-		if _, e = inspector.Inspect(rebuilt); e != nil {
+		key, e := inspector.Inspect(rebuilt)
+		if e != nil {
 			return e
+		}
+		if track == media.TrackVideo && index == 0 && !key {
+			return core.ErrNotReady
 		}
 		return mux.WritePacket(rebuilt)
 	}

@@ -48,7 +48,117 @@ curl --fail-with-body -H 'Content-Type: application/json' \
 | `transcode` | H.264 2560×1440, 60 FPS | SDR BT.709, AAC LC 48 kHz stereo |
 | `transcode` | H.264 1920×1080, 60 FPS | SDR BT.709, AAC LC 48 kHz stereo |
 
-Полный профиль включает `format.video`, `format.audio`, `video_encoding` и `audio_encoding`; битрейты, GOP, codec profile, pixel format и цвет задаются явно. Параметры не выбираются автоматически по названию площадки. Поля полного профиля и границы совместимости описаны в [медиаконтракте](media-contracts.md).
+Полный профиль включает `format.video`, `format.audio`, `video_encoding`, `audio_encoding` и новый блок `encoding` версии 2; битрейты, GOP, codec profile, pixel format и цвет задаются явно. Параметры не выбираются автоматически по названию площадки. [Поля, defaults и ограничения](api-contracts.md#полный-профиль-кодирования) описаны в контракте API.
+
+### Профили кодирования в Postman
+
+Для каждого примера используйте `POST http://127.0.0.1:8080/api/v1/transcode-profiles`, `Body → raw → JSON`, `Content-Type: application/json`. Это примеры синтаксиса, а не подтверждённые рекомендации битрейта или качества для конкретной площадки. Сервер должен иметь указанные кодировщики; NVIDIA и фактическое воспроизведение проверяются отдельно.
+
+Первый профиль задаёт H.264 1080p60 CBR и показывает полный блок NVENC:
+
+```json
+{
+  "name": "H264 1080p60 CBR",
+  "profile": {
+    "mode": "transcode",
+    "format": {
+      "video": {
+        "codec": "h264", "width": 1920, "height": 1080,
+        "frame_rate": {"numerator": 60, "denominator": 1},
+        "codec_profile": "high", "level": "auto", "tier": "",
+        "pixel_format": "yuv420p", "bit_depth": 8,
+        "color": {"range": "limited", "primaries": "bt709", "transfer": "bt709", "matrix": "bt709"}
+      },
+      "audio": {"codec": "aac", "codec_profile": "LC", "sample_rate_hz": 48000, "channels": 2, "channel_layout": "stereo"}
+    },
+    "video_encoding": {
+      "target_bitrate_bps": "6000000", "max_bitrate_bps": "6000000", "buffer_bits": "12000000",
+      "gop_frames": 120, "max_b_frames": 2, "closed_gop": true
+    },
+    "audio_encoding": {"bitrate_bps": "192000"},
+    "encoding": {
+      "version": 2, "video_encoder": "h264_nvenc", "audio_encoder": "aac",
+      "rate_control": "cbr", "rescale_output": true,
+      "nvenc": {
+        "preset": "p4", "tuning": "hq", "multipass": "disabled", "lookahead_frames": 0,
+        "enable_spatial_aq": false, "enable_temporal_aq": false, "aq_strength": 8
+      },
+      "video_custom": "strict_gop=1", "audio_custom": "aac_coder=twoloop"
+    }
+  }
+}
+```
+
+Второй независимый профиль задаёт H.264 1440p60 VBR. Пропущенные новые optional-поля сервер материализует при создании; GET вернёт их полные значения:
+
+```json
+{
+  "name": "H264 1440p60 VBR",
+  "profile": {
+    "mode": "transcode",
+    "format": {
+      "video": {
+        "codec": "h264", "width": 2560, "height": 1440,
+        "frame_rate": {"numerator": 60, "denominator": 1},
+        "codec_profile": "high", "level": "auto", "tier": "",
+        "pixel_format": "yuv420p", "bit_depth": 8,
+        "color": {"range": "limited", "primaries": "bt709", "transfer": "bt709", "matrix": "bt709"}
+      },
+      "audio": {"codec": "aac", "codec_profile": "LC", "sample_rate_hz": 48000, "channels": 2, "channel_layout": "stereo"}
+    },
+    "video_encoding": {
+      "target_bitrate_bps": "12000000", "max_bitrate_bps": "16000000", "buffer_bits": "24000000",
+      "gop_frames": 120, "max_b_frames": 2, "closed_gop": true
+    },
+    "audio_encoding": {"bitrate_bps": "192000"},
+    "encoding": {
+      "version": 2, "video_encoder": "h264_nvenc", "rate_control": "vbr",
+      "nvenc": {"preset": "p5", "multipass": "qres", "lookahead_frames": 16, "enable_spatial_aq": true},
+      "video_custom": "nonref_p=1 strict_gop=1"
+    }
+  }
+}
+```
+
+Третий профиль описывает ожидаемый AV1 1440p60 VBR из OBS. Его параметры нужно согласовать с фактическим выходом OBS до подготовки заглушки. `libsvtav1` и `svt_av1` относятся к серверному кодированию заглушки; основной LIVE пересылается без перекодирования:
+
+```json
+{
+  "name": "AV1 copy 1440p60 VBR",
+  "profile": {
+    "mode": "copy",
+    "format": {
+      "video": {
+        "codec": "av1", "width": 2560, "height": 1440,
+        "frame_rate": {"numerator": 60, "denominator": 1},
+        "codec_profile": "main", "level": "auto", "tier": "main",
+        "pixel_format": "yuv420p", "bit_depth": 8,
+        "color": {"range": "limited", "primaries": "bt709", "transfer": "bt709", "matrix": "bt709"}
+      },
+      "audio": {"codec": "aac", "codec_profile": "LC", "sample_rate_hz": 48000, "channels": 2, "channel_layout": "stereo"}
+    },
+    "video_encoding": {
+      "target_bitrate_bps": "18000000", "max_bitrate_bps": "0", "buffer_bits": "0",
+      "gop_frames": 120, "max_b_frames": 0, "closed_gop": true
+    },
+    "audio_encoding": {"bitrate_bps": "192000"},
+    "encoding": {
+      "version": 2, "video_encoder": "libsvtav1", "audio_encoder": "aac",
+      "rate_control": "vbr", "rescale_output": false,
+      "svt_av1": {"preset": 8, "tuning": "psnr", "aq_mode": 2, "lookahead_frames": -1},
+      "video_custom": "lp=2", "audio_custom": ""
+    }
+  }
+}
+```
+
+Для AV1 CBR измените в полном третьем профиле `rate_control` на `cbr`, `max_bitrate_bps` на `"18000000"`, `buffer_bits` на `"36000000"` (2000 мс) и SVT `lookahead_frames` на 0. Ненулевой VBR max/buffer не принимается: библиотека не предоставляет это ограничение в выбранном режиме. Native настройки других кодировщиков OBS нельзя вставить в SVT-блок без сопоставления.
+
+Редактирование выполняется через `PATCH /transcode-profiles/PROFILE_ID`: передайте текущий `expected_revision` и **полный** объект `profile`, например скопированный из GET с нужными изменениями. Не отправляйте частичный `profile` только с `rate_control`. Для обновления прежнего профиля с `encoding: null` явно добавьте новый блок версии 2. Изменение имени без `profile` сохраняет прежний режим. Текущий эфир использует свой снимок; после изменения потребуется подготовить заглушки до нового запуска.
+
+Проверка понятного конфликта: добавление `rc=vbr` в `video_custom` первого профиля должно дать `422` с `code`, `field` и подготовленным объяснением. Значение typed-поля не переопределяется, профиль не сохраняется.
+
+### Привязка профилей к назначениям
 
 Создание группы для Stream и профиля:
 

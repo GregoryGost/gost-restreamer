@@ -126,3 +126,31 @@ func TestNVIDIACommandRejectsUnrepresentableMovieScale(t *testing.T) {
 		}
 	}
 }
+
+func TestNVIDIACommandExplicitRescaleAndRateControl(t *testing.T) {
+	for _, rc := range []string{"cbr", "vbr"} {
+		c := nvidiaCommandConfig()
+		c.Profile.Encoding = core.DefaultEncoding(core.ModeTranscode, "h264_nvenc", rc)
+		if rc == "cbr" {
+			c.Profile.VideoEncoding.MaxBitrateBPS = c.Profile.VideoEncoding.TargetBitrateBPS
+		}
+		c.Profile.Encoding.RescaleOutput = false
+		cmd, err := BuildNVIDIACommand(c, Attempt{InputPath: "/a", OutputPath: "/b"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		filter := cmd.Args[slices.Index(cmd.Args, "-vf")+1]
+		if strings.Contains(filter, "scale_cuda") || cmd.Args[slices.Index(cmd.Args, "-rc")+1] != rc {
+			t.Fatal(cmd.Args)
+		}
+		c.Input.Video.Width += 2
+		if _, err = BuildNVIDIACommand(c, Attempt{InputPath: "/a", OutputPath: "/b"}); !errors.Is(err, ErrInvalidSupervisor) {
+			t.Fatal("размеры без масштабирования приняты", err)
+		}
+		c.Profile.Encoding.RescaleOutput = true
+		cmd, err = BuildNVIDIACommand(c, Attempt{InputPath: "/a", OutputPath: "/b"})
+		if err != nil || !strings.Contains(strings.Join(cmd.Args, " "), "scale_cuda=w=1920:h=1080") {
+			t.Fatal(cmd, err)
+		}
+	}
+}

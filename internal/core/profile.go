@@ -65,10 +65,18 @@ type GroupProfile struct {
 	Format        MediaFormat
 	VideoEncoding VideoEncoding
 	AudioEncoding AudioEncoding
+	Encoding      EncodingSettings
 }
 
 // Validate проверяет режим, обе дорожки и настройки их подготовки.
 func (p GroupProfile) Validate() error {
+	if p.Encoding != (EncodingSettings{}) {
+		return p.validateEncodingProfile()
+	}
+	return p.validateLegacyProfile()
+}
+
+func (p GroupProfile) validateLegacyProfile() error {
 	if p.Mode != ModeCopy && p.Mode != ModeTranscode {
 		return fmt.Errorf("%w: GroupProfile.Mode должен быть copy или transcode", ErrInvalidProfile)
 	}
@@ -90,5 +98,5 @@ func (p GroupProfile) Equal(other GroupProfile) bool {
 		return false
 	}
 	return p.Mode == other.Mode && p.Format.Equal(other.Format) &&
-		p.VideoEncoding == other.VideoEncoding && p.AudioEncoding == other.AudioEncoding
+		p.VideoEncoding == other.VideoEncoding && p.AudioEncoding == other.AudioEncoding && p.Encoding == other.Encoding
 }

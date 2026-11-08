@@ -118,6 +118,9 @@ func (s *Service) UpdateProfile(ctx context.Context, value TranscodeProfile, exp
 		if err = checkRevision(current.Revision, expected); err != nil {
 			return err
 		}
+		if current.Profile.Encoding.Version == EncodingVersion && value.Profile.Encoding.Version != EncodingVersion {
+			return invalidEncoding("encoding", "Профиль версии 2 требует полный объект encoding версии 2; переход к прежнему формату запрещён.")
+		}
 		value.Record, err = revise(current.Record)
 		if err != nil {
 			return err

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -102,6 +103,9 @@ func New(config Config) (*API, error) {
 		}
 		n, _ := strconv.Atoi(status)
 		if n >= 400 {
+			if problem, ok := v.(*trustedProfileProblem); ok && n == 422 {
+				return problem, nil
+			}
 			return safeProblem(n), nil
 		}
 		return v, nil
@@ -262,6 +266,14 @@ func (a *API) problem(err error) error {
 	}
 	status := classify(err)
 	a.config.Logger.Error("api_operation", "component", "api", "status", status, "error", err)
+	var profileError *core.ProfileError
+	if status == 422 && errors.As(err, &profileError) {
+		return newProfileProblem(profileError.Code(), profileError.Field(), profileError.Detail())
+	}
+	var inputError profileInputError
+	if status == 422 && errors.As(err, &inputError) {
+		return newProfileProblem("invalid_profile", inputError.field, inputError.detail)
+	}
 	return huma.NewError(status, safeDetail(status))
 }
 func classify(err error) int {
@@ -316,6 +328,19 @@ func safeDetail(status int) string {
 func safeProblem(status int) *huma.ErrorModel {
 	return &huma.ErrorModel{Type: "about:blank", Title: http.StatusText(status), Status: status, Detail: safeDetail(status)}
 }
+
+type ProfileProblemDTO struct {
+	huma.ErrorModel
+	Code  string `json:"code,omitempty" doc:"Стабильный код проверенной ошибки профиля."`
+	Field string `json:"field,omitempty" doc:"Публичный путь к недопустимому полю профиля."`
+}
+
+// Обёртка отделяет проверенную доменную ошибку от произвольных ошибок Huma.
+type trustedProfileProblem struct{ ProfileProblemDTO }
+
+func newProfileProblem(code, field, detail string) *trustedProfileProblem {
+	return &trustedProfileProblem{ProfileProblemDTO{ErrorModel: huma.ErrorModel{Type: "about:blank", Title: http.StatusText(http.StatusUnprocessableEntity), Status: http.StatusUnprocessableEntity, Detail: detail}, Code: code, Field: field}}
+}
 func writeProblem(w http.ResponseWriter, status int) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
@@ -325,6 +350,13 @@ func operation(method, path, id, summary string) huma.Operation {
 	return huma.Operation{Method: method, Path: Prefix + path, OperationID: id, Summary: summary, Errors: []int{400, 404, 408, 409, 413, 415, 422, 503}}
 }
 func register[I, O any](a *API, op huma.Operation, handler func(context.Context, *I) (*O, error)) {
+	var profileErrorResponse *huma.Response
+	if op.OperationID == "create-profile" || op.OperationID == "update-profile" {
+		if op.Responses == nil {
+			op.Responses = map[string]*huma.Response{}
+		}
+		profileErrorResponse = &huma.Response{Description: "Параметры профиля недопустимы.", Content: map[string]*huma.MediaType{"application/problem+json": {Schema: a.huma.OpenAPI().Components.Schemas.Schema(reflect.TypeFor[ProfileProblemDTO](), true, "")}}}
+	}
 	op.MaxBodyBytes = a.config.Limits.JSONBytes
 	op.BodyReadTimeout = a.config.Limits.OperationTimeout
 	huma.Register(a.huma, op, func(ctx context.Context, in *I) (*O, error) {
@@ -338,6 +370,10 @@ func register[I, O any](a *API, op huma.Operation, handler func(context.Context,
 		}
 		return out, a.problem(err)
 	})
+	if profileErrorResponse != nil {
+		// Huma добавляет стандартную схему ошибок при регистрации, поэтому уточняем её после этого шага.
+		op.Responses["422"] = profileErrorResponse
+	}
 }
 
 type transportError int

@@ -38,7 +38,7 @@ func (p Prober) VerifyLoopDuration(ctx context.Context, file *os.File, expected 
 	if err != nil {
 		return err
 	}
-	ends := map[media.Track]*big.Rat{}
+	period := newPreparedPeriod(actual)
 	for n := uint64(0); ; n++ {
 		packet, e := d.Next()
 		if errors.Is(e, io.EOF) {
@@ -51,24 +51,17 @@ func (p Prober) VerifyLoopDuration(ctx context.Context, file *os.File, expected 
 			return ErrLimit
 		}
 		track, base, info := packet.Config().Info().Track, packet.Config().Info().TimeBase, packet.Info()
-		if info.PTS != info.DTS || info.DurationTicks <= 0 {
-			return core.ErrNotReady
+		if e = period.add(track, base, info.PTS, info.DTS, info.DurationTicks); e != nil {
+			return e
 		}
-		begin := ticks(info.DTS, base)
-		if end := ends[track]; end == nil {
-			if begin.Sign() != 0 {
-				return core.ErrNotReady
-			}
-		} else if begin.Cmp(end) != 0 {
-			return core.ErrCorrupt
-		}
-		ends[track] = new(big.Rat).Add(begin, ticks(info.DurationTicks, base))
 	}
 	want := new(big.Rat).SetFrac64(int64(expected), int64(time.Second))
-	for _, track := range []media.Track{media.TrackVideo, media.TrackAudio} {
-		if ends[track] == nil || ends[track].Cmp(want) != 0 {
-			return fmt.Errorf("%w: длина %s не соответствует вычисленной петле %s", core.ErrNotReady, track, expected)
-		}
+	got, err := period.duration()
+	if err != nil {
+		return err
+	}
+	if got.Cmp(want) != 0 {
+		return fmt.Errorf("%w: продолжительность не соответствует вычисленной петле %s", core.ErrNotReady, expected)
 	}
 	return nil
 }
