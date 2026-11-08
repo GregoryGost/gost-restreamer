@@ -128,6 +128,7 @@ func (p *Publisher) attempt(ctx context.Context) (ready bool, result error) {
 	defer cancel()
 	options := p.options.Transport
 	options.Admit, options.OnWrite = p.execution.admit, p.noteWrite
+	options.OnACKAnomaly = p.noteACKAnomaly
 	p.mu.Lock()
 	p.metrics.WireBufferBytes = options.Limits.MaxRetainedBytes
 	p.mu.Unlock()

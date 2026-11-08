@@ -212,6 +212,7 @@ func (o *OutputObserver) ObserveMetrics(ctx context.Context, v OutputMetrics) er
 	v.MediaMetrics = utcMedia(v.MediaMetrics)
 	v.LastWrite = v.LastWrite.UTC()
 	v.LastMedia = v.LastMedia.UTC()
+	v.AckLastAnomalyAt = v.AckLastAnomalyAt.UTC()
 	n.outputMetrics = &v
 	n.metricsStamp = stamp
 	e := a.nodeEvent(n, RuntimeMetricsEvent)

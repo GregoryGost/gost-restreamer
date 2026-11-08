@@ -109,7 +109,7 @@ func transportSelfConn(t *testing.T, conn net.Conn) *OutboundConn {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &OutboundConn{conn: conn, ctx: context.Background(), opts: OutboundOptions{Limits: transportSelfLimits(), Admit: func(context.Context, OutboundOperation) (func(), error) { return func() {}, nil }}, target: target, done: make(chan struct{}), flowChanged: make(chan struct{}), controls: make(chan outboundControl, 16), outboundChunkSize: 128}
+	c := &OutboundConn{conn: conn, ctx: context.Background(), opts: OutboundOptions{Limits: transportSelfLimits(), Admit: func(context.Context, OutboundOperation) (func(), error) { return func() {}, nil }}, target: target, done: make(chan struct{}), controls: make(chan outboundControl, 16), outboundChunkSize: 128}
 	c.streamID.Store(0x01020304)
 	return c
 }
@@ -556,8 +556,8 @@ func TestOutboundHandshakeBytesArePartOfAcknowledgementSequence(t *testing.T) {
 	if err = c.Wait(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if c.peerAcknowledged < 3073 || c.protocolBytes < 3073 || c.handshakeRead != 3073 || c.peerWindow != 256 {
-		t.Fatalf("неверное начало ACK: sent=%d ack=%d read=%d window=%d", c.protocolBytes, c.peerAcknowledged, c.handshakeRead, c.peerWindow)
+	if c.peerAcknowledged < 3073 || c.stats.WrittenBytes < 3073 || c.handshakeRead != 3073 || c.peerWindow != 256 {
+		t.Fatalf("неверное начало ACK: sent=%d ack=%d read=%d window=%d", c.stats.WrittenBytes, c.peerAcknowledged, c.handshakeRead, c.peerWindow)
 	}
 }
 
