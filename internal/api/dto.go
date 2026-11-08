@@ -268,14 +268,19 @@ type GroupProfileDTO struct {
 	Format        FormatDTO        `json:"format"`
 	VideoEncoding VideoEncodingDTO `json:"video_encoding"`
 	AudioEncoding AudioEncodingDTO `json:"audio_encoding"`
+	Encoding      *EncodingDTO     `json:"encoding" doc:"Материализованные настройки кодировщика. null обозначает прежний профиль без новых настроек."`
 }
 
-func (p GroupProfileDTO) domain() core.GroupProfile {
-	return core.GroupProfile{Mode: core.GroupMode(p.Mode), Format: p.Format.domain(), VideoEncoding: core.VideoEncoding{TargetBitrateBPS: uint64(p.VideoEncoding.TargetBitrateBPS), MaxBitrateBPS: uint64(p.VideoEncoding.MaxBitrateBPS), BufferBits: uint64(p.VideoEncoding.BufferBits), GOPFrames: p.VideoEncoding.GOPFrames, MaxBFrames: p.VideoEncoding.MaxBFrames, ClosedGOP: p.VideoEncoding.ClosedGOP}, AudioEncoding: core.AudioEncoding{BitrateBPS: uint64(p.AudioEncoding.BitrateBPS)}}
+func (p GroupProfileInput) domain() (core.GroupProfile, error) {
+	encoding, err := p.Encoding.domain(core.GroupMode(p.Mode))
+	if err != nil {
+		return core.GroupProfile{}, err
+	}
+	return core.GroupProfile{Mode: core.GroupMode(p.Mode), Format: p.Format.domain(), VideoEncoding: core.VideoEncoding{TargetBitrateBPS: uint64(p.VideoEncoding.TargetBitrateBPS), MaxBitrateBPS: uint64(p.VideoEncoding.MaxBitrateBPS), BufferBits: uint64(p.VideoEncoding.BufferBits), GOPFrames: p.VideoEncoding.GOPFrames, MaxBFrames: p.VideoEncoding.MaxBFrames, ClosedGOP: p.VideoEncoding.ClosedGOP}, AudioEncoding: core.AudioEncoding{BitrateBPS: uint64(p.AudioEncoding.BitrateBPS)}, Encoding: encoding}, nil
 }
 func groupProfileDTO(p core.GroupProfile) GroupProfileDTO {
 	v := p.VideoEncoding
-	return GroupProfileDTO{string(p.Mode), formatDTO(p.Format), VideoEncodingDTO{Decimal(v.TargetBitrateBPS), Decimal(v.MaxBitrateBPS), Decimal(v.BufferBits), v.GOPFrames, v.MaxBFrames, v.ClosedGOP}, AudioEncodingDTO{Decimal(p.AudioEncoding.BitrateBPS)}}
+	return GroupProfileDTO{string(p.Mode), formatDTO(p.Format), VideoEncodingDTO{Decimal(v.TargetBitrateBPS), Decimal(v.MaxBitrateBPS), Decimal(v.BufferBits), v.GOPFrames, v.MaxBFrames, v.ClosedGOP}, AudioEncodingDTO{Decimal(p.AudioEncoding.BitrateBPS)}, encodingDTO(p.Encoding)}
 }
 
 type ProfileDTO struct {

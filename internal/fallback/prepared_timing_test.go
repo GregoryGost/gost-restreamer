@@ -3,6 +3,7 @@ package fallback
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -56,9 +57,7 @@ func TestPreparedNormalizationDropsOnlyProvenWholePrimingAndChecksPeriod(t *test
 			doc := selfPreparedMetadata()
 			if durationAbsent {
 				for i := range doc.Packets {
-					if doc.Packets[i].Type == "audio" {
-						doc.Packets[i].Duration = nil
-					}
+					doc.Packets[i].Duration = nil
 				}
 			}
 			encoded, err := json.Marshal(doc)
@@ -92,7 +91,7 @@ func TestPreparedNormalizationDropsOnlyProvenWholePrimingAndChecksPeriod(t *test
 	}
 }
 func TestPreparedNormalizationRejectsUnknownPartialPaddingAndUnprovenTime(t *testing.T) {
-	for _, scenario := range []string{"missing-side", "partial-skip", "discard-tail", "unknown-side", "missing-dts", "unknown-index", "truncated-json", "unequal-loop", "b-frame", "changed-probe-time", "output-budget", "cancel", "missing-sequence", "initialization-limit", "packet-limit", "truncated-raw"} {
+	for _, scenario := range []string{"missing-side", "partial-skip", "discard-tail", "unknown-side", "missing-dts", "unknown-index", "truncated-json", "unequal-loop", "b-frame", "changed-probe-time", "output-budget", "cancel", "missing-sequence", "initialization-limit", "packet-limit", "truncated-raw", "missing-duration-wrong-container"} {
 		t.Run(scenario, func(t *testing.T) {
 			doc := selfPreparedMetadata()
 			switch scenario {
@@ -104,6 +103,10 @@ func TestPreparedNormalizationRejectsUnknownPartialPaddingAndUnprovenTime(t *tes
 				doc.Packets[1].Side[0].Discard = 1
 			case "unknown-side":
 				doc.Packets[1].Side[0].Type = "unknown"
+			case "missing-duration-wrong-container":
+				for i := range doc.Packets {
+					doc.Packets[i].Duration = nil
+				}
 			case "missing-dts":
 				doc.Packets[0].DTS = nil
 			case "unknown-index":
@@ -143,6 +146,23 @@ func TestPreparedNormalizationRejectsUnknownPartialPaddingAndUnprovenTime(t *tes
 				limit = 8
 			}
 			raw := selfRawAV1Counts(t, scenario == "missing-sequence", 48, 76)
+			if scenario == "missing-duration-wrong-container" {
+				if _, err = raw.Seek(0, io.SeekStart); err != nil {
+					t.Fatal(err)
+				}
+				data, e := io.ReadAll(raw)
+				if e != nil {
+					t.Fatal(e)
+				}
+				at := bytes.Index(data, []byte("trun"))
+				if at < 0 || len(data)-at < 20 {
+					t.Fatal("нет первого trun")
+				}
+				binary.BigEndian.PutUint32(data[at+16:at+20], 2)
+				if _, e = raw.WriteAt(data, 0); e != nil {
+					t.Fatal(e)
+				}
+			}
 			if scenario == "truncated-raw" {
 				info, e := raw.Stat()
 				if e != nil {

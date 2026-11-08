@@ -113,14 +113,14 @@ type DestinationPatch struct {
 	Body DestinationPatchBody
 }
 type ProfileCreateBody struct {
-	Name    string          `json:"name" minLength:"1"`
-	Profile GroupProfileDTO `json:"profile"`
+	Name    string            `json:"name" minLength:"1"`
+	Profile GroupProfileInput `json:"profile"`
 }
 type ProfileCreate struct{ Body ProfileCreateBody }
 type ProfilePatchBody struct {
-	ExpectedRevision Decimal                `json:"expected_revision"`
-	Name             Field[string]          `json:"name,omitempty"`
-	Profile          Field[GroupProfileDTO] `json:"profile,omitempty"`
+	ExpectedRevision Decimal                  `json:"expected_revision"`
+	Name             Field[string]            `json:"name,omitempty"`
+	Profile          Field[GroupProfileInput] `json:"profile,omitempty" doc:"Полная замена профиля. Отсутствующее поле сохраняет прежний профиль; новые настройки действуют со следующего запуска."`
 }
 type ProfilePatch struct {
 	IDInput
@@ -285,7 +285,11 @@ func (a *API) registerConfiguration() {
 	op = operation("POST", "/transcode-profiles", "create-profile", "Создать профиль.")
 	op.DefaultStatus = 201
 	register(a, op, func(ctx context.Context, i *ProfileCreate) (*Created[ProfileDTO], error) {
-		p, e := c.CreateProfile(ctx, core.TranscodeProfile{Name: i.Body.Name, Profile: i.Body.Profile.domain()})
+		profile, e := i.Body.Profile.domain()
+		if e != nil {
+			return nil, e
+		}
+		p, e := c.CreateProfile(ctx, core.TranscodeProfile{Name: i.Body.Name, Profile: profile})
 		return &Created[ProfileDTO]{Prefix + "/transcode-profiles/" + string(p.ID), profileDTO(p)}, e
 	})
 	register(a, operation("GET", "/transcode-profiles/{id}", "get-profile", "Получить профиль."), func(ctx context.Context, i *IDInput) (*Result[ProfileDTO], error) {
@@ -308,7 +312,10 @@ func (a *API) registerConfiguration() {
 			if b.Profile.Null {
 				return nil, core.ErrInvalid
 			}
-			p.Profile = b.Profile.Value.domain()
+			p.Profile, e = b.Profile.Value.domain()
+			if e != nil {
+				return nil, e
+			}
 		}
 		p, e = c.UpdateProfile(ctx, p, uint64(b.ExpectedRevision))
 		return &Result[ProfileDTO]{profileDTO(p)}, e

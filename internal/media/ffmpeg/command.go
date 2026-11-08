@@ -9,6 +9,7 @@ import (
 
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/media"
+	"github.com/GregoryGost/gost-restreamer/internal/media/encoding"
 	"github.com/GregoryGost/gost-restreamer/internal/media/fmp4"
 )
 
@@ -86,25 +87,21 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 		return invalid("timescale превышает диапазон FFmpeg")
 	}
 	n := func(x uint64) string { return strconv.FormatUint(x, 10) }
-	rangeName := v.Color.Range
-	if rangeName == "limited" {
-		rangeName = "tv"
+	plan, err := encoding.Compile(p, encoding.Live)
+	if err != nil {
+		return invalid("неподдержанный профиль кодирования")
 	}
-	if rangeName == "full" {
-		rangeName = "pc"
+	filter := fmt.Sprintf("fps=fps=%d/%d:round=near:eof_action=round", fps.Numerator, fps.Denominator)
+	if p.Encoding.Version == 0 || p.Encoding.RescaleOutput {
+		filter += fmt.Sprintf(",scale_cuda=w=%d:h=%d:format=yuv420p", v.Width, v.Height)
+	} else if c.Input.Video.Width != v.Width || c.Input.Video.Height != v.Height {
+		return invalid("rescale_output=false требует совпадения входных и выходных размеров")
 	}
 	// async сохраняет конечное окно для обратного чтения заголовков; ignidx останавливает поиск на текущем mdat.
 	args := []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-progress", "pipe:1", "-stats_period", "2", "-nostats", "-xerror", "-copyts", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-c:v", "av1_cuvid", "-flags2:a", "+skip_manual", "-f", "mp4", "-fflags", "+ignidx", "-i", "async:unix:" + a.InputPath,
-		"-map", "0:v:0", "-map", "0:a:0", "-vf", fmt.Sprintf("fps=fps=%d/%d:round=near:eof_action=round,scale_cuda=w=%d:h=%d:format=yuv420p", fps.Numerator, fps.Denominator, v.Width, v.Height),
-		"-c:v", "h264_nvenc", "-profile:v", v.CodecProfile, "-pix_fmt", "cuda", "-rc", "vbr",
-		"-b:v", n(p.VideoEncoding.TargetBitrateBPS), "-maxrate:v", n(p.VideoEncoding.MaxBitrateBPS), "-bufsize:v", n(p.VideoEncoding.BufferBits),
-		"-g:v", n(uint64(p.VideoEncoding.GOPFrames)), "-bf:v", n(uint64(p.VideoEncoding.MaxBFrames)), "-flags:v", "+cgop", "-no-scenecut", "1", "-forced-idr", "1",
-		"-fps_mode:v", "passthrough", "-enc_time_base:v", "filter",
-		"-color_range:v", rangeName, "-color_primaries:v", v.Color.Primaries, "-color_trc:v", v.Color.Transfer, "-colorspace:v", v.Color.Matrix,
-		"-c:a", "aac", "-profile:a", "aac_low", "-b:a", n(p.AudioEncoding.BitrateBPS), "-ar:a", n(uint64(au.SampleRateHz)), "-ac:a", n(uint64(au.Channels)), "-channel_layout:a", au.ChannelLayout}
-	if v.Level != "" {
-		args = append(args, "-level:v", v.Level)
-	}
+		"-map", "0:v:0", "-map", "0:a:0", "-vf", filter, "-pix_fmt", "cuda", "-fps_mode:v", "passthrough", "-enc_time_base:v", "filter"}
+	args = append(args, plan.Video...)
+	args = append(args, plan.Audio...)
 	args = append(args, "-f", "mp4", "-movflags", "delay_moov+default_base_moof+frag_every_frame", "-min_frag_duration", "1", "-use_editlist", "1", "-movie_timescale", n(uint64(movieScale)), "-video_track_timescale", n(uint64(videoScale)), "-avoid_negative_ts", "disabled", "unix:"+a.OutputPath)
 	return Command{Binary: c.Binary, Args: args}, nil
 }

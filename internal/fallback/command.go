@@ -8,6 +8,7 @@ import (
 
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/media"
+	"github.com/GregoryGost/gost-restreamer/internal/media/encoding"
 	"github.com/GregoryGost/gost-restreamer/internal/media/fmp4"
 )
 
@@ -67,6 +68,10 @@ func buildCommand(binary string, req GenerateRequest, testEncoder string) (Comma
 	if err != nil || scale > math.MaxInt32 || fps.Numerator > math.MaxInt32 {
 		return Command{}, ErrInvalid
 	}
+	videoScale, err := preparedVideoScale(fps, scale)
+	if err != nil {
+		return Command{}, err
+	}
 	n := func(v uint64) string { return strconv.FormatUint(v, 10) }
 	duration := durationArgument(req.LoopDuration)
 	padding := req.LoopDuration - req.Source.Duration
@@ -94,7 +99,7 @@ func buildCommand(binary string, req GenerateRequest, testEncoder string) (Comma
 			return Command{}, ErrInvalid
 		}
 		encoder = "libsvtav1"
-		if e.TargetBitrateBPS != e.MaxBitrateBPS || e.BufferBits*1000%e.TargetBitrateBPS != 0 || e.BufferBits*1000/e.TargetBitrateBPS < 20 || e.BufferBits*1000/e.TargetBitrateBPS > 10000 {
+		if p.Encoding.Version == 0 && (e.TargetBitrateBPS != e.MaxBitrateBPS || e.BufferBits*1000%e.TargetBitrateBPS != 0 || e.BufferBits*1000/e.TargetBitrateBPS < 20 || e.BufferBits*1000/e.TargetBitrateBPS > 10000) {
 			return Command{}, fmt.Errorf("%w: AV1 поддерживает CBR с точным буфером 20–10000 ms", ErrInvalid)
 		}
 	case core.CodecH264:
@@ -104,33 +109,30 @@ func buildCommand(binary string, req GenerateRequest, testEncoder string) (Comma
 	default:
 		return Command{}, ErrInvalid
 	}
+	plan, err := encoding.Compile(p, encoding.Prepared)
+	if err != nil {
+		return Command{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
 	if testEncoder != "" {
-		encoder = testEncoder
-	}
-	args = append(args, "-vf", fmt.Sprintf("fps=fps=%d/%d:round=near:eof_action=round,tpad=stop_mode=clone:stop_duration=%s,scale=w=%d:h=%d,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709", fps.Numerator, fps.Denominator, durationArgument(padding), v.Width, v.Height), "-c:v", encoder, "-b:v", n(e.TargetBitrateBPS), "-maxrate:v", n(e.MaxBitrateBPS), "-bufsize:v", n(e.BufferBits), "-g:v", n(uint64(e.GOPFrames)), "-flags:v", "+cgop", "-fps_mode:v", "passthrough", "-enc_time_base:v", "filter")
-	if v.Codec == core.CodecAV1 {
-		args = append(args, "-svtav1-params", "rc=2:mbr=0:pred-struct=1:scd=0:enable-overlays=0:enable-dg=0:hierarchical-levels=0:enable-tf=0", "-preset", "8")
-	} else {
-		args = append(args, "-profile:v", v.CodecProfile, "-bf:v", n(uint64(e.MaxBFrames)))
-		if encoder == "h264_nvenc" {
-			args = append(args, "-no-scenecut", "1", "-forced-idr", "1")
+		// Явная тестовая подстановка не меняет рабочий выбор кодировщика.
+		plan.Video[1] = testEncoder
+		if encoder == "h264_nvenc" && testEncoder == "libx264" {
+			var adapted []string
+			for i := 0; i < len(plan.Video); i += 2 {
+				switch plan.Video[i] {
+				case "-no-scenecut", "-forced-idr", "-rc", "-preset", "-tune", "-multipass", "-rc-lookahead", "-spatial-aq", "-temporal-aq", "-aq-strength", "-nonref_p", "-strict_gop":
+					continue
+				}
+				adapted = append(adapted, plan.Video[i:i+2]...)
+			}
+			plan.Video = append(adapted, "-sc_threshold", "0")
 		}
-		if encoder == "libx264" {
-			args = append(args, "-sc_threshold", "0")
-		}
 	}
-	if v.Level != "" && v.Level != "auto" {
-		args = append(args, "-level:v", v.Level)
-	}
+	args = append(args, "-vf", fmt.Sprintf("fps=fps=%d/%d:round=near:eof_action=round,tpad=stop_mode=clone:stop_duration=%s,scale=w=%d:h=%d,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709", fps.Numerator, fps.Denominator, durationArgument(padding), v.Width, v.Height), "-fps_mode:v", "passthrough", "-enc_time_base:v", "filter")
+	args = append(args, plan.Video...)
 	args = append(args, "-af", "apad=pad_dur="+duration)
-	rangeName := v.Color.Range
-	if rangeName == "limited" {
-		rangeName = "tv"
-	}
-	if rangeName == "full" {
-		rangeName = "pc"
-	}
-	args = append(args, "-color_range:v", rangeName, "-color_primaries:v", v.Color.Primaries, "-color_trc:v", v.Color.Transfer, "-colorspace:v", v.Color.Matrix, "-c:a", "aac", "-profile:a", "aac_low", "-b:a", n(p.AudioEncoding.BitrateBPS), "-ar:a", n(uint64(a.SampleRateHz)), "-ac:a", n(uint64(a.Channels)), "-channel_layout:a", a.ChannelLayout, "-t", duration, "-f", "mp4", "-movflags", "delay_moov+default_base_moof+frag_every_frame", "-min_frag_duration", "1", "-use_editlist", "1", "-movie_timescale", n(uint64(scale)), "-video_track_timescale", n(uint64(fps.Numerator)), "-avoid_negative_ts", "disabled", "pipe:1")
+	args = append(args, plan.Audio...)
+	args = append(args, "-t", duration, "-f", "mp4", "-movflags", "delay_moov+default_base_moof+frag_every_frame", "-min_frag_duration", "1", "-use_editlist", "1", "-movie_timescale", n(uint64(scale)), "-video_track_timescale", n(uint64(videoScale)), "-avoid_negative_ts", "disabled", "pipe:1")
 	return Command{Binary: binary, Args: args}, nil
 }
 func gcd(a, b uint64) uint64 {

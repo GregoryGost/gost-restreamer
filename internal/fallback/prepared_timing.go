@@ -48,7 +48,7 @@ func (p Prober) inspectPreparedTiming(ctx context.Context, input *os.File, actua
 		return nil, err
 	}
 	var out bytes.Buffer
-	cmd := Command{Binary: p.Binary, Args: []string{"-v", "error", "-protocol_whitelist", "fd,pipe", "-format_whitelist", "mov", "-fd", "3", "-i", "fd:", "-show_packets", "-show_streams", "-show_entries", "packet=codec_type,stream_index,pts,dts,duration:packet_side_data=side_data_type,skip_samples,discard_padding:stream=index,codec_type,time_base", "-of", "json"}}
+	cmd := Command{Binary: p.Binary, Args: []string{"-v", "error", "-protocol_whitelist", "fd,pipe", "-format_whitelist", "mov", "-fflags", "+nofillin", "-fd", "3", "-i", "fd:", "-show_packets", "-show_streams", "-show_entries", "packet=codec_type,stream_index,pts,dts,duration:packet_side_data=side_data_type,skip_samples,discard_padding:stream=index,codec_type,time_base", "-of", "json"}}
 	if _, err := p.Runner.Run(ctx, cmd, input, &boundedWriter{w: &out, remaining: p.Limits.MaxJSONBytes}); err != nil {
 		return nil, err
 	}
@@ -81,11 +81,16 @@ func (p Prober) inspectPreparedTiming(ctx context.Context, input *os.File, actua
 	}
 	for _, packet := range doc.Packets {
 		track, ok := indices[packet.Index]
-		if ok && track == media.TrackAudio && packet.Duration == nil {
-			// AAC-LC подтверждает 1024 аудиосэмпла; точное значение ещё сверяется с единицей доступа fMP4.
+		if ok && packet.Duration == nil {
+			// ffprobe без синтетического заполнения не всегда сообщает duration.
+			// Ожидание вычисляется из формата и обязательно сверяется с duration самого fMP4.
 			base := plan.bases[track]
-			n := new(big.Int).SetUint64(1024 * uint64(base.Denominator))
-			d := new(big.Int).SetUint64(uint64(base.Numerator) * uint64(actual.Audio.SampleRateHz))
+			numerator, denominator := uint64(1024), uint64(actual.Audio.SampleRateHz)
+			if track == media.TrackVideo {
+				numerator, denominator = uint64(actual.Video.FrameRate.Denominator), uint64(actual.Video.FrameRate.Numerator)
+			}
+			n := new(big.Int).Mul(new(big.Int).SetUint64(numerator), new(big.Int).SetUint64(uint64(base.Denominator)))
+			d := new(big.Int).Mul(new(big.Int).SetUint64(denominator), new(big.Int).SetUint64(uint64(base.Numerator)))
 			q, r := new(big.Int), new(big.Int)
 			q.QuoRem(n, d, r)
 			if r.Sign() != 0 || !q.IsInt64() {
@@ -108,34 +113,26 @@ func (p Prober) inspectPreparedTiming(ctx context.Context, input *os.File, actua
 		return nil, fmt.Errorf("%w: не подтверждён целый пакет задержки AAC-кодировщика", core.ErrNotReady)
 	}
 	firstEnd := new(big.Rat).Add(ticks(*first.DTS, plan.bases[media.TrackAudio]), ticks(*first.Duration, plan.bases[media.TrackAudio]))
-	if *first.PTS != *first.DTS || firstEnd.Sign() != 0 || *audio[1].DTS != 0 || *video[0].DTS != 0 || *video[0].PTS != 0 {
+	if *first.PTS != *first.DTS || firstEnd.Sign() != 0 || *audio[1].DTS != 0 {
 		return nil, fmt.Errorf("%w: неподдержанное начальное смещение A/V", core.ErrNotReady)
 	}
-	ends := map[media.Track]*big.Rat{}
+	period := newPreparedPeriod(actual)
 	for track, packets := range plan.packets {
 		start := 0
 		if track == media.TrackAudio {
 			start = 1
 		}
-		var previousEnd *big.Rat
 		for _, packet := range packets[start:] {
-			base := plan.bases[track]
-			if len(packet.Side) != 0 || *packet.DTS < 0 || *packet.PTS != *packet.DTS {
-				return nil, fmt.Errorf("%w: отрицательные или переставленные единицы доступа либо неизвестное заполнение", core.ErrNotReady)
+			if len(packet.Side) != 0 {
+				return nil, core.ErrNotReady
 			}
-			if track == media.TrackVideo && !exactDuration(*packet.Duration, base, actual.Video.FrameRate) || track == media.TrackAudio && !exactAudioDuration(*packet.Duration, base, actual.Audio.SampleRateHz) {
-				return nil, fmt.Errorf("%w: продолжительность %s %d в %v", core.ErrCorrupt, track, *packet.Duration, base)
+			if err := period.add(track, plan.bases[track], *packet.PTS, *packet.DTS, *packet.Duration); err != nil {
+				return nil, err
 			}
-			begin := ticks(*packet.DTS, base)
-			if previousEnd != nil && begin.Cmp(previousEnd) != 0 {
-				return nil, fmt.Errorf("%w: разрыв %s %s после %s", core.ErrCorrupt, track, begin, previousEnd)
-			}
-			previousEnd = new(big.Rat).Add(begin, ticks(*packet.Duration, base))
 		}
-		ends[track] = previousEnd
 	}
-	if ends[media.TrackVideo].Cmp(ends[media.TrackAudio]) != 0 {
-		return nil, fmt.Errorf("%w: дорожки не имеют общего полного периода петли", core.ErrNotReady)
+	if _, err := period.duration(); err != nil {
+		return nil, err
 	}
 	return plan, nil
 }
