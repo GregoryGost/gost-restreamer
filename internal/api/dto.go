@@ -185,28 +185,28 @@ func policyDTO(p core.FallbackPolicy) *PolicyDTO {
 
 type StreamDTO struct {
 	RecordDTO
-	Name                     string     `json:"name"`
-	PublicationKeyConfigured bool       `json:"publication_key_configured"`
-	Fallback                 *PolicyDTO `json:"fallback"`
+	Name           string     `json:"name"`
+	PublicationKey string     `json:"publication_key" doc:"Сохранённый постоянный ключ публикации OBS. В Session возвращается ключ из снимка запуска."`
+	Fallback       *PolicyDTO `json:"fallback"`
 }
 
 func streamDTO(s core.Stream) StreamDTO {
-	return StreamDTO{recordDTO(s.Record), s.Name, s.PublicationKey != "", policyDTO(s.Fallback)}
+	return StreamDTO{recordDTO(s.Record), s.Name, s.PublicationKey, policyDTO(s.Fallback)}
 }
 
 type DestinationDTO struct {
 	RecordDTO
-	StreamID            string `json:"stream_id"`
-	GroupID             string `json:"group_id"`
-	Name                string `json:"name"`
-	Platform            string `json:"platform"`
-	EndpointConfigured  bool   `json:"endpoint_configured"`
-	StreamKeyConfigured bool   `json:"stream_key_configured"`
-	Enabled             bool   `json:"enabled"`
+	StreamID  string `json:"stream_id"`
+	GroupID   string `json:"group_id"`
+	Name      string `json:"name"`
+	Platform  string `json:"platform"`
+	Endpoint  string `json:"endpoint" doc:"Полный сохранённый адрес назначения, включая учётные данные и параметры запроса. В Output возвращается адрес из снимка выхода."`
+	StreamKey string `json:"stream_key" doc:"Сохранённый ключ назначения. Пустая строка допустима. В Output возвращается ключ из снимка выхода."`
+	Enabled   bool   `json:"enabled"`
 }
 
 func destinationDTO(d core.Destination) DestinationDTO {
-	return DestinationDTO{recordDTO(d.Record), string(d.StreamID), string(d.GroupID), d.Name, d.Platform, d.Endpoint != "", d.StreamKey != "", d.Enabled}
+	return DestinationDTO{recordDTO(d.Record), string(d.StreamID), string(d.GroupID), d.Name, d.Platform, d.Endpoint, d.StreamKey, d.Enabled}
 }
 
 type FrameRateDTO struct {

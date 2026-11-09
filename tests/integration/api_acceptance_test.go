@@ -50,14 +50,48 @@ func integrationAPIRequest(t *testing.T, a http.Handler, method, path, body stri
 	if w.Code != status {
 		t.Fatalf("%s %s: status=%d want=%d body=%s", method, path, w.Code, status, w.Body)
 	}
-	for _, secret := range []string{"synthetic-session-key", "synthetic-key-0", `"incarnation"`, `"attempt_token"`, `"managed_path"`, `"fingerprint"`, `"identity"`, `"endpoint"`, `"stream_key"`, `"publication_key"`} {
+	for _, secret := range []string{`"incarnation"`, `"attempt_token"`, `"managed_path"`, `"fingerprint"`, `"identity"`} {
 		if strings.Contains(w.Body.String(), secret) {
 			t.Fatalf("публичный ответ раскрыл %q", secret)
 		}
 	}
+	noKeys := func(data string) {
+		t.Helper()
+		for _, secret := range []string{"synthetic-session-key", "synthetic-key-0", `"endpoint"`, `"stream_key"`, `"publication_key"`} {
+			if strings.Contains(data, secret) {
+				t.Fatalf("ответ вне конфигурации раскрыл %q", secret)
+			}
+		}
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, api.Prefix+"/"), "/")
+	configurationResponse := false
+	switch parts[0] {
+	case "streams", "destinations":
+		switch {
+		case len(parts) == 1:
+			configurationResponse = method == "GET" && status == 200 || method == "POST" && status == 201
+		case len(parts) == 2:
+			configurationResponse = (method == "GET" || method == "PATCH") && status == 200
+		case len(parts) == 3 && parts[0] == "streams" && (parts[2] == "destinations" || parts[2] == "sessions"):
+			configurationResponse = method == "GET" && status == 200
+		}
+	case "sessions":
+		historyResponse := len(parts) == 1 || len(parts) == 2 || len(parts) == 3 && parts[2] == "outputs" || len(parts) == 4 && parts[2] == "outputs"
+		configurationResponse = method == "GET" && status == 200 && historyResponse
+	}
+	if !configurationResponse {
+		noKeys(w.Body.String())
+	}
 	var v map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
 		t.Fatal(err)
+	}
+	if runtime := v["runtime"]; runtime != nil {
+		data, err := json.Marshal(runtime)
+		if err != nil {
+			t.Fatal(err)
+		}
+		noKeys(string(data))
 	}
 	if status == 202 {
 		if w.Header().Get("Location") != api.Prefix+"/commands/"+v["id"].(string) {
