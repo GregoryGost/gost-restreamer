@@ -21,7 +21,7 @@ func conversionCommandConfig() ffmpeg.NVIDIAConfig {
 	output.Video.Width, output.Video.Height = 1920, 1080
 	output.Video.FrameRate = core.FrameRate{Numerator: 30, Denominator: 1}
 	output.Audio.SampleRateHz = 44100
-	return ffmpeg.NVIDIAConfig{Binary: "/usr/bin/ffmpeg", Input: input, VideoTimeBase: media.TimeBase{Numerator: 1, Denominator: 60000}, AudioTimeBase: media.TimeBase{Numerator: 1, Denominator: 48000}, Profile: core.GroupProfile{Mode: core.ModeTranscode, Format: output, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 6000000, MaxBitrateBPS: 8000000, BufferBits: 12000000, GOPFrames: 60, MaxBFrames: 2, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 192000}}}
+	return ffmpeg.NVIDIAConfig{Binary: "/usr/bin/ffmpeg", Input: input, VideoTimeBase: media.TimeBase{Numerator: 1, Denominator: 60000}, AudioTimeBase: media.TimeBase{Numerator: 1, Denominator: 48000}, Profile: core.GroupProfile{Mode: core.ModeTranscode, LiveAudioMode: core.LiveAudioTranscode, Format: output, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 6000000, MaxBitrateBPS: 8000000, BufferBits: 12000000, GOPFrames: 60, MaxBFrames: 2, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 192000}}}
 }
 
 func conversionArgument(t *testing.T, args []string, flag string) string {

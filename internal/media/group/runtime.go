@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"net"
@@ -549,6 +550,10 @@ func (g *Group) consumeLive(ctx context.Context) {
 					continue
 				}
 				g.noteInput(Live, d.Packet)
+				if e = g.validateLiveAudio(d.AudioConfig); e != nil {
+					err = e
+					break
+				}
 				e = g.push(ctx, Live, attempt, d.Packet, d.VideoConfig, d.AudioConfig)
 				if e != nil && !errors.Is(e, ErrUnavailable) && !errors.Is(e, ErrFeed) {
 					err = e
@@ -746,6 +751,23 @@ func (g *Group) readOutputObserved(ctx context.Context, c net.Conn, feed Feed, a
 		}
 	}
 }
+func (g *Group) validateLiveAudio(audio media.CodecConfig) error {
+	if g.config.Switcher.Profile.EffectiveLiveAudioMode() == core.LiveAudioCopy {
+		actual, parseErr := codec.AudioFormatASC(audio.Headers())
+		expected := g.config.Switcher.Profile.Format.Audio
+		if parseErr != nil || actual != audio.Info().Audio || actual != expected {
+			err := fmt.Errorf("%w: LIVE AAC copy: ASC=%+v, входной формат=%+v, ожидаемый формат=%+v", codec.ErrCodec, actual, audio.Info().Audio, expected)
+			if parseErr != nil {
+				err = fmt.Errorf("%w: %w", err, parseErr)
+			}
+			if g.config.Logger != nil {
+				g.config.Logger.Error("group_live", "component", "group", "operation", "validate_audio", "session_id", g.parent.SessionID, "group_id", g.id, "group_instance_id", g.observer.Token(), "error", err)
+			}
+			return err
+		}
+	}
+	return nil
+}
 func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt uint64) error {
 	first, err := sub.Next(ctx)
 	if err != nil {
@@ -755,6 +777,9 @@ func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt 
 		return ErrFeed
 	}
 	g.noteInput(Live, first.Packet)
+	if err = g.validateLiveAudio(first.AudioConfig); err != nil {
+		return err
+	}
 	observer, err := g.observer.OpenFFmpegRole(ctx, core.FFmpegLiveTranscode)
 	if err != nil {
 		return err

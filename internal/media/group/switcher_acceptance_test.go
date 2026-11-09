@@ -238,7 +238,7 @@ func TestSwitcherRejectsRegressingAttemptAndKeepsSubscriptionThroughPause(t *tes
 		t.Fatal(err)
 	}
 	lv, la := switchAcceptanceConfigs(t, 2, 2)
-	for i := int64(0); i < 3; i++ {
+	for i := range int64(3) {
 		at := now.Add(time.Duration(i+1) * 150 * time.Millisecond)
 		pushSwitchAcceptance(t, s, Live, 1, switchAcceptancePacket(t, lv, i, i, 1, true), lv, la, at)
 		pushSwitchAcceptance(t, s, Live, 1, switchAcceptancePacket(t, la, i*1600, i*1600, 1024, false), lv, la, at)
@@ -289,7 +289,7 @@ func TestSwitcherAV1RationalCadenceRemainsContinuousOverRepeatedLoops(t *testing
 	var audio int64
 	var outputEpoch uint64
 	last := map[media.Track]*big.Rat{}
-	for frame := int64(0); frame < 180; frame++ {
+	for frame := range int64(180) {
 		at := now.Add(time.Duration(frame) * 1001 * time.Second / 30000)
 		p, err := media.NewPacket(media.PacketInfo{PTS: frame * 1001, DTS: frame * 1001, DurationTicks: 1001, Keyframe: false}, v, append(v.Headers()[4:], 0x1a, 1, 0x10))
 		if err != nil {

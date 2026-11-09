@@ -35,6 +35,44 @@ func completeProfileV2(data []byte) error {
 	if err != nil {
 		return err
 	}
+	return completeProfileFields(root, false)
+}
+
+func (p *GroupProfile) unmarshalProfileV3(data []byte) error {
+	fail := func(err error) error { return &MetadataError{Kind: "profile", Version: profileVersionV3, Cause: err} }
+	var d profileMetadataV3
+	if err := strictJSON(data, &d); err != nil {
+		return fail(err)
+	}
+	root, err := requiredProfileObject(data, true, "Version", "Mode", "LiveAudioMode", "Format", "VideoEncoding", "AudioEncoding")
+	if err != nil {
+		return fail(err)
+	}
+	if _, ok := root["Encoding"]; !ok {
+		return fail(ErrInvalidMetadata)
+	}
+	if d.Version != profileVersionV3 || d.Format.Version != MetadataVersion || d.LiveAudioMode == "" {
+		return fail(ErrInvalidMetadata)
+	}
+	if err := completeProfileFields(root, true); err != nil {
+		return fail(err)
+	}
+	result := GroupProfile{Mode: d.Mode, LiveAudioMode: d.LiveAudioMode, Format: d.Format.value(), VideoEncoding: d.VideoEncoding, AudioEncoding: d.AudioEncoding}
+	if d.Encoding != nil {
+		if d.Encoding.Version != EncodingVersion {
+			return fail(ErrInvalidMetadata)
+		}
+		result.Encoding = *d.Encoding
+	}
+	if err := result.Validate(); err != nil {
+		return fail(err)
+	}
+	*p = result
+	return nil
+}
+
+func completeProfileFields(root map[string]json.RawMessage, nullableEncoding bool) error {
+	var err error
 	if _, err = requiredProfileObject(root["VideoEncoding"], true, "TargetBitrateBPS", "MaxBitrateBPS", "BufferBits", "GOPFrames", "MaxBFrames", "ClosedGOP"); err != nil {
 		return err
 	}
@@ -54,6 +92,9 @@ func completeProfileV2(data []byte) error {
 	}
 	if _, err = requiredProfileObject(format["Audio"], false, "Codec", "CodecProfile", "SampleRateHz", "Channels", "ChannelLayout"); err != nil {
 		return err
+	}
+	if nullableEncoding && bytes.Equal(bytes.TrimSpace(root["Encoding"]), []byte("null")) {
+		return nil
 	}
 	encoding, err := requiredProfileObject(root["Encoding"], true, "Version", "VideoEncoder", "AudioEncoder", "RateControl", "RescaleOutput", "VideoCustom", "AudioCustom", "NVENC", "SVTAV1")
 	if err != nil {

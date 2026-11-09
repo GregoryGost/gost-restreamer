@@ -80,7 +80,7 @@ func TestWALGrowthWithHeldReaderAndCheckpointAfterRelease(t *testing.T) {
 
 	expected := []core.Stream{initial}
 	var firstSize int64
-	for i := 0; i < 24; i++ {
+	for i := range 24 {
 		stream := deliveryStream(core.ID(fmt.Sprintf("committed-stream-%02d", i)), strings.Repeat("Данные потока ", 256))
 		stream.CreatedAt = stream.CreatedAt.Add(time.Duration(i+1) * time.Second)
 		stream.UpdatedAt = stream.CreatedAt
@@ -209,7 +209,7 @@ func openDeliveryStore(t *testing.T, options Options) (*Store, string) {
 
 func deliveryStream(id core.ID, name string) core.Stream {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	return core.Stream{Record: core.Record{ID: id, Revision: 1, CreatedAt: now, UpdatedAt: now}, Name: name, PublicationKey: string(id) + "-synthetic-key"}
+	return core.Stream{ID: id, Revision: 1, CreatedAt: now, UpdatedAt: now, Name: name, PublicationKey: string(id) + "-synthetic-key"}
 }
 
 type deliveryCheckpointResult struct{ busy, frames, checkpointed int }

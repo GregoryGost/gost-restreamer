@@ -261,8 +261,7 @@ func (s *Supervisor) runAttempt(parent context.Context, w Worker, id uint64) (re
 		n, err = newNamespace(s.config.BaseDir, sessionHash, w.Topology == FileInput)
 	}
 	if err != nil {
-		var partial *namespaceCreationError
-		if errors.As(err, &partial) {
+		if partial, ok := errors.AsType[*namespaceCreationError](err); ok {
 			return err, partial.cleanup
 		}
 		return err, nil

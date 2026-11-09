@@ -172,7 +172,7 @@ func acceptanceIdleHTTP(t *testing.T, a *Application) (net.Conn, *bufio.Reader) 
 func TestAcceptanceApplicationBootPersistenceAndTransportStop(t *testing.T) {
 	c := acceptanceConfig(t, acceptanceHelper(t))
 	var streamID, previousIncarnation string
-	for cycle := 0; cycle < 2; cycle++ {
+	for cycle := range 2 {
 		log := &acceptanceLog{}
 		d := acceptanceDependencies(log)
 		opens := 0

@@ -286,7 +286,8 @@ func (n *sessionNode) waitOutputCleanup(ctx context.Context, id core.ID, generat
 				return err
 			}
 		}
-	} else if member != nil {
+	}
+	if member != nil {
 		if err := member.close(ctx); err != nil {
 			return err
 		}

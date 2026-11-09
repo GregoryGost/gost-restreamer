@@ -54,7 +54,7 @@ func TestAcceptanceRatesFenceEveryIdentityAndRecoverFromUnavailable(t *testing.T
 				t.Fatal(err)
 			}
 			id := SourceIdentity{Token: 1, Attempt: 1, LeaseID: "publication", Kind: SourceInput}
-			for n := 0; n < 3; n++ {
+			for n := range 3 {
 				at := start.Add(time.Duration(n) * time.Second)
 				c.Sample(id, RawCounters{SampledAt: at, VideoFrames: uint64(30 * n), PayloadBytes: uint64(1000 * n)}, at)
 			}

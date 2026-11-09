@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"maps"
 	"math"
 	"os"
 	"testing"
@@ -220,9 +221,7 @@ func TestExplicitStoredEncodingRejectsIncompleteValuesWithoutDefaults(t *testing
 				t.Fatal(err)
 			}
 			envelope := map[string]json.RawMessage{}
-			for k, v := range fields {
-				envelope[k] = v
-			}
+			maps.Copy(envelope, fields)
 			envelope["Encoding"] = b
 			b, err = json.Marshal(envelope)
 			if err != nil {

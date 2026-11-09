@@ -158,13 +158,13 @@ func TestSubscriptionAcceptanceConcurrentTransferConservation(t *testing.T) {
 	}()
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			publishRouter(t, src, routerPacket(t, v, 0, 0, true, 1))
 			publishRouter(t, src, routerPacket(t, a, 0, 0, false, 2))
 		}
 	})
 	wg.Go(func() {
-		for i := 0; i < 400; i++ {
+		for range 400 {
 			got := s.Snapshot()
 			if got.QueuedPackets+got.PendingPackets > 4 || got.PacketBytes > 20 || got.ConfigBytes != 6 {
 				t.Error("несогласованный снимок", got)

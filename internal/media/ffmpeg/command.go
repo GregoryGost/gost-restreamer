@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -39,6 +40,9 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 	}
 	if c.Input.Video.Codec != core.CodecAV1 || v.Codec != core.CodecH264 || au.Codec != core.CodecAAC {
 		return invalid("нужны AV1 → H.264 и AAC")
+	}
+	if p.EffectiveLiveAudioMode() == core.LiveAudioCopy && c.Input.Audio != au {
+		return invalid(fmt.Sprintf("LIVE AAC copy: входной формат %+v несовместим с ожидаемым %+v", c.Input.Audio, au))
 	}
 	if v.PixelFormat != "yuv420p" || v.BitDepth != 8 || v.Width%2 != 0 || v.Height%2 != 0 || v.Width > math.MaxInt32 || v.Height > math.MaxInt32 {
 		return invalid("поддержан только чётный H.264 yuv420p 8-bit")
@@ -107,10 +111,5 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 }
 
 func oneOf(s string, values ...string) bool {
-	for _, v := range values {
-		if s == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, s)
 }

@@ -25,7 +25,7 @@ func (i normalizationInspection) Verify(ctx context.Context, f *os.File, p core.
 }
 
 func normalizedPayload(index int) []byte {
-	return []byte(fmt.Sprintf("normalized-complete-media-for-profile-%d", index))
+	return fmt.Appendf(nil, "normalized-complete-media-for-profile-%d", index)
 }
 
 func normalizationFileBytes(f *os.File, expected []byte) error {

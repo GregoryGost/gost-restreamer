@@ -36,7 +36,7 @@ func TestRemoveOwnedKeepsSameContentLegacyReplacementWithoutEvidence(t *testing.
 	}
 	digest := sha256.Sum256(contents)
 	owned := core.OwnedFile{
-		Record:       core.Record{ID: "legacy-file-id"},
+		ID:           "legacy-file-id",
 		AssetID:      "asset",
 		GenerationID: "generation",
 		Kind:         core.OwnedOriginal,

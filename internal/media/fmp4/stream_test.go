@@ -412,7 +412,7 @@ func FuzzBoundedDemuxer(f *testing.F) {
 		if err != nil {
 			return
 		}
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			if _, err = d.Next(); err != nil {
 				return
 			}

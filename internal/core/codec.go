@@ -11,6 +11,8 @@ import (
 
 const MetadataVersion = 1
 
+const profileVersionV3 = 3
+
 type MetadataError struct {
 	Kind    string
 	Version int
@@ -79,6 +81,16 @@ type profileMetadataV2 struct {
 	Encoding      EncodingSettings
 }
 
+type profileMetadataV3 struct {
+	Version       int
+	Mode          GroupMode
+	LiveAudioMode LiveAudioMode
+	Format        formatMetadata
+	VideoEncoding VideoEncoding
+	AudioEncoding AudioEncoding
+	Encoding      *EncodingSettings
+}
+
 func formatDTO(f MediaFormat) formatMetadata {
 	v, a := f.Video, f.Audio
 	return formatMetadata{Version: MetadataVersion, Video: videoMetadata{Codec: v.Codec, Width: v.Width, Height: v.Height, FrameRate: v.FrameRate, CodecProfile: []byte(v.CodecProfile), Level: []byte(v.Level), Tier: []byte(v.Tier), PixelFormat: []byte(v.PixelFormat), BitDepth: v.BitDepth, Range: []byte(v.Color.Range), Primaries: []byte(v.Color.Primaries), Transfer: []byte(v.Color.Transfer), Matrix: []byte(v.Color.Matrix)}, Audio: audioMetadata{Codec: a.Codec, CodecProfile: []byte(a.CodecProfile), SampleRateHz: a.SampleRateHz, Channels: a.Channels, ChannelLayout: []byte(a.ChannelLayout)}}
@@ -112,8 +124,18 @@ func (p GroupProfile) MarshalJSON() ([]byte, error) {
 	if p.Encoding != (EncodingSettings{}) {
 		version = EncodingVersion
 	}
+	if p.LiveAudioMode != "" {
+		version = profileVersionV3
+	}
 	if err := p.Validate(); err != nil {
 		return nil, &MetadataError{Kind: "profile", Version: version, Cause: err}
+	}
+	if p.LiveAudioMode != "" {
+		var encoding *EncodingSettings
+		if p.Encoding != (EncodingSettings{}) {
+			encoding = &p.Encoding
+		}
+		return json.Marshal(profileMetadataV3{Version: profileVersionV3, Mode: p.Mode, LiveAudioMode: p.LiveAudioMode, Format: formatDTO(p.Format), VideoEncoding: p.VideoEncoding, AudioEncoding: p.AudioEncoding, Encoding: encoding})
 	}
 	if p.Encoding == (EncodingSettings{}) {
 		return json.Marshal(profileMetadataV1{Version: MetadataVersion, Mode: p.Mode, Format: formatDTO(p.Format), VideoEncoding: videoEncodingV1(p.VideoEncoding), AudioEncoding: audioEncodingV1(p.AudioEncoding)})
@@ -127,6 +149,9 @@ func (p *GroupProfile) UnmarshalJSON(data []byte) error {
 	}
 	if header.Version == EncodingVersion {
 		return p.unmarshalProfileV2(data)
+	}
+	if header.Version == profileVersionV3 {
+		return p.unmarshalProfileV3(data)
 	}
 	var d profileMetadataV1
 	if err := strictJSON(data, &d); err != nil {

@@ -360,7 +360,7 @@ func TestOutboundAcceptanceExactCodecBytesAndComposition(t *testing.T) {
 				t.Fatal(err)
 			}
 			next := bytes.NewReader(m.wire.Bytes()[before:])
-			for i := 0; i < 4; i++ {
+			for range 4 {
 				msg, e := acceptanceReadMessage(next, 128)
 				if e != nil || msg.stamp != tc.recoveryStamp {
 					t.Fatalf("сброс конфигурации изменил начало отсчёта: %+v %v", msg, e)
@@ -790,7 +790,7 @@ func TestOutboundAcceptanceTimestampWrapAndSignedCompositionLimits(t *testing.T)
 		}
 	}
 	r := bytes.NewReader(m.wire.Bytes())
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if _, err = acceptanceReadMessage(r, 128); err != nil {
 			t.Fatal(err)
 		}
@@ -830,7 +830,7 @@ func TestOutboundAcceptanceTimestampWrapAndSignedCompositionLimits(t *testing.T)
 				t.Fatal(err)
 			}
 			r := bytes.NewReader(m.wire.Bytes())
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				if _, err = acceptanceReadMessage(r, 128); err != nil {
 					t.Fatal(err)
 				}

@@ -264,3 +264,45 @@ func TestStreamPublicationKeyCannotChangeDuringConfigurationUpdate(t *testing.T)
 		t.Fatal("отказ смены ключа изменил конфигурацию")
 	}
 }
+
+func TestServiceLiveAudioDefaultAndReplacementCAS(t *testing.T) {
+	ctx := context.Background()
+	for _, encoding := range []bool{false, true} {
+		p := encodedProfile(core.VideoEncoderNVENC, core.RateControlVBR)
+		if !encoding {
+			p.Encoding = core.EncodingSettings{}
+		}
+		u := &configContractUOW{}
+		s, err := core.NewService(u, "owner")
+		if err != nil {
+			t.Fatal(err)
+		}
+		created, err := s.CreateProfile(ctx, core.TranscodeProfile{Name: "Новый", Profile: p})
+		if err != nil || created.Profile.LiveAudioMode != core.LiveAudioCopy || u.repository.profile != created || p.LiveAudioMode != "" {
+			t.Fatal("Create не материализовал LIVE copy либо изменил вход", err)
+		}
+		omitted := created
+		omitted.Profile.LiveAudioMode = ""
+		for _, expected := range []uint64{created.Revision + 1, created.Revision} {
+			writes := u.repository.writes
+			_, err := s.UpdateProfile(ctx, omitted, expected)
+			if expected != created.Revision {
+				if !errors.Is(err, core.ErrConflict) {
+					t.Fatal("CAS должен предшествовать проверке удаления селектора", err)
+				}
+			} else {
+				var typed *core.ProfileError
+				if !errors.As(err, &typed) || typed.Field() != "profile.live_audio_mode" {
+					t.Fatal("Удаление селектора принято", err)
+				}
+			}
+			if u.repository.writes != writes || u.repository.profile != created {
+				t.Fatal("Отклонённая замена изменила профиль")
+			}
+		}
+		created.Profile.LiveAudioMode = core.LiveAudioTranscode
+		if _, err := s.UpdateProfile(ctx, created, created.Revision); err != nil {
+			t.Fatal("Явный transcode отклонён", err)
+		}
+	}
+}

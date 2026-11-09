@@ -157,7 +157,7 @@ func assertFrozenEncodingRows(t *testing.T, s *Store, state frozenEncodingState)
 func TestFrozenLegacyDatabaseOpenRecoveryReplayAndCursor(t *testing.T) {
 	s, svc, state, path := openFrozenEncodingState(t)
 	ctx := context.Background()
-	for cycle := 0; cycle < 2; cycle++ {
+	for cycle := range 2 {
 		assertFrozenEncodingRows(t, s, state)
 		assertFrozenEncodingSnapshots(t, svc, state)
 		terminal, err := svc.GetSession(ctx, state.TerminalSessionID)

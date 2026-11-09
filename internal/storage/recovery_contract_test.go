@@ -27,7 +27,7 @@ func TestRecoveryTraversesAllOldQueuedGenerationsAndPreservesCurrentAndReady(t *
 	if err = f.store.Write(ctx, func(r core.Repositories) error {
 		for i := range old {
 			id := core.ID(fmt.Sprintf("retired-generation-%04d", i))
-			a := core.FallbackAsset{Record: core.Record{ID: core.ID(fmt.Sprintf("retired-asset-%04d", i)), Revision: 1, CreatedAt: base, UpdatedAt: base}, Name: "Прерванная подготовка", State: core.AssetPreparing, PendingGenerationID: id}
+			a := core.FallbackAsset{ID: core.ID(fmt.Sprintf("retired-asset-%04d", i)), Revision: 1, CreatedAt: base, UpdatedAt: base, Name: "Прерванная подготовка", State: core.AssetPreparing, PendingGenerationID: id}
 			if e := r.Artifacts.InsertAsset(ctx, a); e != nil {
 				return e
 			}

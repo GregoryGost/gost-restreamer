@@ -111,7 +111,7 @@ func TestConcurrentStartsAcceptExactlyOneAtomicSession(t *testing.T) {
 	gate := make(chan struct{})
 	results := make(chan error, contenders)
 	var workers sync.WaitGroup
-	for i := 0; i < contenders; i++ {
+	for i := range contenders {
 		workers.Add(1)
 		go func(i int) {
 			defer workers.Done()

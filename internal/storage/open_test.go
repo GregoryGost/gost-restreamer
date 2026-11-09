@@ -70,7 +70,7 @@ func TestEveryPhysicalConnectionEnforcesPragmas(t *testing.T) {
 			}
 		}
 	})
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		conn, err := s.sqlDB.Conn(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -158,7 +158,7 @@ func TestCorruptDatabaseOpenMapsErrorAndReleasesLock(t *testing.T) {
 	if err := os.WriteFile(dbPath, []byte("синтетическое повреждённое содержимое базы"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		s, err := Open(context.Background(), dbPath, testOptions())
 		if err == nil {
 			if closeErr := s.Close(); closeErr != nil {

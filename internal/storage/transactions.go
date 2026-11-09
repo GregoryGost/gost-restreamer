@@ -170,8 +170,7 @@ func translate(err error) error {
 			return err
 		}
 	}
-	var sqliteErr sqlite3.Error
-	if errors.As(err, &sqliteErr) {
+	if sqliteErr, ok := errors.AsType[sqlite3.Error](err); ok {
 		var kind error
 		switch sqliteErr.Code {
 		case sqlite3.ErrBusy, sqlite3.ErrLocked:

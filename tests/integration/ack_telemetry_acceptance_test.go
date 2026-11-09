@@ -237,7 +237,7 @@ func TestACKTelemetryAcceptanceExactLargeValuesUTCNullAndStaleOwner(t *testing.T
 	t.Cleanup(server.Close)
 	path := "/sessions/" + string(f.parent.SessionID) + "/metrics"
 	local := time.Date(2026, 11, 8, 18, 35, 27, 123456789, time.FixedZone("synthetic-offset", 3*60*60))
-	value := core.OutputMetrics{MediaMetrics: core.MediaMetrics{SampledAt: local}}
+	value := core.OutputMetrics{SampledAt: local}
 	if err = observer.ObserveMetrics(ctx, value); err != nil {
 		t.Fatal(err)
 	}

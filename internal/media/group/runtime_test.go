@@ -6,14 +6,17 @@ import (
 	"errors"
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/media"
+	"github.com/GregoryGost/gost-restreamer/internal/media/codec"
 	"github.com/GregoryGost/gost-restreamer/internal/media/ffmpeg"
 	"github.com/GregoryGost/gost-restreamer/internal/media/fmp4"
 	"github.com/GregoryGost/gost-restreamer/internal/storage"
 	"io"
+	"log/slog"
 	"math"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,7 +72,7 @@ func runtimeUnitFixture(t *testing.T) runtimeFixture {
 		t.Fatal(err)
 	}
 	required := gen.RequiredProfiles[0]
-	publication := core.GenerationPublication{SourceHash: "unit-source", SizeBytes: 1, SourceFormat: core.SourceFormat{ImageFormat: "png"}, Variants: []core.FallbackVariant{{Record: core.Record{ID: required.VariantID}, GenerationID: gen.ID, AssetID: asset.ID, SourceHash: "unit-source", Profile: required.Profile, VerifiedFormat: required.Profile.Format, GeneratorVersion: gen.GeneratorVersion, ManagedPath: required.ManagedPath, SizeBytes: 1, ContentHash: "unit-result"}}}
+	publication := core.GenerationPublication{SourceHash: "unit-source", SizeBytes: 1, SourceFormat: core.SourceFormat{ImageFormat: "png"}, Variants: []core.FallbackVariant{{ID: required.VariantID, GenerationID: gen.ID, AssetID: asset.ID, SourceHash: "unit-source", Profile: required.Profile, VerifiedFormat: required.Profile.Format, GeneratorVersion: gen.GeneratorVersion, ManagedPath: required.ManagedPath, SizeBytes: 1, ContentHash: "unit-result"}}}
 	if _, err = svc.PublishPreparation(ctx, prep, publication); err != nil {
 		t.Fatal(err)
 	}
@@ -278,5 +281,81 @@ func TestGroupAttemptIdentityCannotWrapOrAffectOtherFeed(t *testing.T) {
 	}
 	if g.attempts[0].Load() != math.MaxUint64 {
 		t.Fatal("исчерпанная identity переиспользована")
+	}
+}
+
+func TestLiveAudioCopyRejectsASCBeforeSelectedBuilderAndReportsReason(t *testing.T) {
+	f := runtimeUnitFixture(t)
+	for _, scenario := range []string{"unsupported-asc", "metadata-mismatch", "profile-mismatch"} {
+		t.Run(scenario, func(t *testing.T) {
+			live, err := media.NewRouter(f.config.Runtime.Switcher.Router)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = live.Close() }()
+			source, err := live.BeginSource()
+			if err != nil {
+				t.Fatal(err)
+			}
+			info := f.a.Info()
+			info.SourceEpoch = source.Epoch()
+			headers := f.a.Headers()
+			switch scenario {
+			case "unsupported-asc":
+				headers = []byte{0}
+			case "metadata-mismatch":
+				info.Audio.SampleRateHz = 44100
+			}
+			audio, err := media.NewCodecConfig(info, headers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			videoInfo := f.v.Info()
+			videoInfo.SourceEpoch = source.Epoch()
+			video, err := media.NewCodecConfig(videoInfo, f.v.Headers())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = source.UpdateConfigs(video, audio); err != nil {
+				t.Fatal(err)
+			}
+			sub, err := live.Subscribe(f.config.Runtime.Switcher.Queue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = sub.Close() }()
+			for _, config := range []media.CodecConfig{video, audio} {
+				packet, err := media.NewPacket(media.PacketInfo{Keyframe: config.Info().Track == media.TrackVideo, DurationTicks: 1024}, config, []byte{1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = source.Publish(packet); err != nil {
+					t.Fatal(err)
+				}
+			}
+			observer, err := f.config.Observer.OpenGroup(context.Background(), f.snapshot.Group.ID, f.snapshot.Profile.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = observer.Close(context.Background()) }()
+			var output bytes.Buffer
+			g := &Group{config: f.config.Runtime, parent: f.config.Parent, id: f.snapshot.Group.ID, observer: observer}
+			g.config.Switcher.Profile.LiveAudioMode = core.LiveAudioCopy
+			if scenario == "profile-mismatch" {
+				g.config.Switcher.Profile.Format.Audio.SampleRateHz = 44100
+			}
+			g.config.Logger = slog.New(slog.NewJSONHandler(&output, nil))
+			called := false
+			g.config.Transcode = func(context.Context, ffmpeg.NVIDIAConfig, ffmpeg.Attempt) (ffmpeg.Command, error) {
+				called = true
+				return ffmpeg.Command{}, errors.New("построитель не должен вызываться")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			err = g.transcode(ctx, sub, 1)
+			if !errors.Is(err, codec.ErrCodec) || called || !strings.Contains(output.String(), "LIVE AAC copy") || !strings.Contains(output.String(), "validate_audio") {
+				t.Fatal("несовместимое аудио дошло до построителя или потеряна причина", err, called, output.String())
+			}
+		})
 	}
 }

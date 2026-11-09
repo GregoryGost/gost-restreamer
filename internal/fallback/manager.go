@@ -570,7 +570,7 @@ func (m *Manager) variant(ctx context.Context, g core.FallbackGeneration, p core
 	if err = m.renameOwned(ctx, g.ID, staging, p.ManagedPath); err != nil {
 		return core.FallbackVariant{}, err
 	}
-	return core.FallbackVariant{Record: core.Record{ID: p.VariantID}, AssetID: g.AssetID, GenerationID: g.ID, Profile: p.Profile, ProfileKey: p.ProfileKey, CanonicalProfile: p.CanonicalProfile, ManagedPath: p.ManagedPath, GeneratorVersion: g.GeneratorVersion, SourceHash: hash, SizeBytes: variantSize, ContentHash: digest, VerifiedFormat: actual}, nil
+	return core.FallbackVariant{ID: p.VariantID, AssetID: g.AssetID, GenerationID: g.ID, Profile: p.Profile, ProfileKey: p.ProfileKey, CanonicalProfile: p.CanonicalProfile, ManagedPath: p.ManagedPath, GeneratorVersion: g.GeneratorVersion, SourceHash: hash, SizeBytes: variantSize, ContentHash: digest, VerifiedFormat: actual}, nil
 }
 
 // Close отзывает все задания; истечение срока не подтверждает физическое завершение.

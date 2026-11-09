@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 
 	"github.com/GregoryGost/gost-restreamer/internal/processowner"
@@ -311,8 +312,8 @@ func (n *Namespace) Close() error {
 			n.closeErr = errors.Join(n.shutdownErr, ErrCleanupPending)
 			return n.closeErr
 		}
-		for i := len(n.resources) - 1; i >= 0; i-- {
-			errs = append(errs, n.scope.RuntimeJournal().Remove(context.Background(), n.resources[i]))
+		for _, resource := range slices.Backward(n.resources) {
+			errs = append(errs, n.scope.RuntimeJournal().Remove(context.Background(), resource))
 		}
 		n.closeErr = errors.Join(errs...)
 		return n.closeErr

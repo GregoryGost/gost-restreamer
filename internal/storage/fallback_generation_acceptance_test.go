@@ -93,7 +93,7 @@ func issueGenerationAcceptance(t *testing.T, svc *core.Service, g core.FallbackG
 func generationAcceptancePublication(g core.FallbackGeneration) core.GenerationPublication {
 	p := core.GenerationPublication{SourceHash: "same-source-bytes", SizeBytes: 37, SourceFormat: core.SourceFormat{ImageFormat: "png"}}
 	for _, r := range g.RequiredProfiles {
-		p.Variants = append(p.Variants, core.FallbackVariant{Record: core.Record{ID: r.VariantID}, AssetID: g.AssetID, GenerationID: g.ID, SourceHash: p.SourceHash, Profile: r.Profile, GeneratorVersion: g.GeneratorVersion, ManagedPath: r.ManagedPath, SizeBytes: 1234, ContentHash: "same-result-bytes", VerifiedFormat: r.Profile.Format})
+		p.Variants = append(p.Variants, core.FallbackVariant{ID: r.VariantID, AssetID: g.AssetID, GenerationID: g.ID, SourceHash: p.SourceHash, Profile: r.Profile, GeneratorVersion: g.GeneratorVersion, ManagedPath: r.ManagedPath, SizeBytes: 1234, ContentHash: "same-result-bytes", VerifiedFormat: r.Profile.Format})
 	}
 	return p
 }
@@ -496,7 +496,7 @@ func TestStorePreparationLimitsRemainImmutableAndQueueIsGlobal(t *testing.T) {
 		t.Fatal("выданное значение изменило политику Store")
 	}
 	var first core.FallbackGeneration
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		a, err := f.svc.CreateAsset(ctx, "Элемент очереди")
 		if err != nil {
 			t.Fatal(err)

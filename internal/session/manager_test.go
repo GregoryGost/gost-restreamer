@@ -117,6 +117,7 @@ func newManagerFixture(t *testing.T, enabled bool, modify func(*Config)) manager
 	if err != nil {
 		t.Fatal(err)
 	}
+	profile = p.Profile
 	g, err := service.CreateGroup(ctx, core.TranscodeGroup{Name: "Группа", StreamID: stream.ID, ProfileID: p.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +154,7 @@ func newManagerFixture(t *testing.T, enabled bool, modify func(*Config)) manager
 	}
 	digest := sha256.Sum256(content)
 	hash := hex.EncodeToString(digest[:])
-	_, err = service.PublishPreparation(ctx, preparationFence, core.GenerationPublication{SourceHash: "source", SizeBytes: 1, SourceFormat: core.SourceFormat{ImageFormat: "png"}, Variants: []core.FallbackVariant{{Record: core.Record{ID: required.VariantID}, GenerationID: generation.ID, AssetID: asset.ID, SourceHash: "source", Profile: profile, VerifiedFormat: profile.Format, GeneratorVersion: generation.GeneratorVersion, ManagedPath: required.ManagedPath, SizeBytes: uint64(len(content)), ContentHash: hash}}})
+	_, err = service.PublishPreparation(ctx, preparationFence, core.GenerationPublication{SourceHash: "source", SizeBytes: 1, SourceFormat: core.SourceFormat{ImageFormat: "png"}, Variants: []core.FallbackVariant{{ID: required.VariantID, GenerationID: generation.ID, AssetID: asset.ID, SourceHash: "source", Profile: profile, VerifiedFormat: profile.Format, GeneratorVersion: generation.GeneratorVersion, ManagedPath: required.ManagedPath, SizeBytes: uint64(len(content)), ContentHash: hash}}})
 	if err != nil {
 		t.Fatal(err)
 	}

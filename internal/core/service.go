@@ -95,6 +95,9 @@ func (s *Service) DeleteStream(ctx context.Context, id ID, expected uint64) erro
 }
 
 func (s *Service) CreateProfile(ctx context.Context, value TranscodeProfile) (TranscodeProfile, error) {
+	if value.Profile.LiveAudioMode == "" {
+		value.Profile.LiveAudioMode = LiveAudioCopy
+	}
 	if err := value.Validate(); err != nil {
 		return TranscodeProfile{}, err
 	}
@@ -117,6 +120,9 @@ func (s *Service) UpdateProfile(ctx context.Context, value TranscodeProfile, exp
 		}
 		if err = checkRevision(current.Revision, expected); err != nil {
 			return err
+		}
+		if current.Profile.LiveAudioMode != "" && value.Profile.LiveAudioMode == "" {
+			return invalidEncoding("live_audio_mode", "Полная замена профиля требует явного live_audio_mode: copy или transcode.")
 		}
 		if current.Profile.Encoding.Version == EncodingVersion && value.Profile.Encoding.Version != EncodingVersion {
 			return invalidEncoding("encoding", "Профиль версии 2 требует полный объект encoding версии 2; переход к прежнему формату запрещён.")

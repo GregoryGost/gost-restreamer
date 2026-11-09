@@ -145,7 +145,7 @@ func TestAACLCPrefixSkipsOnlyBoundedMetadata(t *testing.T) {
 			if err := ValidateAACAU([]byte{0x11, 0x90}, payload); err != nil {
 				t.Fatal(err)
 			}
-			for n := 0; n < len(payload); n++ {
+			for n := range payload {
 				if err := ValidateAACAU([]byte{0x11, 0x90}, payload[:n]); !errors.Is(err, ErrCodec) {
 					t.Fatalf("обрезанный DSE/канал принят: aligned=%v extended=%v n=%d", aligned, extended, n)
 				}

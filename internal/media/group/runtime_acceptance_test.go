@@ -331,7 +331,7 @@ func newRuntimeAcceptanceFixture(t *testing.T) acceptanceRuntimeFixture {
 	}
 	publication := core.GenerationPublication{SourceHash: "controlled-source", SizeBytes: 1, SourceFormat: core.SourceFormat{ImageFormat: "png"}}
 	for _, r := range g.RequiredProfiles {
-		publication.Variants = append(publication.Variants, core.FallbackVariant{Record: core.Record{ID: r.VariantID}, GenerationID: g.ID, AssetID: g.AssetID, SourceHash: publication.SourceHash, Profile: r.Profile, VerifiedFormat: r.Profile.Format, GeneratorVersion: g.GeneratorVersion, ManagedPath: r.ManagedPath, SizeBytes: 1, ContentHash: "controlled-result"})
+		publication.Variants = append(publication.Variants, core.FallbackVariant{ID: r.VariantID, GenerationID: g.ID, AssetID: g.AssetID, SourceHash: publication.SourceHash, Profile: r.Profile, VerifiedFormat: r.Profile.Format, GeneratorVersion: g.GeneratorVersion, ManagedPath: r.ManagedPath, SizeBytes: 1, ContentHash: "controlled-result"})
 	}
 	if _, err = svc.PublishPreparation(ctx, pf, publication); err != nil {
 		t.Fatal(err)
@@ -631,12 +631,12 @@ func TestGroupParallelProfilesKeepFallbackAndRoutersAcrossOverride(t *testing.T)
 	}
 	defer func() { _ = b.Close() }()
 	seen := map[string]media.Packet{}
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		d := switchAcceptanceNext(t, a)
 		seen[fmt.Sprintf("%s/%d", d.Packet.Config().Info().Track, d.Packet.Info().DTS)] = d.Packet
 	}
 	matches := 0
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		d := switchAcceptanceNext(t, b)
 		if p, ok := seen[fmt.Sprintf("%s/%d", d.Packet.Config().Info().Track, d.Packet.Info().DTS)]; ok {
 			if p.Info() != d.Packet.Info() || string(p.Payload()) != string(d.Packet.Payload()) {

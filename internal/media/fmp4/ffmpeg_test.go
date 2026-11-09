@@ -138,7 +138,7 @@ func TestFFmpegCPUFragmentedRoundTrip(t *testing.T) {
 	ffprobe := filepath.Join(filepath.Dir(ffmpeg), "ffprobe")
 	for _, scenario := range []string{"h264", "av1", "h264-negative", "av1-negative"} {
 		t.Run(scenario, func(t *testing.T) {
-			codec := strings.Split(scenario, "-")[0]
+			codec, _, _ := strings.Cut(scenario, "-")
 			sign := "+"
 			if strings.HasSuffix(scenario, "-negative") {
 				sign = "-"

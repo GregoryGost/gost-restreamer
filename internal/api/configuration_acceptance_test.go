@@ -122,6 +122,18 @@ func apiAcceptanceSeedConfiguration(t *testing.T, f *apiAcceptanceFixture) (core
 	return s, p, g, d
 }
 
+func apiAcceptanceInsertLegacyProfile(t *testing.T, f *apiAcceptanceFixture, profile core.GroupProfile) core.TranscodeProfile {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	p := core.TranscodeProfile{ID: "legacy-profile", Revision: 1, CreatedAt: now, UpdatedAt: now, Name: "Прежний", Profile: profile}
+	if err := f.store.Write(context.Background(), func(r core.Repositories) error {
+		return r.Config.InsertProfile(context.Background(), p)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func apiAcceptanceNoSecrets(t *testing.T, data string, additional ...string) {
 	t.Helper()
 	for _, secret := range append([]string{"synthetic-publication-secret", "synthetic-stream-secret", "synthetic-url-secret", "synthetic-password", "private-path", "publication_key\"", "stream_key\"", "endpoint\"", "incarnation\"", "attempt_token\"", "managed_path\"", "canonical_profile\"", "fingerprint\""}, additional...) {
@@ -234,6 +246,7 @@ func TestAcceptanceProfileRoundTripPreservesFullIntegersFPSAndBytes(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	p = stored.Profile
 	w := apiAcceptanceRequest(t, f.api, "GET", "/transcode-profiles/"+string(stored.ID), "", 200)
 	v := apiAcceptanceJSON(t, w)
 	profile := v["profile"].(map[string]any)
@@ -306,7 +319,7 @@ func TestAcceptanceFrameworkErrorsNeverEchoRejectedValues(t *testing.T) {
 func TestAcceptancePaginationIsBoundedStableAndFilterBound(t *testing.T) {
 	f := newAPIAcceptanceFixture(t, nil)
 	var saved []core.Stream
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		s, err := f.service.CreateStream(context.Background(), core.Stream{Name: "Поток " + strconv.Itoa(i), PublicationKey: "key-" + strconv.Itoa(i)})
 		if err != nil {
 			t.Fatal(err)
@@ -340,7 +353,7 @@ func TestAcceptanceImmutablePublicSpecConcurrentFirstGET(t *testing.T) {
 	f := newAPIAcceptanceFixture(t, nil)
 	results := make(chan *httptest.ResponseRecorder, 32)
 	var wg sync.WaitGroup
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		wg.Go(func() {
 			path := "/openapi.json"
 			if i%2 == 1 {

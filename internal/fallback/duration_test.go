@@ -48,7 +48,7 @@ func TestProductionPaddingIsExplicitAndSourceDurationRemainsOriginal(t *testing.
 		t.Fatal(err)
 	}
 	args := strings.Join(cmd.Args, " ")
-	for _, value := range []string{"tpad=stop_mode=clone:stop_duration=0.600000", "apad=pad_dur=1.600000", "-t 1.600000"} {
+	for _, value := range []string{"tpad=stop_mode=clone:stop=-1", "apad=pad_dur=1.600000", "-t 1.600000"} {
 		if !strings.Contains(args, value) {
 			t.Fatal(args)
 		}

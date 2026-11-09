@@ -39,7 +39,7 @@ func selfPreparedMetadata() packetDocument {
 	stamp := func(kind string, index int, pts, duration int64) packetStamp {
 		return packetStamp{Type: kind, Index: index, PTS: &pts, DTS: &pts, Duration: &duration}
 	}
-	for i := 0; i < 76; i++ {
+	for i := range 76 {
 		if i < 48 {
 			doc.Packets = append(doc.Packets, stamp("video", 0, int64(i), 1))
 		}

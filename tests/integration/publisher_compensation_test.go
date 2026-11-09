@@ -87,7 +87,7 @@ func newPublisherCompensationFixture(t *testing.T) publisherCompensationFixture 
 		t.Fatalf("набор профилей: %+v", gen.RequiredProfiles)
 	}
 	r := gen.RequiredProfiles[0]
-	publication := core.GenerationPublication{SourceHash: "controlled-source", SizeBytes: 1, SourceFormat: core.SourceFormat{ImageFormat: "png"}, Variants: []core.FallbackVariant{{Record: core.Record{ID: r.VariantID}, GenerationID: gen.ID, AssetID: asset.ID, SourceHash: "controlled-source", Profile: r.Profile, VerifiedFormat: r.Profile.Format, GeneratorVersion: gen.GeneratorVersion, ManagedPath: r.ManagedPath, SizeBytes: 1, ContentHash: "controlled-result"}}}
+	publication := core.GenerationPublication{SourceHash: "controlled-source", SizeBytes: 1, SourceFormat: core.SourceFormat{ImageFormat: "png"}, Variants: []core.FallbackVariant{{ID: r.VariantID, GenerationID: gen.ID, AssetID: asset.ID, SourceHash: "controlled-source", Profile: r.Profile, VerifiedFormat: r.Profile.Format, GeneratorVersion: gen.GeneratorVersion, ManagedPath: r.ManagedPath, SizeBytes: 1, ContentHash: "controlled-result"}}}
 	if _, err = svc.PublishPreparation(ctx, pf, publication); err != nil {
 		t.Fatal(err)
 	}

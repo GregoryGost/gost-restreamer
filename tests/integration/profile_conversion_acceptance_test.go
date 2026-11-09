@@ -208,7 +208,7 @@ func assertDecodedConversion(t *testing.T, binary string, wire []byte, scenario 
 	counts := [2]int{}
 	samples := int64(0)
 	bases := map[int]string{}
-	for _, line := range strings.Split(string(decoded), "\n") {
+	for line := range strings.SplitSeq(string(decoded), "\n") {
 		if strings.HasPrefix(line, "#tb ") {
 			var index int
 			var base string
@@ -389,7 +389,7 @@ var initialX264PTSWarning = regexp.MustCompile(`^\[libx264 @ 0x[0-9a-fA-F]+\] no
 
 func conversionTimingDiagnostics(diagnostics []byte, scenario conversionScenario) (int, error) {
 	warnings := 0
-	for _, line := range strings.Split(string(diagnostics), "\n") {
+	for line := range strings.SplitSeq(string(diagnostics), "\n") {
 		lower := strings.ToLower(line)
 		if !strings.Contains(lower, "non-monotonic") && !strings.Contains(lower, "non-strictly-monotonic") && !strings.Contains(lower, "invalid dts") {
 			continue

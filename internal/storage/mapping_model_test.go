@@ -51,8 +51,8 @@ func TestMetadataWritesPreserveMapSQLAndTransaction(t *testing.T) {
 		t.Fatal("фикстура не создала принадлежащие поколению файлы и события управления")
 	}
 	cleanup := core.CleanupIntent{
-		Record: core.Record{ID: "mapping-cleanup", Revision: 1, CreatedAt: session.CreatedAt, UpdatedAt: session.CreatedAt},
-		Kind:   core.CleanupRuntime, StreamID: f.stream.ID, SessionID: session.ID,
+		ID: "mapping-cleanup", Revision: 1, CreatedAt: session.CreatedAt, UpdatedAt: session.CreatedAt,
+		Kind: core.CleanupRuntime, StreamID: f.stream.ID, SessionID: session.ID,
 		Incarnation: session.Incarnation, Lifecycle: session.Lifecycle,
 	}
 	if err := f.store.Write(ctx, func(r core.Repositories) error { return r.Artifacts.InsertCleanup(ctx, cleanup) }); err != nil {

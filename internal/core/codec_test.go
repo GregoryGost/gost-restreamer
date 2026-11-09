@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"maps"
 	"math"
 	"reflect"
 	"testing"
@@ -171,6 +172,71 @@ func TestProfileMetadataRejectsUnknownCorruptAndInvalidValues(t *testing.T) {
 	} {
 		if err := decode([]byte(`{"Version":999}`)); !errors.Is(err, core.ErrInvalidMetadata) {
 			t.Fatalf("неизвестная версия метаданных принята: %v", err)
+		}
+	}
+}
+
+func TestExplicitLiveAudioProfileWireAndStrictReplacement(t *testing.T) {
+	for _, withEncoding := range []bool{false, true} {
+		legacy := encodedProfile(core.VideoEncoderNVENC, core.RateControlVBR)
+		if !withEncoding {
+			legacy.Encoding = core.EncodingSettings{}
+		}
+		for _, mode := range []core.LiveAudioMode{core.LiveAudioCopy, core.LiveAudioTranscode} {
+			p := legacy
+			p.LiveAudioMode = mode
+			before := p
+			raw, err := core.EncodeProfile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := core.DecodeProfile(raw)
+			if err != nil || got != p || p != before || got.EffectiveLiveAudioMode() != mode {
+				t.Fatalf("v3 изменил явный профиль: %v", err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if string(fields["Version"]) != "3" || (string(fields["Encoding"]) == "null") == withEncoding || core.MetadataVersion != 1 || core.EncodingVersion != 2 {
+				t.Fatalf("Версии или null Encoding изменены: %s", raw)
+			}
+			key, _, err := core.ProfileIdentity(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldKey, _, err := core.ProfileIdentity(legacy)
+			if err != nil || key == oldKey || p.Equal(legacy) || legacy.Equal(p) {
+				t.Fatal("Явный селектор не входит в идентичность", err)
+			}
+			for _, field := range []string{"LiveAudioMode", "Encoding", "VideoEncoding", "AudioEncoding", "Format"} {
+				for _, value := range []json.RawMessage{nil, json.RawMessage("null")} {
+					copyFields := make(map[string]json.RawMessage, len(fields))
+					maps.Copy(copyFields, fields)
+					if value == nil {
+						delete(copyFields, field)
+					} else {
+						copyFields[field] = value
+					}
+					corrupt, err := json.Marshal(copyFields)
+					if err != nil {
+						t.Fatal(err)
+					}
+					receiver := p
+					err = receiver.UnmarshalJSON(corrupt)
+					if field == "Encoding" && value != nil {
+						if err != nil || receiver.Encoding != (core.EncodingSettings{}) {
+							t.Fatal("Явный null Encoding не прочитан", err)
+						}
+					} else if !errors.Is(err, core.ErrInvalidMetadata) || receiver != p {
+						t.Fatalf("Некорректное поле %s изменило профиль: %v", field, err)
+					}
+				}
+			}
+		}
+		before := legacy
+		if err := legacy.Validate(); err != nil || legacy.EffectiveLiveAudioMode() != core.LiveAudioTranscode || legacy != before {
+			t.Fatal("Чтение прежнего режима изменило профиль", err)
 		}
 	}
 }

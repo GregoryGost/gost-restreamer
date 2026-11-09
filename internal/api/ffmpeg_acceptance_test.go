@@ -187,11 +187,11 @@ func TestAcceptanceFFmpegProgressAvailabilityAcrossRuntimeHTTP(t *testing.T) {
 					t.Fatalf("некорректная SSE-граница: status=%d unsafe=%v", statusCode, unsafe)
 				}
 				count := 0
-				for _, frame := range strings.Split(body, "\n\n") {
+				for frame := range strings.SplitSeq(body, "\n\n") {
 					if !strings.Contains(frame, "event: metrics\n") {
 						continue
 					}
-					for _, line := range strings.Split(frame, "\n") {
+					for line := range strings.SplitSeq(frame, "\n") {
 						if !strings.HasPrefix(line, "data: ") {
 							continue
 						}

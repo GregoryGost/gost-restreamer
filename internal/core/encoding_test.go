@@ -473,8 +473,8 @@ func TestEncodingValueOwnershipAndServiceTransition(t *testing.T) {
 	inspect = func(typ reflect.Type) {
 		switch typ.Kind() {
 		case reflect.Struct:
-			for i := 0; i < typ.NumField(); i++ {
-				inspect(typ.Field(i).Type)
+			for field := range typ.Fields() {
+				inspect(field.Type)
 			}
 		case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Interface:
 			t.Fatalf("Профиль удерживает разделяемое состояние %s", typ)

@@ -26,7 +26,7 @@ func historyFixture(t *testing.T) (*Store, *core.Service, time.Time) {
 			if i > 2 {
 				created = base.Add(time.Duration(i-2) * time.Microsecond)
 			}
-			value := core.Stream{Record: core.Record{ID: id, Revision: 1, CreatedAt: created, UpdatedAt: created}, Name: "Поток", PublicationKey: "synthetic-key-" + string(id)}
+			value := core.Stream{ID: id, Revision: 1, CreatedAt: created, UpdatedAt: created, Name: "Поток", PublicationKey: "synthetic-key-" + string(id)}
 			if err := r.Config.InsertStream(context.Background(), value); err != nil {
 				return err
 			}

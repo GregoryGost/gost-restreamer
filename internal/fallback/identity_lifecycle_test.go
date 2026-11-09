@@ -18,7 +18,7 @@ func identityOwnedFile(generation, name string, kind core.OwnedFileKind) core.Ow
 	if name != "" {
 		managedPath += "/" + name
 	}
-	return core.OwnedFile{Record: core.Record{ID: core.ID(generation + "-" + name)}, AssetID: "asset", GenerationID: core.ID(generation), Kind: kind, ManagedPath: managedPath}
+	return core.OwnedFile{ID: core.ID(generation + "-" + name), AssetID: "asset", GenerationID: core.ID(generation), Kind: kind, ManagedPath: managedPath}
 }
 
 func identityWriteOwned(t *testing.T, files *FileStore, owned core.OwnedFile) (uint64, string) {

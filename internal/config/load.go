@@ -191,8 +191,7 @@ func checkNode(node *yaml.Node, typ reflect.Type, path string, active map[nodeTy
 			return fail("нужен mapping")
 		}
 		fields := map[string]reflect.Type{}
-		for i := 0; i < typ.NumField(); i++ {
-			f := typ.Field(i)
+		for f := range typ.Fields() {
 			fields[f.Tag.Get("yaml")] = f.Type
 		}
 		seen := map[string]bool{}

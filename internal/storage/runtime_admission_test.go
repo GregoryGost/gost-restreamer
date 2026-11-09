@@ -99,7 +99,7 @@ func readAssetRevision(t *testing.T, f domainFixture, ctx context.Context) uint6
 func insertActivePreparationForAdmission(t *testing.T, f domainFixture, state core.PreparationState) {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	g := core.FallbackGeneration{Record: core.Record{ID: "competing-preparation", Revision: 1, CreatedAt: now, UpdatedAt: now}, AssetID: f.asset.ID, Kind: core.AssetImage, GeneratorVersion: "generator", Incarnation: f.store.Incarnation(), AttemptToken: "competing-token", State: state, OriginalPath: "fallback/competing-preparation/original", StagingPath: "fallback/competing-preparation/original.stage"}
+	g := core.FallbackGeneration{ID: "competing-preparation", Revision: 1, CreatedAt: now, UpdatedAt: now, AssetID: f.asset.ID, Kind: core.AssetImage, GeneratorVersion: "generator", Incarnation: f.store.Incarnation(), AttemptToken: "competing-token", State: state, OriginalPath: "fallback/competing-preparation/original", StagingPath: "fallback/competing-preparation/original.stage"}
 	if state != core.PreparationQueued {
 		g.Attempt = 1
 	}

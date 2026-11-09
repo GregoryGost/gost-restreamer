@@ -43,7 +43,7 @@ func (n *sessionNode) registerOutputMetrics(p *publisher.Publisher, observer *co
 			return nil
 		}
 		q, d := s.QueueDrops, s.DeliveryDrops
-		return observer.ObserveMetrics(ctx, core.OutputMetrics{MediaMetrics: core.MediaMetrics{SampledAt: s.SampledAt, PayloadBytes: s.PayloadBytes, WrittenBytes: s.WrittenBytes, VideoFrames: s.VideoFrames, AudioUnits: s.AccessUnits - s.VideoFrames, Saturated: s.Saturated, LastFrame: s.LastFrame, Format: s.Format, Rates: rates},
+		return observer.ObserveMetrics(ctx, core.OutputMetrics{SampledAt: s.SampledAt, PayloadBytes: s.PayloadBytes, WrittenBytes: s.WrittenBytes, VideoFrames: s.VideoFrames, AudioUnits: s.AccessUnits - s.VideoFrames, Saturated: s.Saturated, LastFrame: s.LastFrame, Format: s.Format, Rates: rates,
 			Attempts: s.Attempts, Connections: s.Connections, Reconnects: s.Reconnects,
 			AckAheadEventsTotal: s.AckAheadEventsTotal, AckAheadBytesLast: s.AckAheadBytesLast, AckAheadBytesMax: s.AckAheadBytesMax, AckLastAnomalyAt: s.AckLastAnomalyAt,
 			QueueDrops:    core.QueueDropMetrics{Overflow: q.Overflow, Oversized: q.Oversized, ConfigRejected: q.ConfigRejected, AwaitingKeyframe: q.AwaitingKeyframe, AudioBeforeCut: q.AudioBeforeCut, SourceReset: q.SourceReset, ConfigReset: q.ConfigReset, Closed: q.Closed},

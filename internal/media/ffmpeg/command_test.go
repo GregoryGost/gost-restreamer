@@ -17,7 +17,7 @@ func nvidiaCommandConfig() NVIDIAConfig {
 	input := format
 	input.Video.Codec = core.CodecAV1
 	input.Video.CodecProfile = "main"
-	return NVIDIAConfig{Binary: "/usr/bin/ffmpeg", Input: input, Profile: core.GroupProfile{Mode: core.ModeTranscode, Format: format, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 6000000, MaxBitrateBPS: 7000000, BufferBits: 12000000, GOPFrames: 60, MaxBFrames: 2, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 192000}}, VideoTimeBase: media.TimeBase{Numerator: 1, Denominator: 30000}, AudioTimeBase: media.TimeBase{Numerator: 1, Denominator: 44100}}
+	return NVIDIAConfig{Binary: "/usr/bin/ffmpeg", Input: input, Profile: core.GroupProfile{Mode: core.ModeTranscode, LiveAudioMode: core.LiveAudioTranscode, Format: format, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 6000000, MaxBitrateBPS: 7000000, BufferBits: 12000000, GOPFrames: 60, MaxBFrames: 2, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 192000}}, VideoTimeBase: media.TimeBase{Numerator: 1, Denominator: 30000}, AudioTimeBase: media.TimeBase{Numerator: 1, Denominator: 44100}}
 }
 func TestNVIDIACommandPreservesExplicitEncodingAndTiming(t *testing.T) {
 	c := nvidiaCommandConfig()
@@ -151,6 +151,39 @@ func TestNVIDIACommandExplicitRescaleAndRateControl(t *testing.T) {
 		cmd, err = BuildNVIDIACommand(c, Attempt{InputPath: "/a", OutputPath: "/b"})
 		if err != nil || !strings.Contains(strings.Join(cmd.Args, " "), "scale_cuda=w=1920:h=1080") {
 			t.Fatal(cmd, err)
+		}
+	}
+}
+
+func TestNVIDIACommandCopyAudioRejectsMismatchWithoutEncoding(t *testing.T) {
+	c := nvidiaCommandConfig()
+	c.Profile.LiveAudioMode = core.LiveAudioCopy
+	c.Profile.Encoding = core.DefaultEncoding(c.Profile.Mode, "h264_nvenc", "vbr")
+	c.Profile.Encoding.AudioCustom = "aac_coder=fast"
+	command, err := BuildNVIDIACommand(c, Attempt{InputPath: "/a", OutputPath: "/b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := slices.Index(command.Args, "-c:a"); i < 0 || command.Args[i+1] != "copy" {
+		t.Fatal(command.Args)
+	}
+	for _, forbidden := range []string{"-af", "-ar:a", "-ac:a", "-channel_layout:a", "-b:a", "-profile:a", "-aac_coder"} {
+		if slices.Contains(command.Args, forbidden) {
+			t.Fatalf("LIVE copy содержит %s: %v", forbidden, command.Args)
+		}
+	}
+	for _, change := range []func(*core.AudioFormat){
+		func(a *core.AudioFormat) { a.SampleRateHz = 48000 },
+		func(a *core.AudioFormat) { a.Channels, a.ChannelLayout = 1, "mono" },
+	} {
+		changed := c
+		change(&changed.Input.Audio)
+		if _, err = BuildNVIDIACommand(changed, Attempt{InputPath: "/a", OutputPath: "/b"}); !errors.Is(err, ErrInvalidSupervisor) || !strings.Contains(err.Error(), "LIVE AAC copy") {
+			t.Fatal("несовместимый copy принят", err)
+		}
+		changed.Profile.LiveAudioMode = core.LiveAudioTranscode
+		if _, err = BuildNVIDIACommand(changed, Attempt{InputPath: "/a", OutputPath: "/b"}); err != nil {
+			t.Fatal("явное преобразование аудио отклонено", err)
 		}
 	}
 }

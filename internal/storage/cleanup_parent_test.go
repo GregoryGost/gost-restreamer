@@ -139,7 +139,7 @@ func isolatedOutputDependency(t *testing.T, f *domainFixture) (core.TranscodePro
 	}
 	var v core.FallbackVariant
 	for _, candidate := range page.Items {
-		if candidate.Profile.Equal(profile) {
+		if candidate.Profile.Equal(p.Profile) {
 			v = candidate
 		} else if candidate.Profile.Equal(f.profile.Profile) {
 			f.variant = candidate
