@@ -26,20 +26,25 @@ import (
 )
 
 type apiAcceptanceFixture struct {
-	service *core.Service
-	store   *storage.Store
-	api     *api.API
-	limits  api.Limits
+	service      *core.Service
+	store        *storage.Store
+	api          *api.API
+	limits       api.Limits
+	databasePath string
 }
 
 func apiAcceptanceLimits() api.Limits {
 	return api.Limits{JSONBytes: 16 << 10, UploadBytes: 1024, UploadReadTimeout: time.Second, OperationTimeout: 2 * time.Second, ShutdownTimeout: time.Second, SSEClients: 1, SSEPageSize: 4, SSEFrameBytes: 32 << 10, SSEWriteTimeout: time.Second, SSEHeartbeat: 50 * time.Millisecond}
 }
 
+func apiAcceptanceStorageOptions() storage.Options {
+	return storage.Options{PreparationLimits: core.PreparationLimits{MaxQueued: 3, MaxProfiles: 8}, OutputExecutionLimits: core.OutputExecutionLimits{MaxReservations: 16, MaxIdentifierBytes: 1024, MaxBytes: 1 << 20}, ObservationLimits: core.ObservationLimits{MaxSessions: 8, MaxGroups: 16, MaxOutputs: 16, MaxFFmpegWorkers: 16, MaxIdentifierBytes: 1024, MaxErrorBytes: 4096, MaxBytes: 4 << 20}, MaxOpenConns: 4, MaxIdleConns: 4, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute, BusyTimeout: 20 * time.Millisecond, RetryAttempts: 3, RetryTimeout: time.Second, RetryDelay: time.Millisecond}
+}
+
 func newAPIAcceptanceFixture(t *testing.T, configure func(*api.Config)) *apiAcceptanceFixture {
 	t.Helper()
-	options := storage.Options{PreparationLimits: core.PreparationLimits{MaxQueued: 3, MaxProfiles: 8}, OutputExecutionLimits: core.OutputExecutionLimits{MaxReservations: 16, MaxIdentifierBytes: 1024, MaxBytes: 1 << 20}, ObservationLimits: core.ObservationLimits{MaxSessions: 8, MaxGroups: 16, MaxOutputs: 16, MaxFFmpegWorkers: 16, MaxIdentifierBytes: 1024, MaxErrorBytes: 4096, MaxBytes: 4 << 20}, MaxOpenConns: 4, MaxIdleConns: 4, ConnMaxLifetime: time.Minute, ConnMaxIdleTime: time.Minute, BusyTimeout: 20 * time.Millisecond, RetryAttempts: 3, RetryTimeout: time.Second, RetryDelay: time.Millisecond}
-	store, err := storage.Open(context.Background(), filepath.Join(t.TempDir(), "api.sqlite"), options)
+	databasePath := filepath.Join(t.TempDir(), "api.sqlite")
+	store, err := storage.Open(context.Background(), databasePath, apiAcceptanceStorageOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +75,7 @@ func newAPIAcceptanceFixture(t *testing.T, configure func(*api.Config)) *apiAcce
 			t.Error(err)
 		}
 	})
-	return &apiAcceptanceFixture{svc, store, handler, config.Limits}
+	return &apiAcceptanceFixture{svc, store, handler, config.Limits, databasePath}
 }
 
 func apiAcceptanceRequest(t *testing.T, handler http.Handler, method, path, body string, status int) *httptest.ResponseRecorder {
@@ -136,19 +141,36 @@ func apiAcceptanceInsertLegacyProfile(t *testing.T, f *apiAcceptanceFixture, pro
 
 func apiAcceptanceNoSecrets(t *testing.T, data string, additional ...string) {
 	t.Helper()
-	for _, secret := range append([]string{"synthetic-publication-secret", "synthetic-stream-secret", "synthetic-url-secret", "synthetic-password", "private-path", "publication_key\"", "stream_key\"", "endpoint\"", "incarnation\"", "attempt_token\"", "managed_path\"", "canonical_profile\"", "fingerprint\""}, additional...) {
+	apiAcceptanceNoServiceFields(t, data)
+	for _, secret := range append([]string{"synthetic-publication-secret", "synthetic-stream-secret", "synthetic-url-secret", "synthetic-password", "private-path", "publication_key\"", "stream_key\"", "endpoint\""}, additional...) {
 		if strings.Contains(strings.ToLower(data), strings.ToLower(secret)) {
 			t.Fatalf("публичный ответ раскрывает запрещённое поле или синтетический секрет %q", secret)
 		}
 	}
 }
 
-func TestAcceptanceConfigurationPresenceCASAndSecretProjection(t *testing.T) {
+func apiAcceptanceNoServiceFields(t *testing.T, data string) {
+	t.Helper()
+	for _, field := range []string{"incarnation\"", "attempt_token\"", "managed_path\"", "canonical_profile\"", "fingerprint\""} {
+		if strings.Contains(strings.ToLower(data), field) {
+			t.Fatalf("публичный ответ раскрывает служебное поле %q", field)
+		}
+	}
+}
+
+func TestAcceptanceConfigurationPresenceCASAndKeyReadback(t *testing.T) {
 	f := newAPIAcceptanceFixture(t, nil)
 	s, _, _, d := apiAcceptanceSeedConfiguration(t, f)
 	for _, path := range []string{"/streams", "/streams/" + string(s.ID), "/destinations", "/destinations/" + string(d.ID), "/streams/" + string(s.ID) + "/destinations"} {
-		w := apiAcceptanceRequest(t, f.api, "GET", path, "", 200)
-		apiAcceptanceNoSecrets(t, w.Body.String())
+		v := readbackObject(t, f.api, "GET", path, "", 200)
+		if v["items"] != nil {
+			v = readbackItems(t, v, 1)[0]
+		}
+		if strings.Contains(path, "destinations") {
+			readbackFields(t, v, map[string]string{"endpoint": d.Endpoint, "stream_key": d.StreamKey})
+		} else {
+			readbackFields(t, v, map[string]string{"publication_key": s.PublicationKey})
+		}
 	}
 	path := "/destinations/" + string(d.ID)
 	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":"1","enabled":false,"stream_key":""}`, 200)

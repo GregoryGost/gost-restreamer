@@ -214,8 +214,8 @@ func TestAcceptanceApplicationBootPersistenceAndTransportStop(t *testing.T) {
 			streamID = created["id"].(string)
 		}
 		stored := acceptanceHTTP(t, a, "GET", "/streams/"+streamID, "", 200)
-		if stored["name"] != "Сохранённый поток" || stored["publication_key"] != nil {
-			t.Fatal("данные потеряны или раскрыт ключ публикации", stored)
+		if stored["name"] != "Сохранённый поток" || stored["publication_key"] != "synthetic-bootstrap-key" {
+			t.Fatal("имя или ключ публикации не совпадают с сохранёнными значениями", stored)
 		}
 		idle, idleReader := acceptanceIdleHTTP(t, a)
 		sse := acceptanceConnection(t, a.HTTPAddress())
