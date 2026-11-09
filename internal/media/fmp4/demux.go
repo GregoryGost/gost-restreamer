@@ -510,7 +510,7 @@ func parseASC(data []byte, limit uint64) ([]byte, error) {
 			b = b[1:]
 			n := uint32(0)
 			ended := false
-			for i := 0; i < 4; i++ {
+			for range 4 {
 				if len(b) == 0 {
 					return nil, ErrInvalid
 				}
@@ -575,7 +575,7 @@ func parseEdit(data []byte, movieScale, scale uint32) (int64, error) {
 	c := cursor{b: data[8:]}
 	offset := int64(0)
 	seenMedia := false
-	for i := uint32(0); i < count; i++ {
+	for range count {
 		var duration uint64
 		var mediaTime int64
 		if version == 1 {
@@ -757,7 +757,7 @@ func (d *Demuxer) parseTraf(data []byte, start uint64) error {
 		if c.err != nil || uint64(count)*uint64(entryWords)*4 != uint64(len(c.b)) {
 			return ErrInvalid
 		}
-		for index := uint32(0); index < count; index++ {
+		for index := range count {
 			dur, n, sf := duration, size, sampleFlags
 			if index == 0 {
 				sf = firstFlags

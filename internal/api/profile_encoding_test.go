@@ -185,7 +185,7 @@ func TestProfileEncodingCustomErrorsKeepTrustedDetailsWithoutRejectedValues(t *t
 
 func TestProfileEncodingPatchPreservesLegacyAndRequiresExplicitReplacement(t *testing.T) {
 	f := newAPIAcceptanceFixture(t, nil)
-	_, old, _, _ := apiAcceptanceSeedConfiguration(t, f)
+	old := apiAcceptanceInsertLegacyProfile(t, f, apiAcceptanceProfile())
 	path := "/transcode-profiles/" + string(old.ID)
 	before := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "GET", path, "", 200))
 	if before["profile"].(map[string]any)["encoding"] != nil {
@@ -204,8 +204,8 @@ func TestProfileEncodingPatchPreservesLegacyAndRequiresExplicitReplacement(t *te
 			p["encoding"] = nil
 		}
 		created := encodingCreate(t, f, p)
-		if created["profile"].(map[string]any)["encoding"] != nil {
-			t.Fatal("Прежний POST автоматически обновлён:", created)
+		if created["profile"].(map[string]any)["encoding"] != nil || created["profile"].(map[string]any)["live_audio_mode"] != "copy" {
+			t.Fatal("Новый POST не сохранил видеонастройки или не назначил LIVE copy:", created)
 		}
 	}
 	p := encodingRequestProfile(t, "transcode", "vbr")
@@ -244,6 +244,10 @@ func TestProfileEncodingOpenAPIDocumentsPresenceNullabilityAndDefaults(t *testin
 		t.Fatal("Ответ не описывает прежний encoding:null:", encoding)
 	}
 	request := schemas["GroupProfileInput"].(map[string]any)
+	selector := request["properties"].(map[string]any)["live_audio_mode"].(map[string]any)
+	if selector["type"] != "string" || !reflect.DeepEqual(selector["enum"], []any{"copy", "transcode"}) || selector["default"] != nil || selector["nullable"] == true {
+		t.Fatal("Схема LIVE-аудио изменила строгий выбор или назначает общее значение по умолчанию:", selector)
+	}
 	if !strings.Contains(encodingJSON(t, request["properties"].(map[string]any)["encoding"]), `"type":"null"`) {
 		t.Fatal("Запрос не описывает допустимый encoding:null:", request)
 	}
@@ -253,5 +257,55 @@ func TestProfileEncodingOpenAPIDocumentsPresenceNullabilityAndDefaults(t *testin
 		if !strings.Contains(encodingJSON(t, response), "ProfileProblemDTO") {
 			t.Fatal("422 не описывает проверенные code/field:", response)
 		}
+	}
+}
+
+func TestProfileLiveAudioCreationReplacementAndTrustedErrors(t *testing.T) {
+	f := newAPIAcceptanceFixture(t, nil)
+	for _, encoding := range []string{"absent", "null", "v2"} {
+		p := encodingRequestProfile(t, "transcode", "vbr")
+		switch encoding {
+		case "absent":
+			delete(p, "encoding")
+		case "null":
+			p["encoding"] = nil
+		}
+		created := encodingCreate(t, f, p)
+		profile := created["profile"].(map[string]any)
+		if profile["live_audio_mode"] != "copy" {
+			t.Fatal("Новый профиль не получил LIVE copy:", created)
+		}
+		path := "/transcode-profiles/" + created["id"].(string)
+		delete(profile, "live_audio_mode")
+		body := encodingJSON(t, map[string]any{"expected_revision": "1", "profile": profile})
+		problem := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "PATCH", path, body, 422))
+		if problem["field"] != "profile.live_audio_mode" || problem["code"] != "invalid_profile" {
+			t.Fatal("Полная замена потеряла путь селектора:", problem)
+		}
+		body = encodingJSON(t, map[string]any{"expected_revision": "9", "profile": profile})
+		apiAcceptanceRequest(t, f.api, "PATCH", path, body, 409)
+		named := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":"1","name":"Другое имя"}`, 200))
+		profile["live_audio_mode"] = "transcode"
+		body = encodingJSON(t, map[string]any{"expected_revision": named["revision"], "profile": profile})
+		updated := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "PATCH", path, body, 200))
+		if updated["profile"].(map[string]any)["live_audio_mode"] != "transcode" {
+			t.Fatal("Явный transcode не сохранён:", updated)
+		}
+	}
+	for _, value := range []any{nil, "", "synthetic-rejected-secret", true} {
+		p := encodingRequestProfile(t, "transcode", "vbr")
+		p["live_audio_mode"] = value
+		w := apiAcceptanceRequest(t, f.api, "POST", "/transcode-profiles", encodingJSON(t, map[string]any{"name": "Профиль", "profile": p}), 422)
+		problem := apiAcceptanceJSON(t, w)
+		if problem["field"] != "profile.live_audio_mode" || problem["code"] != "invalid_profile" || problem["errors"] != nil {
+			t.Fatal("Некорректный selector потерял доверенную ошибку:", problem)
+		}
+		apiAcceptanceNoSecrets(t, w.Body.String(), "synthetic-rejected-secret")
+	}
+	p := encodingRequestProfile(t, "copy", "vbr")
+	p["live_audio_mode"] = "transcode"
+	problem := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "POST", "/transcode-profiles", encodingJSON(t, map[string]any{"name": "Профиль", "profile": p}), 422))
+	if problem["field"] != "profile.live_audio_mode" {
+		t.Fatal("copy разрешил transcode аудио:", problem)
 	}
 }

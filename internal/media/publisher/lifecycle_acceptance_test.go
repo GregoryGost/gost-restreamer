@@ -19,14 +19,14 @@ type lifecycleAcceptanceRepository struct {
 }
 
 func (r lifecycleAcceptanceRepository) Session(context.Context, core.ID) (core.Session, error) {
-	return core.Session{Record: core.Record{ID: r.fence.SessionID}, Incarnation: r.fence.Incarnation, Lifecycle: r.fence.Lifecycle, State: core.SessionRunning}, nil
+	return core.Session{ID: r.fence.SessionID, Incarnation: r.fence.Incarnation, Lifecycle: r.fence.Lifecycle, State: core.SessionRunning}, nil
 }
 func (r lifecycleAcceptanceRepository) Output(context.Context, core.ID) (core.SessionOutput, error) {
-	return core.SessionOutput{Record: core.Record{ID: r.fence.OutputID}, SessionID: r.fence.SessionID, Attached: true, DesiredRunning: true, Issued: true, Generation: r.fence.OutputGeneration, Attempt: r.fence.Attempt}, nil
+	return core.SessionOutput{ID: r.fence.OutputID, SessionID: r.fence.SessionID, Attached: true, DesiredRunning: true, Issued: true, Generation: r.fence.OutputGeneration, Attempt: r.fence.Attempt}, nil
 }
 func (r lifecycleAcceptanceRepository) ReceiptByID(context.Context, core.ID) (core.CommandReceipt, error) {
 	f := r.fence
-	return core.CommandReceipt{Record: core.Record{ID: f.CommandID}, Kind: core.CommandStartOutput, Status: core.CommandSucceeded, Incarnation: f.Incarnation, SessionID: f.SessionID, Lifecycle: f.Lifecycle, OutputID: f.OutputID, OutputGeneration: f.OutputGeneration, Attempt: f.Attempt}, nil
+	return core.CommandReceipt{ID: f.CommandID, Kind: core.CommandStartOutput, Status: core.CommandSucceeded, Incarnation: f.Incarnation, SessionID: f.SessionID, Lifecycle: f.Lifecycle, OutputID: f.OutputID, OutputGeneration: f.OutputGeneration, Attempt: f.Attempt}, nil
 }
 func (r lifecycleAcceptanceRepository) Generations(context.Context, core.ListQuery) ([]core.FallbackGeneration, error) {
 	return nil, nil
@@ -115,7 +115,7 @@ func TestPublisherAcceptanceStopDuringRealAuthorityGateWait(t *testing.T) {
 						t.Fatalf("Activate после Stop: %v", err)
 					}
 				}
-				for i := 0; i < 3; i++ {
+				for range 3 {
 					if err = p.Stop(stopCtx); !errors.Is(err, ErrCleanupPending) {
 						t.Fatal(err)
 					}

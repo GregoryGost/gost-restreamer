@@ -172,8 +172,8 @@ func TestEncodingProfilesPreparedManagerFDPlayerGroupLoops(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = manager.Close(context.Background()) })
 			img := image.NewRGBA(image.Rect(0, 0, 128, 128))
-			for y := 0; y < 128; y++ {
-				for x := 0; x < 128; x++ {
+			for y := range 128 {
+				for x := range 128 {
 					img.SetRGBA(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 40, A: 255})
 				}
 			}

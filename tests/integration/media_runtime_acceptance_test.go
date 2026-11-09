@@ -399,7 +399,7 @@ func TestAcceptanceCPUUDSSupervisorRoundTrip(t *testing.T) {
 			}
 			decoded := mediaCommand(t, binary, out.Bytes(), "-hide_banner", "-loglevel", "warning", "-xerror", "-copyts", "-i", "pipe:0", "-map", "0:v", "-map", "0:a", "-fps_mode", "passthrough", "-f", "framemd5", "pipe:1")
 			videoDecoded, audioDecoded := 0, 0
-			for _, line := range strings.Split(string(decoded), "\n") {
+			for line := range strings.SplitSeq(string(decoded), "\n") {
 				if strings.HasPrefix(line, "0,") {
 					videoDecoded++
 				}

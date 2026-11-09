@@ -74,24 +74,13 @@ func buildCommand(binary string, req GenerateRequest, testEncoder string) (Comma
 	}
 	n := func(v uint64) string { return strconv.FormatUint(v, 10) }
 	duration := durationArgument(req.LoopDuration)
-	padding := req.LoopDuration - req.Source.Duration
-	if padding%time.Microsecond != 0 {
-		padding = (padding/time.Microsecond + 1) * time.Microsecond
-	}
 	args := []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-xerror", "-protocol_whitelist", "fd,pipe", "-format_whitelist", req.Source.Demuxer, "-f", req.Source.Demuxer}
 	if req.Source.Kind == core.AssetImage {
 		args = append(args, "-loop", "1", "-framerate", fmt.Sprintf("%d/%d", fps.Numerator, fps.Denominator))
 	}
 	args = append(args, "-fd", "3", "-i", "fd:")
-	if req.Source.Format.Audio == nil {
-		args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("anullsrc=r=%d:cl=%s", a.SampleRateHz, a.ChannelLayout))
-	}
-	args = append(args, "-map", "0:v:0", "-map")
-	if req.Source.Format.Audio == nil {
-		args = append(args, "1:a:0")
-	} else {
-		args = append(args, "0:a:0")
-	}
+	args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("anullsrc=r=%d:cl=%s", a.SampleRateHz, a.ChannelLayout))
+	args = append(args, "-map", "0:v:0", "-map", "1:a:0")
 	encoder := "h264_nvenc"
 	switch v.Codec {
 	case core.CodecAV1:
@@ -128,7 +117,7 @@ func buildCommand(binary string, req GenerateRequest, testEncoder string) (Comma
 			plan.Video = append(adapted, "-sc_threshold", "0")
 		}
 	}
-	args = append(args, "-vf", fmt.Sprintf("fps=fps=%d/%d:round=near:eof_action=round,tpad=stop_mode=clone:stop_duration=%s,scale=w=%d:h=%d,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709", fps.Numerator, fps.Denominator, durationArgument(padding), v.Width, v.Height), "-fps_mode:v", "passthrough", "-enc_time_base:v", "filter")
+	args = append(args, "-vf", fmt.Sprintf("fps=fps=%d/%d:round=near:eof_action=round,tpad=stop_mode=clone:stop=-1,scale=w=%d:h=%d,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709", fps.Numerator, fps.Denominator, v.Width, v.Height), "-fps_mode:v", "passthrough", "-enc_time_base:v", "filter")
 	args = append(args, plan.Video...)
 	args = append(args, "-af", "apad=pad_dur="+duration)
 	args = append(args, plan.Audio...)

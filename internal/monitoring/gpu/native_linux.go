@@ -24,7 +24,7 @@ func (nvmlBackend) Poll(limits Limits) Sample {
 		return Sample{Reason: BudgetExceeded}
 	}
 	sample := Sample{Reason: Available, Devices: make([]DeviceSample, 0, count)}
-	for i := 0; i < count; i++ {
+	for i := range count {
 		device, result := nvml.DeviceGetHandleByIndex(i)
 		if result != nvml.SUCCESS {
 			return Sample{Reason: nativeReason(result)}

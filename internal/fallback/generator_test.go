@@ -3,13 +3,11 @@ package fallback
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"image"
 	"image/color"
 	"image/png"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -71,6 +69,27 @@ func TestProductionBuildersKeepHardwarePolicyAndFDInput(t *testing.T) {
 		if _, err = ProductionBuilder("ffmpeg")(GenerateRequest{Source: Source{Kind: core.AssetImage, Duration: time.Second, Demuxer: "png_pipe"}, Profile: p, LoopDuration: 1600 * time.Millisecond}); !errors.Is(err, ErrInvalid) {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestProductionBuilderReplacesSourceAudioWithProfileSilence(t *testing.T) {
+	p := selfProfile(core.CodecH264)
+	p.LiveAudioMode = core.LiveAudioCopy
+	audio := p.Format.Audio
+	audio.SampleRateHz = 44100
+	audio.Channels, audio.ChannelLayout = 1, "mono"
+	command, err := ProductionBuilder("ffmpeg")(GenerateRequest{Source: Source{Kind: core.AssetVideo, Format: core.SourceFormat{Audio: &audio}, Duration: time.Second, Demuxer: "mov"}, Profile: p, LoopDuration: 1600 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(command.Args, " ")
+	for _, required := range []string{"anullsrc=r=48000:cl=stereo", "-map 0:v:0 -map 1:a:0", "-c:a aac", "-ar:a 48000", "-ac:a 2"} {
+		if !strings.Contains(args, required) {
+			t.Fatal(required, args)
+		}
+	}
+	if strings.Contains(args, "-map 0:a:0") || strings.Contains(args, "-c:a copy") {
+		t.Fatal("подготовка использует звук источника", args)
 	}
 }
 
@@ -375,123 +394,126 @@ func TestCPUVideoWithoutAudioReceivesVerifiedSilence(t *testing.T) {
 	}
 }
 
-func TestCPUShortVideoRetainsToneAndPadsAFullLoop(t *testing.T) {
+func TestCPUShortVideoReplacesToneWithSilenceAndPadsAFullLoop(t *testing.T) {
 	binaryPath := os.Getenv("GOST_MEDIA_FFMPEG")
 	if binaryPath == "" {
 		t.Skip("локальная CPU-проверка не включена")
 	}
-	r := selfRunner()
-	source, err := os.CreateTemp(t.TempDir(), "source-with-audio.mp4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	selfClose(t, source)
-	command := Command{Binary: binaryPath, Args: []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-xerror", "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=30:duration=1.13", "-f", "lavfi", "-i", "sine=frequency=750:sample_rate=48000:duration=1.13", "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-bf", "0", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-vf", "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709", "-t", "1.13", "-f", "mp4", "-movflags", "+faststart", "-y", source.Name()}}
-	if result, err := r.Run(context.Background(), command, nil, nil); err != nil {
-		t.Fatalf("source: %v: %s", err, result.Diagnostics)
-	}
-	p := Prober{Binary: filepath.Join(filepath.Dir(binaryPath), "ffprobe"), Runner: r, Limits: selfProbeLimits()}
-	observed, err := p.Source(context.Background(), source, core.AssetVideo)
-	if err != nil || observed.Format.Audio == nil {
-		t.Fatal(observed, err)
-	}
-	profile := selfProfile(core.CodecH264)
-	loop, err := EffectiveLoopDuration(observed.Duration, profile, p.Limits.MaxDuration)
-	if err != nil || loop != 1600*time.Millisecond {
-		t.Fatal(observed.Duration, loop, err)
-	}
-	command, err = buildCommand(binaryPath, GenerateRequest{Source: observed, Profile: profile, LoopDuration: loop}, "libx264")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input, err := os.Open(source.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	selfClose(t, input)
-	raw, err := os.CreateTemp(t.TempDir(), "raw.mp4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	selfClose(t, raw)
-	if result, err := r.Run(context.Background(), command, input, &boundedWriter{w: raw, remaining: 8 << 20}); err != nil {
-		t.Fatalf("generate: %v: %s", err, result.Diagnostics)
-	}
-	normalized, err := os.CreateTemp(t.TempDir(), "normalized.mp4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	selfClose(t, normalized)
-	if err = p.NormalizePrepared(context.Background(), raw, &boundedWriter{w: normalized, remaining: 8 << 20}); err != nil {
-		t.Fatal(err)
-	}
-	selfComparePackets(t, p, raw, normalized, true)
-	if _, err = p.Verify(context.Background(), normalized, profile); err != nil {
-		t.Fatal(err)
-	}
-	if err = p.VerifyLoopDuration(context.Background(), normalized, loop); err != nil {
-		t.Fatal(err)
-	}
-	doc, err := p.inspect(context.Background(), normalized)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, stream := range doc.Streams {
-		start, err := strconv.ParseFloat(stream.StartTime, 64)
-		if err != nil || start != 0 {
-			t.Fatalf("начало %s=%s: %v", stream.Type, stream.StartTime, err)
-		}
-	}
-	decode := func(args ...string) []byte {
-		file, err := os.Open(normalized.Name())
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() {
-			if err := file.Close(); err != nil {
-				t.Error(err)
+	for _, test := range []struct {
+		name                         string
+		videoDuration, audioDuration time.Duration
+		loop                         time.Duration
+	}{
+		{name: "equal-source-tracks", videoDuration: 1130 * time.Millisecond, audioDuration: 1130 * time.Millisecond, loop: 1600 * time.Millisecond},
+		{name: "longer-source-audio", videoDuration: 1600 * time.Millisecond, audioDuration: 1800 * time.Millisecond, loop: 3200 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := selfRunner()
+			source, err := os.CreateTemp(t.TempDir(), "source-with-audio.mp4")
+			if err != nil {
+				t.Fatal(err)
 			}
-		}()
-		var out bytes.Buffer
-		argv := []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-xerror", "-protocol_whitelist", "fd,pipe", "-fd", "3", "-i", "fd:"}
-		argv = append(argv, args...)
-		argv = append(argv, "pipe:1")
-		result, err := r.Run(context.Background(), Command{Binary: binaryPath, Args: argv}, file, &boundedWriter{w: &out, remaining: 2 << 20})
-		if err != nil {
-			t.Fatalf("decode: %v: %s", err, result.Diagnostics)
-		}
-		return out.Bytes()
-	}
-	video := decode("-map", "0:v:0", "-an", "-fps_mode:v", "passthrough", "-f", "framemd5")
-	frames := 0
-	for _, line := range strings.Split(string(video), "\n") {
-		if line != "" && !strings.HasPrefix(line, "#") {
-			frames++
-		}
-	}
-	if frames != 48 {
-		t.Fatalf("число декодированных видеокадров %d !=48", frames)
-	}
-	pcm := decode("-map", "0:a:0", "-vn", "-c:a", "pcm_s16le", "-f", "s16le")
-	if len(pcm) != 76800*2*2 {
-		t.Fatalf("число аудиосэмплов PCM на канал %d !=76800", len(pcm)/4)
-	}
-	window := func(from, to int, frequency float64) (power, spectral float64) {
-		var sinSum, cosSum float64
-		for n := from; n < to; n++ {
-			sample := float64(int16(binary.LittleEndian.Uint16(pcm[n*4:])))
-			power += sample * sample
-			phase := 2 * math.Pi * frequency * float64(n) / 48000
-			sinSum += sample * math.Sin(phase)
-			cosSum += sample * math.Cos(phase)
-		}
-		count := float64(to - from)
-		return power / count, (sinSum*sinSum + cosSum*cosSum) / (count * count)
-	}
-	tonePower, toneSpectrum := window(4800, 43200, 750)
-	_, otherSpectrum := window(4800, 43200, 500)
-	quietPower, _ := window(67200, 72000, 750)
-	if tonePower < 10000 || toneSpectrum < 20*otherSpectrum || quietPower > tonePower/100 {
-		t.Fatalf("тон или тихий хвост не сохранён: power=%g tone=%g other=%g quiet=%g", tonePower, toneSpectrum, otherSpectrum, quietPower)
+			selfClose(t, source)
+			command := Command{Binary: binaryPath, Args: []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-xerror", "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=30:duration=" + durationArgument(test.videoDuration), "-f", "lavfi", "-i", "sine=frequency=750:sample_rate=48000:duration=" + durationArgument(test.audioDuration), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-bf", "0", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-vf", "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709", "-t", durationArgument(test.audioDuration), "-f", "mp4", "-movflags", "+faststart", "-y", source.Name()}}
+			if result, err := r.Run(context.Background(), command, nil, nil); err != nil {
+				t.Fatalf("source: %v: %s", err, result.Diagnostics)
+			}
+			p := Prober{Binary: filepath.Join(filepath.Dir(binaryPath), "ffprobe"), Runner: r, Limits: selfProbeLimits()}
+			observed, err := p.Source(context.Background(), source, core.AssetVideo)
+			if err != nil || observed.Format.Audio == nil {
+				t.Fatal(observed, err)
+			}
+			profile := selfProfile(core.CodecH264)
+			loop, err := EffectiveLoopDuration(observed.Duration, profile, p.Limits.MaxDuration)
+			if err != nil || loop != test.loop {
+				t.Fatal(observed.Duration, loop, err)
+			}
+			if test.audioDuration > test.videoDuration && observed.Duration <= test.videoDuration {
+				t.Fatalf("контейнер не сохранил более длинную аудиодорожку: %s <= %s", observed.Duration, test.videoDuration)
+			}
+			command, err = buildCommand(binaryPath, GenerateRequest{Source: observed, Profile: profile, LoopDuration: loop}, "libx264")
+			if err != nil {
+				t.Fatal(err)
+			}
+			input, err := os.Open(source.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			selfClose(t, input)
+			raw, err := os.CreateTemp(t.TempDir(), "raw.mp4")
+			if err != nil {
+				t.Fatal(err)
+			}
+			selfClose(t, raw)
+			if result, err := r.Run(context.Background(), command, input, &boundedWriter{w: raw, remaining: 8 << 20}); err != nil {
+				t.Fatalf("generate: %v: %s", err, result.Diagnostics)
+			}
+			normalized, err := os.CreateTemp(t.TempDir(), "normalized.mp4")
+			if err != nil {
+				t.Fatal(err)
+			}
+			selfClose(t, normalized)
+			if err = p.NormalizePrepared(context.Background(), raw, &boundedWriter{w: normalized, remaining: 8 << 20}); err != nil {
+				t.Fatal(err)
+			}
+			selfComparePackets(t, p, raw, normalized, true)
+			if _, err = p.Verify(context.Background(), normalized, profile); err != nil {
+				t.Fatal(err)
+			}
+			if err = p.VerifyLoopDuration(context.Background(), normalized, loop); err != nil {
+				t.Fatal(err)
+			}
+			doc, err := p.inspect(context.Background(), normalized)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, stream := range doc.Streams {
+				start, err := strconv.ParseFloat(stream.StartTime, 64)
+				if err != nil || start != 0 {
+					t.Fatalf("начало %s=%s: %v", stream.Type, stream.StartTime, err)
+				}
+			}
+			decode := func(args ...string) []byte {
+				file, err := os.Open(normalized.Name())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if err := file.Close(); err != nil {
+						t.Error(err)
+					}
+				}()
+				var out bytes.Buffer
+				argv := []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-xerror", "-protocol_whitelist", "fd,pipe", "-fd", "3", "-i", "fd:"}
+				argv = append(argv, args...)
+				argv = append(argv, "pipe:1")
+				result, err := r.Run(context.Background(), Command{Binary: binaryPath, Args: argv}, file, &boundedWriter{w: &out, remaining: 2 << 20})
+				if err != nil {
+					t.Fatalf("decode: %v: %s", err, result.Diagnostics)
+				}
+				return out.Bytes()
+			}
+			video := decode("-map", "0:v:0", "-an", "-fps_mode:v", "passthrough", "-f", "framemd5")
+			frames := 0
+			for line := range strings.SplitSeq(string(video), "\n") {
+				if line != "" && !strings.HasPrefix(line, "#") {
+					frames++
+				}
+			}
+			wantFrames := int(loop * 30 / time.Second)
+			if frames != wantFrames {
+				t.Fatalf("число декодированных видеокадров %d !=%d", frames, wantFrames)
+			}
+			pcm := decode("-map", "0:a:0", "-vn", "-c:a", "pcm_s16le", "-f", "s16le")
+			wantSamples := int(loop * 48000 / time.Second)
+			if len(pcm) != wantSamples*2*2 {
+				t.Fatalf("число аудиосэмплов PCM на канал %d !=%d", len(pcm)/4, wantSamples)
+			}
+			for i, sample := range pcm {
+				if sample != 0 {
+					t.Fatalf("подготовленная тишина содержит ненулевой PCM byte[%d]=%d", i, sample)
+				}
+			}
+		})
 	}
 }

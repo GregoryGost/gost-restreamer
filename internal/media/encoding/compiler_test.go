@@ -23,6 +23,9 @@ func TestCompilerExplicitRateControlAndEveryEncoderOption(t *testing.T) {
 		for _, rc := range []string{"cbr", "vbr"} {
 			t.Run(string(codec)+"/"+rc, func(t *testing.T) {
 				p := compilerProfile(codec)
+				if codec == core.CodecH264 {
+					p.LiveAudioMode = core.LiveAudioTranscode
+				}
 				encoder := "h264_nvenc"
 				if codec == core.CodecAV1 {
 					encoder = "libsvtav1"
@@ -133,5 +136,35 @@ func TestCompilerLegacySemanticsAndAutoLookahead(t *testing.T) {
 	p.Encoding.VideoCustom = "rc=1"
 	if _, err = Compile(p, Prepared); err == nil {
 		t.Fatal("конфликт прошёл compiler")
+	}
+}
+
+func TestCompilerCopiesLiveAudioWithoutChangingPreparedEncoding(t *testing.T) {
+	p := compilerProfile(core.CodecH264)
+	p.Encoding = core.DefaultEncoding(p.Mode, "h264_nvenc", "vbr")
+	p.Encoding.AudioCustom = "aac_coder=fast"
+	p.LiveAudioMode = core.LiveAudioTranscode
+	encoded, err := Compile(p, Live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := Compile(p, Prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.LiveAudioMode = core.LiveAudioCopy
+	live, err := Compile(p, Live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(live.Audio, []string{"-c:a", "copy"}) || !reflect.DeepEqual(live.Video, encoded.Video) {
+		t.Fatal(live, encoded)
+	}
+	silent, err := Compile(p, Prepared)
+	if err != nil || !reflect.DeepEqual(silent, prepared) {
+		t.Fatal(silent, prepared, err)
+	}
+	if !reflect.DeepEqual(encoded.Audio, prepared.Audio) || !strings.Contains(strings.Join(encoded.Audio, " "), "-aac_coder fast") {
+		t.Fatal(encoded, prepared)
 	}
 }

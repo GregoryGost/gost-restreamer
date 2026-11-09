@@ -204,10 +204,7 @@ func (s *SessionSampler) run(ctx context.Context) {
 		timer.Stop()
 		timerC = nil
 		if !next.IsZero() {
-			delay := time.Until(next)
-			if delay < 0 {
-				delay = 0
-			}
+			delay := max(time.Until(next), 0)
 			timer.Reset(delay)
 			timerC = timer.C
 		}

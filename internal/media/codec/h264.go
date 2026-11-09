@@ -34,7 +34,7 @@ func H264SPS(desc VideoDescription) (h264.SPS, error) {
 	if ppsCount == 0 {
 		return h264.SPS{}, ErrCodec
 	}
-	for i := 0; i < ppsCount; i++ {
+	for range ppsCount {
 		if len(b) < 2 {
 			return h264.SPS{}, ErrCodec
 		}

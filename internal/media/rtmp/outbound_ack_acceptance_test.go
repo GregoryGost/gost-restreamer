@@ -529,7 +529,7 @@ func TestACKAcceptanceRealTCPAndTLSProgressBeyondWindow(t *testing.T) {
 					c.mu.Unlock()
 					c.writeMu.Unlock()
 				}
-				for i := 0; i < 4; i++ {
+				for i := range 4 {
 					if mode == "constant_ahead" {
 						if err := p.ack(uint32(p.count.bytes.Load() + 4)); err != nil {
 							t.Fatal(err)

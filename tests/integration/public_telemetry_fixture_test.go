@@ -169,7 +169,7 @@ func TestPublicTelemetryFiniteMediaChild(t *testing.T) {
 	ticker := time.NewTicker(time.Second / 60)
 	defer ticker.Stop()
 	var audioTicks int64
-	for frame := int64(0); frame < 60; frame++ {
+	for frame := range int64(60) {
 		packet, err := media.NewPacket(media.PacketInfo{PTS: frame, DTS: frame, DurationTicks: 1, Keyframe: true}, video, publisherPayload(video, 10))
 		if err != nil || mux.WritePacket(packet) != nil {
 			t.Fatal("передача конечного видео:", err)

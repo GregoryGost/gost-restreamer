@@ -175,7 +175,7 @@ func validateOutboundProfile(p core.MediaFormat) error {
 		}
 		if v.Level != "" && v.Level != "auto" && v.Level != "unspecified" {
 			valid := false
-			for level := 0; level < 24; level++ {
+			for level := range 24 {
 				if v.Level == fmt.Sprintf("%d.%d", 2+level/4, level%4) {
 					valid = true
 					if level < 8 && v.Tier == "high" {

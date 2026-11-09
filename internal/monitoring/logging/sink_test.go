@@ -122,7 +122,7 @@ func (w failureWriter) Write(p []byte) (int, error) {
 
 func TestWriterFailuresAndRepeatedLifecycle(t *testing.T) {
 	for _, short := range []bool{false, true} {
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			s, err := New(testConfig(), failureWriter{short: short})
 			if err != nil {
 				t.Fatal(err)
@@ -199,7 +199,7 @@ func TestStderrHasOneOwnerUntilJoin(t *testing.T) {
 	if _, err := NewStderr(Config{}); !errors.Is(err, ErrInvalid) {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		s, err := NewStderr(testConfig())
 		if err != nil {
 			t.Fatal(err)

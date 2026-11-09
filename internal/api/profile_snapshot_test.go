@@ -26,10 +26,7 @@ func TestActiveSessionAndOutputResponsesKeepOriginalProfileVersions(t *testing.T
 	}
 	legacyProfile := apiAcceptanceProfile()
 	legacyProfile.Format.Video.FrameRate = core.FrameRate{Numerator: 30, Denominator: 1}
-	legacy, err := f.service.CreateProfile(ctx, core.TranscodeProfile{Name: "Прежний", Profile: legacyProfile})
-	if err != nil {
-		t.Fatal(err)
-	}
+	legacy := apiAcceptanceInsertLegacyProfile(t, f, legacyProfile)
 	legacyWire := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "GET", "/transcode-profiles/"+string(legacy.ID), "", 200))
 	modernWire := encodingCreate(t, f, encodingRequestProfile(t, "transcode", "vbr"))
 	ids := []core.ID{legacy.ID, core.ID(modernWire["id"].(string))}
@@ -59,6 +56,7 @@ func TestActiveSessionAndOutputResponsesKeepOriginalProfileVersions(t *testing.T
 	}
 	for _, id := range ids {
 		p := encodingRequestProfile(t, "transcode", "cbr")
+		p["live_audio_mode"] = "transcode"
 		apiAcceptanceRequest(t, f.api, "PATCH", "/transcode-profiles/"+string(id), encodingJSON(t, map[string]any{"expected_revision": "1", "profile": p}), 200)
 	}
 	path := "/sessions/" + string(receipt.SessionID)

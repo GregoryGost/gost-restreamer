@@ -68,7 +68,7 @@ func acceptanceMonitoringClient(t *testing.T, f *sessionAcceptanceFixture, liste
 
 func acceptanceMonitoringBeforeReady(t *testing.T, client *gortmplib.Client, audioConfig media.CodecConfig, video, audio []byte, pairs int) {
 	t.Helper()
-	for i := 0; i < pairs; i++ {
+	for i := range pairs {
 		if err := publisherWriteMessage(client.NetConn(), 9, 1, uint32(20*i), append([]byte{0x91, 'a', 'v', '0', '1'}, video...)); err != nil {
 			t.Fatal(err)
 		}
@@ -76,7 +76,7 @@ func acceptanceMonitoringBeforeReady(t *testing.T, client *gortmplib.Client, aud
 	if err := publisherWriteMessage(client.NetConn(), 8, 1, 0, append([]byte{0xaf, 0}, audioConfig.Headers()...)); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < pairs; i++ {
+	for i := range pairs {
 		if err := publisherWriteMessage(client.NetConn(), 8, 1, uint32(20*i), append([]byte{0xaf, 1}, audio...)); err != nil {
 			t.Fatal(err)
 		}
@@ -141,7 +141,7 @@ func TestAcceptanceSessionMonitoringMeasuresIngressBeforeReadyAndAfterOverride(t
 		defer close(producerDone)
 		ticker := time.NewTicker(20 * time.Millisecond)
 		defer ticker.Stop()
-		for i := 0; i < 120; i++ {
+		for i := range 120 {
 			select {
 			case <-producerCtx.Done():
 				produced <- producerCtx.Err()

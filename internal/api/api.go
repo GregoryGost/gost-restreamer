@@ -106,6 +106,15 @@ func New(config Config) (*API, error) {
 			if problem, ok := v.(*trustedProfileProblem); ok && n == 422 {
 				return problem, nil
 			}
+			if problem, ok := v.(*huma.ErrorModel); ok && n == 422 {
+				if op := ctx.Operation(); op != nil && (op.OperationID == "create-profile" || op.OperationID == "update-profile") {
+					for _, detail := range problem.Errors {
+						if detail != nil && detail.Location == "body.profile.live_audio_mode" {
+							return newProfileProblem("invalid_profile", "profile.live_audio_mode", "Требуется явное значение copy или transcode."), nil
+						}
+					}
+				}
+			}
 			return safeProblem(n), nil
 		}
 		return v, nil
@@ -278,8 +287,7 @@ func (a *API) problem(err error) error {
 }
 func classify(err error) int {
 	var max *http.MaxBytesError
-	var transport transportError
-	if errors.As(err, &transport) {
+	if transport, ok := errors.AsType[transportError](err); ok {
 		return int(transport)
 	}
 	switch {
@@ -339,7 +347,7 @@ type ProfileProblemDTO struct {
 type trustedProfileProblem struct{ ProfileProblemDTO }
 
 func newProfileProblem(code, field, detail string) *trustedProfileProblem {
-	return &trustedProfileProblem{ProfileProblemDTO{ErrorModel: huma.ErrorModel{Type: "about:blank", Title: http.StatusText(http.StatusUnprocessableEntity), Status: http.StatusUnprocessableEntity, Detail: detail}, Code: code, Field: field}}
+	return &trustedProfileProblem{ProfileProblemDTO{Type: "about:blank", Title: http.StatusText(http.StatusUnprocessableEntity), Status: http.StatusUnprocessableEntity, Detail: detail, Code: code, Field: field}}
 }
 func writeProblem(w http.ResponseWriter, status int) {
 	w.Header().Set("Content-Type", "application/problem+json")

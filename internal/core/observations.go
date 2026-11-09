@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -689,7 +689,7 @@ func (a *RuntimeAuthority) runtimeSnapshotLocked(f RuntimeSessionFence) (Session
 		return SessionRuntimeSnapshot{}, ErrNotReady
 	}
 	result.Fence = cloneRuntimeFence(f)
-	sort.Slice(tokens, func(i, j int) bool { return tokens[i] < tokens[j] })
+	slices.Sort(tokens)
 	for _, token := range tokens {
 		n := a.observations[token]
 		switch n.kind {

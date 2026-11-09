@@ -93,11 +93,13 @@ func newPublisherPipeline(t *testing.T, profiles []core.GroupProfile, endpoints 
 		t.Fatal(err)
 	}
 	var groups []core.TranscodeGroup
-	for _, p := range profiles {
+	profiles = append([]core.GroupProfile(nil), profiles...)
+	for i, p := range profiles {
 		profile, e := svc.CreateProfile(ctx, core.TranscodeProfile{Name: "Профиль", Profile: p})
 		if e != nil {
 			t.Fatal(e)
 		}
+		profiles[i] = profile.Profile
 		g, e := svc.CreateGroup(ctx, core.TranscodeGroup{Name: "Группа", StreamID: stream.ID, ProfileID: profile.ID})
 		if e != nil {
 			t.Fatal(e)
@@ -123,7 +125,7 @@ func newPublisherPipeline(t *testing.T, profiles []core.GroupProfile, endpoints 
 	}
 	publication := core.GenerationPublication{SourceHash: "controlled-source", SizeBytes: 1, SourceFormat: core.SourceFormat{ImageFormat: "png"}}
 	for _, r := range gen.RequiredProfiles {
-		publication.Variants = append(publication.Variants, core.FallbackVariant{Record: core.Record{ID: r.VariantID}, GenerationID: gen.ID, AssetID: asset.ID, SourceHash: publication.SourceHash, Profile: r.Profile, VerifiedFormat: r.Profile.Format, GeneratorVersion: gen.GeneratorVersion, ManagedPath: r.ManagedPath, SizeBytes: 1, ContentHash: "controlled-result"})
+		publication.Variants = append(publication.Variants, core.FallbackVariant{ID: r.VariantID, GenerationID: gen.ID, AssetID: asset.ID, SourceHash: publication.SourceHash, Profile: r.Profile, VerifiedFormat: r.Profile.Format, GeneratorVersion: gen.GeneratorVersion, ManagedPath: r.ManagedPath, SizeBytes: 1, ContentHash: "controlled-result"})
 	}
 	if _, err = svc.PublishPreparation(ctx, pf, publication); err != nil {
 		t.Fatal(err)
@@ -479,7 +481,7 @@ func TestPublisherIngestGroupsAndIndependentDestinations(t *testing.T) {
 	var receivers []*publisherReceiver
 	var trusts []*tls.Config
 	var endpoints []string
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		r, trust := newPublisherReceiver(t, i == 3)
 		receivers = append(receivers, r)
 		trusts = append(trusts, trust)

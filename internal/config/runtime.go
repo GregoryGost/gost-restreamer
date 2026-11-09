@@ -26,7 +26,7 @@ import (
 )
 
 // GeneratorVersion обозначает формат существующего генератора файлов заглушки.
-const GeneratorVersion = "fallback-fmp4-v1"
+const GeneratorVersion = "fallback-fmp4-silent-v2"
 
 func (c Config) StorageOptions() storage.Options {
 	s := c.Storage
@@ -150,7 +150,7 @@ func validHost(host string) bool {
 		return false
 	}
 	host = strings.TrimSuffix(host, ".")
-	for _, label := range strings.Split(host, ".") {
+	for label := range strings.SplitSeq(host, ".") {
 		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
 			return false
 		}

@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"time"
 )
 
@@ -45,7 +45,7 @@ func identity(kind CommandKind, target ID, destinations []ID) ([]byte, error) {
 		return nil, err
 	}
 	ids := append([]ID(nil), destinations...)
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	slices.Sort(ids)
 	for i, id := range ids {
 		if err := id.Validate(); err != nil {
 			return nil, err

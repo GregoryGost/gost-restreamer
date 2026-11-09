@@ -174,7 +174,7 @@ func TestAcceptanceSamplerTransientSourcesCannotStarveExistingSource(t *testing.
 			t.Fatal(err)
 		}
 		synctest.Wait()
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			time.Sleep(500 * time.Millisecond)
 			if err = s.Register(2, func(context.Context, time.Time, bool) error { return nil }); err != nil {
 				t.Fatal(err)

@@ -89,7 +89,7 @@ func TestAcceptanceAPIRealManagerReceiptsSnapshotsMetricsAndMembership(t *testin
 	startBody := fmt.Sprintf(`{"request_id":"http-start","destination_ids":[%q]}`, f.destinations[0].ID)
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		wg.Go(func() {
 			r := httptest.NewRequest("POST", api.Prefix+"/streams/"+string(f.stream.ID)+"/start", strings.NewReader(startBody))
 			r.Header.Set("Content-Type", "application/json")

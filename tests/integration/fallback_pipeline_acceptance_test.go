@@ -244,7 +244,7 @@ func fallbackPipelineActualTransitions(t *testing.T, binary string, probe fallba
 	pushSource := func(feed group.Feed, frame int, at time.Time) {
 		source := sources[feed]
 		end := big.NewRat(int64(frame+1), 30)
-		for track := 0; track < 2; track++ {
+		for track := range 2 {
 			for source.next[track] < len(source.packets[track]) {
 				p := source.packets[track][source.next[track]]
 				if fallbackActualTime(p.Info().DTS, p.Config().Info().TimeBase).Cmp(end) >= 0 {
@@ -257,7 +257,7 @@ func fallbackPipelineActualTransitions(t *testing.T, binary string, probe fallba
 			}
 		}
 	}
-	for frame := 0; frame < 48; frame++ {
+	for frame := range 48 {
 		at := now.Add(time.Duration(frame) * time.Second / 30)
 		if frame == 24 {
 			_ = sw.SetPaused(true, at)
@@ -335,7 +335,7 @@ func fallbackDecodeMixedElementary(t *testing.T, binary string, profile core.Gro
 					}
 					position := 6
 					count := int(headers[5] & 31)
-					for pass := 0; pass < 2; pass++ {
+					for pass := range 2 {
 						for i := 0; i < count; i++ {
 							if len(headers)-position < 2 {
 								t.Fatal("обрезана длина avcC")
@@ -411,7 +411,7 @@ func fallbackDecodeMixedElementary(t *testing.T, binary string, profile core.Gro
 	var energy750, energy500, energy1000 float64
 	for block := 0; block < audios; block++ {
 		var s750, c750, s500, c500, s1000, c1000 float64
-		for n := 0; n < 1024; n++ {
+		for n := range 1024 {
 			sample := float64(int16(encodingbinary.LittleEndian.Uint16(pcm[(block*1024+n)*4:])))
 			x := 2 * math.Pi * float64(n) / 48000
 			s750 += sample * math.Sin(750*x)
@@ -511,8 +511,8 @@ func TestFallbackPipelineCPUGenerationFDLoopsAndDecode(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = manager.Close(context.Background()) })
 			img := image.NewRGBA(image.Rect(0, 0, 128, 128))
-			for y := 0; y < 128; y++ {
-				for x := 0; x < 128; x++ {
+			for y := range 128 {
+				for x := range 128 {
 					img.SetRGBA(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 40, A: 255})
 				}
 			}

@@ -58,7 +58,7 @@ func diagnosticProtocol(t *testing.T, err error, cause error, fields ...string) 
 	}
 	for _, field := range fields {
 		found := false
-		for _, token := range strings.Fields(err.Error()) {
+		for token := range strings.FieldsSeq(err.Error()) {
 			if strings.TrimSuffix(token, ":") == field {
 				found = true
 				break

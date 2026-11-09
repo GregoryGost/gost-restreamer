@@ -109,8 +109,8 @@ func TestManagedFileAnchorsSurviveReopenAndRejectReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ownedDir := core.OwnedFile{Record: core.Record{ID: "directory-id"}, AssetID: "asset", GenerationID: "generation", Kind: core.OwnedDirectory, ManagedPath: "fallback/generation"}
-	owned := core.OwnedFile{Record: core.Record{ID: "staging-id"}, AssetID: "asset", GenerationID: "generation", Kind: core.OwnedStaging, ManagedPath: "fallback/generation/partial"}
+	ownedDir := core.OwnedFile{ID: "directory-id", AssetID: "asset", GenerationID: "generation", Kind: core.OwnedDirectory, ManagedPath: "fallback/generation"}
+	owned := core.OwnedFile{ID: "staging-id", AssetID: "asset", GenerationID: "generation", Kind: core.OwnedStaging, ManagedPath: "fallback/generation/partial"}
 	if err = files.CreateOwnedGeneration(ownedDir); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestManagedFileAnchorsSurviveReopenAndRejectReplacement(t *testing.T) {
 	if err = f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	completed := core.OwnedFile{Record: core.Record{ID: "completed-id"}, AssetID: "asset", GenerationID: "generation", Kind: core.OwnedOriginal, ManagedPath: "fallback/generation/original"}
+	completed := core.OwnedFile{ID: "completed-id", AssetID: "asset", GenerationID: "generation", Kind: core.OwnedOriginal, ManagedPath: "fallback/generation/original"}
 	original, err := files.CreateOwned(completed)
 	if err != nil {
 		t.Fatal(err)

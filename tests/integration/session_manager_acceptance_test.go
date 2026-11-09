@@ -247,7 +247,7 @@ func newSessionAcceptanceFixture(t *testing.T, helper string, endpoints []string
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		g, err := f.service.CreateGroup(ctx, core.TranscodeGroup{Name: fmt.Sprintf("Группа %d", i), StreamID: f.stream.ID, ProfileID: saved.ID})
 		if err != nil {
 			t.Fatal(err)
@@ -336,7 +336,7 @@ func (f *sessionAcceptanceFixture) seedFallback(t *testing.T) {
 	}
 	publication := core.GenerationPublication{SourceHash: digest, SizeBytes: uint64(len(data)), SourceFormat: core.SourceFormat{ImageFormat: "png"}}
 	for _, required := range g.RequiredProfiles {
-		publication.Variants = append(publication.Variants, core.FallbackVariant{Record: core.Record{ID: required.VariantID}, GenerationID: g.ID, AssetID: g.AssetID, SourceHash: digest, Profile: required.Profile, VerifiedFormat: required.Profile.Format, GeneratorVersion: g.GeneratorVersion, ManagedPath: required.ManagedPath, SizeBytes: uint64(len(data)), ContentHash: digest})
+		publication.Variants = append(publication.Variants, core.FallbackVariant{ID: required.VariantID, GenerationID: g.ID, AssetID: g.AssetID, SourceHash: digest, Profile: required.Profile, VerifiedFormat: required.Profile.Format, GeneratorVersion: g.GeneratorVersion, ManagedPath: required.ManagedPath, SizeBytes: uint64(len(data)), ContentHash: digest})
 	}
 	f.generation, err = f.service.PublishPreparation(ctx, pf, publication)
 	if err != nil {

@@ -101,7 +101,7 @@ func TestPendingPollCannotOverlapShutdownOrPublishAfterClose(t *testing.T) {
 			t.Fatal(err)
 		}
 		<-entered
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			if err := c.Close(context.Background()); !errors.Is(err, ErrPending) || !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatal(err)
 			}
@@ -198,7 +198,7 @@ func TestInvalidAndOverBudgetSamplesPreserveValues(t *testing.T) {
 }
 
 func TestUnavailableInitShutdownFailureAndRepeatedLifecycle(t *testing.T) {
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		published := make(chan Snapshot, 1)
 		p := &controlledProvider{initReason: LibraryUnavailable, stopReason: ProviderError, poll: func(Limits) Sample { panic("Poll после ошибки Init") }}
 		c, err := Start(testConfig(), p, func(s Snapshot) { published <- s }, func() {})

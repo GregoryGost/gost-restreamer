@@ -104,6 +104,9 @@ func Compile(p core.GroupProfile, target Target) (Plan, error) {
 		rangeName = "pc"
 	}
 	video = append(video, "-color_range:v", rangeName, "-color_primaries:v", v.Color.Primaries, "-color_trc:v", v.Color.Transfer, "-colorspace:v", v.Color.Matrix)
+	if target == Live && p.EffectiveLiveAudioMode() == core.LiveAudioCopy {
+		return Plan{Video: video, Audio: []string{"-c:a", "copy"}}, nil
+	}
 	audio := []string{"-c:a", "aac", "-profile:a", "aac_low", "-b:a", n(p.AudioEncoding.BitrateBPS), "-ar:a", n(uint64(a.SampleRateHz)), "-ac:a", n(uint64(a.Channels)), "-channel_layout:a", a.ChannelLayout}
 	if !legacy {
 		audio = appendCustom(audio, settings.AudioCustom)

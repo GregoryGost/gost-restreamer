@@ -78,7 +78,7 @@ func (a *Application) waitOwner(ctx context.Context, o *stopOwner) bool {
 	if o == nil || o.joined {
 		return true
 	}
-	for attempt := 0; attempt < 2; attempt++ {
+	for range 2 {
 		o.begin(ctx)
 		if !o.current.wait(ctx) {
 			return false

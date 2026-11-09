@@ -179,7 +179,7 @@ func TestAcceptanceSSEUnsupportedWriterIsRejectedBeforeHeaders(t *testing.T) {
 
 func TestAcceptanceSSEValidationFailureDoesNotConsumeClientSlot(t *testing.T) {
 	f := newAPIAcceptanceFixture(t, nil)
-	for n := 0; n < 3; n++ {
+	for range 3 {
 		w := newAPIAcceptanceStreamWriter()
 		f.api.ServeHTTP(w, httptest.NewRequest("GET", api.Prefix+"/events?unexpected=synthetic-rejected-secret", nil))
 		body, status, _ := w.snapshot()
@@ -279,7 +279,7 @@ func TestAcceptanceSSEGapAndEpochResetRequireFreshSnapshot(t *testing.T) {
 			} else {
 				o := apiAcceptanceSystem(t, f)
 				at := time.Now()
-				for i := 0; i < 12; i++ {
+				for i := range 12 {
 					if err := o.ObserveGPU(context.Background(), apiAcceptanceGPU(uint64(i), at.Add(time.Duration(i)*time.Nanosecond))); err != nil {
 						t.Fatal(err)
 					}
@@ -347,7 +347,7 @@ func TestAcceptanceHTTPAnchorKeepsCursorAndGPUInOneAuthoritySnapshot(t *testing.
 	failures := make(chan error, 64)
 	start := make(chan struct{})
 	var readers sync.WaitGroup
-	for n := 0; n < 4; n++ {
+	for range 4 {
 		readers.Go(func() {
 			<-start
 			for range 16 {
@@ -382,7 +382,7 @@ func TestAcceptanceHTTPAnchorKeepsCursorAndGPUInOneAuthoritySnapshot(t *testing.
 	states := map[string]string{"0": ""}
 	at := time.Now()
 	close(start)
-	for n := 0; n < 16; n++ {
+	for n := range 16 {
 		value := uint64(9007199254740993 + n*17)
 		if err := o.ObserveGPU(ctx, apiAcceptanceGPU(value, at.Add(time.Duration(n)*time.Nanosecond))); err != nil {
 			t.Fatal(err)

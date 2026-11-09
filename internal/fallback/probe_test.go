@@ -118,7 +118,7 @@ func selfFragmented(t *testing.T, scenario string) *os.File {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		payload := []byte{0, 0, 0, 3, 0x65, 0xb8, 0x40}
 		if scenario == "false-key" {
 			payload[4] = 0x41

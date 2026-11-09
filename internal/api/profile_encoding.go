@@ -9,16 +9,17 @@ import (
 
 type GroupProfileInput struct {
 	Mode          string           `json:"mode" enum:"copy,transcode"`
+	LiveAudioMode Field[string]    `json:"live_audio_mode,omitempty" enum:"copy,transcode" doc:"Обработка LIVE-аудио независимо от видео. При создании по умолчанию copy. Прежний профиль без поля сохраняет свою обработку; полная замена уже явного профиля требует это поле. null запрещён."`
 	Format        FormatDTO        `json:"format"`
 	VideoEncoding VideoEncodingDTO `json:"video_encoding"`
 	AudioEncoding AudioEncodingDTO `json:"audio_encoding"`
-	Encoding      NullableEncoding `json:"encoding,omitempty" doc:"Новые настройки версии 2. Отсутствие или null сохраняет прежний формат только для нового либо прежнего профиля; переход с версии 2 назад запрещён."`
+	Encoding      NullableEncoding `json:"encoding,omitempty" doc:"Расширенные настройки кодирования версии 2. Отсутствие или null сохраняет прежний видеорецепт; удаление уже сохранённого блока версии 2 запрещено. Выбор LIVE-аудио задаётся отдельно."`
 }
 
 type EncodingInput struct {
 	Version       int                `json:"version" enum:"2"`
 	VideoEncoder  string             `json:"video_encoder" enum:"h264_nvenc,libsvtav1" doc:"Серверный кодировщик: h264_nvenc для transcode/H264, libsvtav1 для подготовки copy/AV1. Основной copy-поток сервер не перекодирует."`
-	AudioEncoder  Field[string]      `json:"audio_encoder,omitempty" enum:"aac" doc:"Кодировщик аудио; по умолчанию aac."`
+	AudioEncoder  Field[string]      `json:"audio_encoder,omitempty" enum:"aac" doc:"Кодировщик тишины заглушки и явно перекодируемого LIVE-аудио; по умолчанию aac. Копируемое LIVE-аудио не изменяется."`
 	RateControl   string             `json:"rate_control" enum:"cbr,vbr" doc:"Явный режим управления битрейтом; равенство target и max само по себе не выбирает CBR."`
 	RescaleOutput Field[bool]        `json:"rescale_output,omitempty" doc:"По умолчанию true для transcode, false для copy. false требует совпадения размеров входа и выхода. FPS задаётся профилем независимо."`
 	VideoCustom   Field[string]      `json:"video_custom,omitempty" maxLength:"4096" doc:"Пары name=value через ASCII-пробел. Каталог: NVENC nonref_p/strict_gop=0|1; SVT lp=0..6. Конфликты с обычными полями запрещены."`

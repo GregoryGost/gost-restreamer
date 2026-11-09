@@ -16,6 +16,13 @@ const (
 	ModeTranscode GroupMode = "transcode"
 )
 
+type LiveAudioMode string
+
+const (
+	LiveAudioCopy      LiveAudioMode = "copy"
+	LiveAudioTranscode LiveAudioMode = "transcode"
+)
+
 // VideoEncoding задаёт параметры подготовки видео и структуру GOP.
 type VideoEncoding struct {
 	TargetBitrateBPS uint64
@@ -62,6 +69,7 @@ func (e AudioEncoding) Validate() error {
 // GroupProfile содержит полный явный выходной профиль группы.
 type GroupProfile struct {
 	Mode          GroupMode
+	LiveAudioMode LiveAudioMode
 	Format        MediaFormat
 	VideoEncoding VideoEncoding
 	AudioEncoding AudioEncoding
@@ -70,10 +78,26 @@ type GroupProfile struct {
 
 // Validate проверяет режим, обе дорожки и настройки их подготовки.
 func (p GroupProfile) Validate() error {
+	if p.LiveAudioMode != "" && p.LiveAudioMode != LiveAudioCopy && p.LiveAudioMode != LiveAudioTranscode {
+		return invalidEncoding("live_audio_mode", "Допустимы только copy и transcode.")
+	}
+	if p.LiveAudioMode == LiveAudioTranscode && p.Mode != ModeTranscode {
+		return invalidEncoding("live_audio_mode", "Перекодирование LIVE-аудио доступно только в режиме transcode.")
+	}
 	if p.Encoding != (EncodingSettings{}) {
 		return p.validateEncodingProfile()
 	}
 	return p.validateLegacyProfile()
+}
+
+func (p GroupProfile) EffectiveLiveAudioMode() LiveAudioMode {
+	if p.LiveAudioMode != "" {
+		return p.LiveAudioMode
+	}
+	if p.Mode == ModeTranscode {
+		return LiveAudioTranscode
+	}
+	return LiveAudioCopy
 }
 
 func (p GroupProfile) validateLegacyProfile() error {
@@ -97,6 +121,6 @@ func (p GroupProfile) Equal(other GroupProfile) bool {
 	if p.Validate() != nil || other.Validate() != nil {
 		return false
 	}
-	return p.Mode == other.Mode && p.Format.Equal(other.Format) &&
+	return p.Mode == other.Mode && p.LiveAudioMode == other.LiveAudioMode && p.Format.Equal(other.Format) &&
 		p.VideoEncoding == other.VideoEncoding && p.AudioEncoding == other.AudioEncoding && p.Encoding == other.Encoding
 }

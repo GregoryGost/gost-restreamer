@@ -74,14 +74,14 @@ func newExecutionAcceptanceFixture(t *testing.T, count, budget int) executionAcc
 		if err := r.Runtime.InsertSession(ctx, session); err != nil {
 			return err
 		}
-		for i := 0; i < count; i++ {
+		for i := range count {
 			_, snapshot := contractSnapshots(t)
 			id := core.ID(fmt.Sprintf("execution-output-%d", i))
 			o := core.SessionOutput{Record: contractRecord(id), SessionID: session.ID, Snapshot: snapshot, Attached: true, DesiredRunning: true, Generation: 1}
 			if err := r.Runtime.InsertOutput(ctx, o); err != nil {
 				return err
 			}
-			identity := []byte(fmt.Sprintf("synthetic-start-%d", i))
+			identity := fmt.Appendf(nil, "synthetic-start-%d", i)
 			sum := sha256.Sum256(identity)
 			c := core.CommandReceipt{Record: contractRecord(core.ID(fmt.Sprintf("execution-command-%d", i))), RequestID: string(identity), Kind: core.CommandStartOutput, TargetID: id, Identity: identity, Fingerprint: hex.EncodeToString(sum[:]), SessionID: session.ID, OutputID: id, Incarnation: store.Incarnation(), Lifecycle: 1, OutputGeneration: 1, Status: core.CommandPending}
 			if err := r.Runtime.InsertReceipt(ctx, c); err != nil {
@@ -94,7 +94,7 @@ func newExecutionAcceptanceFixture(t *testing.T, count, budget int) executionAcc
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < count; i++ {
+	for i := range count {
 		fence, err := f.s.Claim(ctx, fmt.Sprintf("synthetic-start-%d", i))
 		if err != nil {
 			t.Fatal(err)

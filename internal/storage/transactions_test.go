@@ -147,7 +147,7 @@ func TestTransientCallbackRetryRollsBackEveryFailedAttempt(t *testing.T) {
 	attempts := 0
 	err := f.store.Write(ctx, func(r core.Repositories) error {
 		attempts++
-		value := core.Stream{Record: core.Record{ID: "retry-stream", Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, Name: "Повтор", PublicationKey: "retry-synthetic-key"}
+		value := core.Stream{ID: "retry-stream", Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Name: "Повтор", PublicationKey: "retry-synthetic-key"}
 		if err := r.Config.InsertStream(ctx, value); err != nil {
 			return err
 		}

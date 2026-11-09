@@ -165,7 +165,7 @@ func TestCorruptMetadataIsDistinctFromMissingAndDoesNotLeakRows(t *testing.T) {
 	if _, err := f.store.sqlDB.ExecContext(ctx, "UPDATE profiles SET payload = ? WHERE id = ?", []byte(`{"Version":999,"Payload":{}}`), f.profile.ID); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, err := f.service.GetProfile(ctx, f.profile.ID)
 		requireDomainError(t, err, core.ErrCorrupt)
 		if errors.Is(err, core.ErrNotFound) {
@@ -181,7 +181,7 @@ func TestStoredTimestampsNormalizeUTCAndRejectUnrepresentableRange(t *testing.T)
 	s := openTestStore(t)
 	ctx := context.Background()
 	input := time.Date(2026, 1, 2, 3, 4, 5, 123456789, time.FixedZone("offset", 3*60*60))
-	value := core.Stream{Record: core.Record{ID: "timestamp-stream", Revision: 1, CreatedAt: input, UpdatedAt: input}, Name: "Поток", PublicationKey: "synthetic-timestamp-key"}
+	value := core.Stream{ID: "timestamp-stream", Revision: 1, CreatedAt: input, UpdatedAt: input, Name: "Поток", PublicationKey: "synthetic-timestamp-key"}
 	if err := s.Write(ctx, func(r core.Repositories) error { return r.Config.InsertStream(ctx, value) }); err != nil {
 		t.Fatal(err)
 	}

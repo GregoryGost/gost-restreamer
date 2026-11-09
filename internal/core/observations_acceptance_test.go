@@ -71,7 +71,7 @@ func newObservationAcceptanceService(t *testing.T, limits ObservationLimits) (*S
 	child := parent
 	child.CommandID, child.OutputID, child.OutputGeneration = "output-command", "output", 1
 	u := &observationAcceptanceUOW{authority: a, repository: observationAcceptanceRepository{
-		session:  Session{Record: Record{ID: parent.SessionID}, Incarnation: parent.Incarnation, Lifecycle: 1, State: SessionRunning, Issued: true},
+		session:  Session{ID: parent.SessionID, Incarnation: parent.Incarnation, Lifecycle: 1, State: SessionRunning, Issued: true},
 		receipts: map[ID]CommandReceipt{}, outputs: map[ID]SessionOutput{},
 	}}
 	for _, f := range []ExecutionFence{parent, child} {
@@ -79,9 +79,9 @@ func newObservationAcceptanceService(t *testing.T, limits ObservationLimits) (*S
 		if f.OutputID != "" {
 			kind = CommandStartOutput
 		}
-		u.repository.receipts[f.CommandID] = CommandReceipt{Record: Record{ID: f.CommandID}, Kind: kind, SessionID: f.SessionID, OutputID: f.OutputID, Incarnation: f.Incarnation, Lifecycle: f.Lifecycle, OutputGeneration: f.OutputGeneration, Attempt: f.Attempt, Status: CommandSucceeded}
+		u.repository.receipts[f.CommandID] = CommandReceipt{ID: f.CommandID, Kind: kind, SessionID: f.SessionID, OutputID: f.OutputID, Incarnation: f.Incarnation, Lifecycle: f.Lifecycle, OutputGeneration: f.OutputGeneration, Attempt: f.Attempt, Status: CommandSucceeded}
 	}
-	u.repository.outputs[child.OutputID] = SessionOutput{Record: Record{ID: child.OutputID}, SessionID: child.SessionID, DesiredRunning: true, Attached: true, Generation: 1, Attempt: 1, Issued: true}
+	u.repository.outputs[child.OutputID] = SessionOutput{ID: child.OutputID, SessionID: child.SessionID, DesiredRunning: true, Attached: true, Generation: 1, Attempt: 1, Issued: true}
 	s, err := NewService(u, "owner")
 	if err != nil {
 		t.Fatal(err)

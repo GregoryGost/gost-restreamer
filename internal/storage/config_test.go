@@ -60,7 +60,7 @@ func newDomainFixture(t *testing.T, outputs int) domainFixture {
 	}
 	a, v := publishFixtureGeneration(t, svc, a, "synthetic-source-hash", "synthetic-content-hash")
 	f := domainFixture{store: s, service: svc, asset: a, stream: stream, profile: p, group: g, variant: v}
-	for i := 0; i < outputs; i++ {
+	for i := range outputs {
 		d, err := svc.CreateDestination(ctx, core.Destination{StreamID: stream.ID, GroupID: g.ID, Name: "Назначение", Platform: "custom", Endpoint: "rtmps://example.invalid/live", StreamKey: "synthetic-destination-key", Enabled: true})
 		if err != nil {
 			t.Fatalf("создать назначение %d: %v", i+1, err)
@@ -124,7 +124,7 @@ func TestConfigurationConstraintsAndRollbackAreRealSQLite(t *testing.T) {
 	_, err = f.service.CreateDestination(ctx, core.Destination{StreamID: other.ID, GroupID: f.group.ID, Name: "Чужая группа", Platform: "custom", Endpoint: "rtmp://example.invalid/live"})
 	requireDomainError(t, err, core.ErrInUse)
 	err = f.store.Write(ctx, func(r core.Repositories) error {
-		value := core.Stream{Record: core.Record{ID: "rolled-back-stream", Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, Name: "Откат", PublicationKey: "rolled-back-key"}
+		value := core.Stream{ID: "rolled-back-stream", Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Name: "Откат", PublicationKey: "rolled-back-key"}
 		if err := r.Config.InsertStream(ctx, value); err != nil {
 			return err
 		}
@@ -211,7 +211,7 @@ func publishFixtureGeneration(t *testing.T, svc *core.Service, a core.FallbackAs
 	}
 	publication := core.GenerationPublication{SourceHash: sourceHash, SizeBytes: 1024, SourceFormat: core.SourceFormat{ImageFormat: "png"}}
 	for _, p := range g.RequiredProfiles {
-		publication.Variants = append(publication.Variants, core.FallbackVariant{Record: core.Record{ID: p.VariantID}, GenerationID: g.ID, AssetID: a.ID, SourceHash: sourceHash, Profile: p.Profile, GeneratorVersion: g.GeneratorVersion, ManagedPath: p.ManagedPath, SizeBytes: 2048, ContentHash: contentHash, VerifiedFormat: p.Profile.Format})
+		publication.Variants = append(publication.Variants, core.FallbackVariant{ID: p.VariantID, GenerationID: g.ID, AssetID: a.ID, SourceHash: sourceHash, Profile: p.Profile, GeneratorVersion: g.GeneratorVersion, ManagedPath: p.ManagedPath, SizeBytes: 2048, ContentHash: contentHash, VerifiedFormat: p.Profile.Format})
 	}
 	if _, err = svc.PublishPreparation(ctx, fence, publication); err != nil {
 		t.Fatalf("опубликовать подготовленное поколение: %v", err)
@@ -236,7 +236,7 @@ func publishFixtureGeneration(t *testing.T, svc *core.Service, a core.FallbackAs
 func fixturePublication(g core.FallbackGeneration, sourceHash, contentHash string) core.GenerationPublication {
 	p := core.GenerationPublication{SourceHash: sourceHash, SizeBytes: 1024, SourceFormat: core.SourceFormat{ImageFormat: "png"}}
 	for _, r := range g.RequiredProfiles {
-		p.Variants = append(p.Variants, core.FallbackVariant{Record: core.Record{ID: r.VariantID}, GenerationID: g.ID, AssetID: g.AssetID, SourceHash: sourceHash, Profile: r.Profile, GeneratorVersion: g.GeneratorVersion, ManagedPath: r.ManagedPath, SizeBytes: 2048, ContentHash: contentHash, VerifiedFormat: r.Profile.Format})
+		p.Variants = append(p.Variants, core.FallbackVariant{ID: r.VariantID, GenerationID: g.ID, AssetID: g.AssetID, SourceHash: sourceHash, Profile: r.Profile, GeneratorVersion: g.GeneratorVersion, ManagedPath: r.ManagedPath, SizeBytes: 2048, ContentHash: contentHash, VerifiedFormat: r.Profile.Format})
 	}
 	return p
 }

@@ -250,7 +250,7 @@ func (c *Collector) validateSample(sample Sample) Reason {
 		if device.UUID == "" || len(device.UUID) > c.config.MaxUUIDBytes {
 			return InvalidSample
 		}
-		for j := 0; j < i; j++ {
+		for j := range i {
 			if sample.Devices[j].UUID == device.UUID {
 				return InvalidSample
 			}

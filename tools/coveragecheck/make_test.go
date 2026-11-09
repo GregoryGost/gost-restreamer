@@ -66,7 +66,7 @@ func TestMakeCoverageRequiresSuccessfulFreshRunAndCleansArtifacts(t *testing.T) 
 			logPath := filepath.Join(workdir, "commands.log")
 			profileRecord := filepath.Join(workdir, "profiles.log")
 			var previousProfile string
-			for attempt := 0; attempt < 2; attempt++ {
+			for attempt := range 2 {
 				writeTestFile(t, logPath, "", 0o600)
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 				cmd := exec.CommandContext(ctx, makePath, "--no-print-directory", "coverage", "GO="+fakeGo)

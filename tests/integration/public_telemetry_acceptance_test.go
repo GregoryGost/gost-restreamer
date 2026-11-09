@@ -346,7 +346,7 @@ func TestAcceptancePublicTelemetryResyncSnapshotAndResubscribe(t *testing.T) {
 	stale := integrationAPIRequest(t, a, "GET", "/events/snapshot", "", 200)
 	at := time.Now()
 	const base uint64 = 9007199254740993
-	for i := uint64(0); i < 12; i++ {
+	for i := range uint64(12) {
 		if err := observer.ObserveGPU(ctx, publicTelemetryGPU(base+i, at.Add(time.Duration(i)*time.Nanosecond))); err != nil {
 			t.Fatal(err)
 		}

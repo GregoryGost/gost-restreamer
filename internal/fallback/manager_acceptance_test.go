@@ -82,7 +82,7 @@ func acceptanceManagerService(t *testing.T) (*core.Service, *storage.Store, core
 		t.Fatal(err)
 	}
 	profile := core.GroupProfile{Mode: core.ModeCopy, Format: core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecAV1, Width: 640, Height: 360, FrameRate: core.FrameRate{Numerator: 30, Denominator: 1}, CodecProfile: "main", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 300000, MaxBitrateBPS: 400000, BufferBits: 600000, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 64000}}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		p := profile
 		if i == 2 {
 			p.Mode = core.ModeTranscode
@@ -479,7 +479,7 @@ func TestExactCleanupIsIdempotentAndDoesNotFollowReplacementLinks(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(dir, "owned.mp4"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := s.RemoveExact(ctx, "owned.mp4", uint64(len(data)), acceptanceDigest(data)); err != nil {
 			t.Fatalf("идемпотентная очистка %d: %v", i, err)
 		}

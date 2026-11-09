@@ -64,7 +64,7 @@ func TestRuntimeReconciliationFailsClosedWithoutReplacingWriteOutcome(t *testing
 			t.Fatal(err)
 		}
 		uow := &runtimeAuthorityUOW{authority: authority}
-		uow.repository.session = Session{Record: Record{ID: "session"}, StreamID: "stream", Incarnation: "owner", Lifecycle: 1, State: SessionRunning, Snapshot: SessionSnapshot{Stream: Stream{PublicationKey: "key"}}}
+		uow.repository.session = Session{ID: "session", StreamID: "stream", Incarnation: "owner", Lifecycle: 1, State: SessionRunning, Snapshot: SessionSnapshot{Stream: Stream{PublicationKey: "key"}}}
 		service, err := NewService(uow, "owner")
 		if err != nil {
 			t.Fatal(err)

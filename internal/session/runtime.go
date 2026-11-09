@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"time"
 
@@ -239,7 +240,7 @@ func (n *sessionNode) initialize(ctx context.Context) error {
 		return err
 	}
 	config := m.config.Group
-	config.OpenFile = m.config.Files.OpenVerified
+	config.OpenFile = m.openPreparedFile
 	config.Scope = scope
 	config.Logger, config.Sampler, config.MetricStaleAfter = m.config.Logger.With("stream_id", n.streamID), sampler, m.config.Monitoring.StaleAfter
 	registry, err := group.NewRegistry(ctx, group.RegistryConfig{Core: m.config.Core, Parent: n.fence, Observer: observer, Runtime: config, MaxGroups: m.config.MaxGroups, MaxReferences: m.config.MaxReferences})
@@ -288,6 +289,9 @@ func (n *sessionNode) initialize(ctx context.Context) error {
 	return nil
 }
 func (n *sessionNode) acquire(ctx context.Context, output core.SessionOutput) (*membership, error) {
+	if output.Snapshot.Artifact.GeneratorVersion != n.manager.config.GeneratorVersion {
+		return nil, core.ErrNotReady
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.closing || output.Generation <= n.excluded[output.ID] {
@@ -311,6 +315,13 @@ func (n *sessionNode) acquire(ctx context.Context, output core.SessionOutput) (*
 	n.members[output.ID] = member
 	go member.run()
 	return member, nil
+}
+
+func (m *Manager) openPreparedFile(ctx context.Context, manifest core.ArtifactManifest) (*os.File, error) {
+	if manifest.GeneratorVersion != m.config.GeneratorVersion {
+		return nil, core.ErrNotReady
+	}
+	return m.config.Files.OpenVerified(ctx, manifest)
 }
 func (r *membership) run() {
 	defer close(r.done)
