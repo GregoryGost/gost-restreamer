@@ -31,7 +31,8 @@ type Limits struct {
 	// MaxChunkBytes ограничивает допустимый размер блока в байтах.
 	MaxChunkBytes uint32
 	// MaxFragments ограничивает число фрагментов одного сообщения.
-	MaxFragments     uint32
+	MaxFragments uint32
+	// MaxRetainedBytes ограничивает логический резерв буферов и удержанных сообщений в байтах.
 	MaxRetainedBytes uint64
 	// MaxControlBytes ограничивает тело управляющего сообщения в байтах.
 	MaxControlBytes uint32
@@ -46,7 +47,8 @@ type Limits struct {
 	// MaxReadAheadBytes ограничивает объём одного читаемого вперёд блока вместе с заголовком, в
 	// байтах.
 	MaxReadAheadBytes uint32
-	// HandshakeTimeout ограничивает общий этап согласования и допуска входящей публикации.
+	// HandshakeTimeout ограничивает согласование до publish. При строгом Feed без Admit
+	// этот же срок покрывает допуск; автозапуск получает отдельный AdmissionTimeout.
 	HandshakeTimeout time.Duration
 	// ReadTimeout задаёт срок очередного чтения блока после согласования.
 	ReadTimeout time.Duration

@@ -322,15 +322,19 @@ func (a *Application) acquire(ctx context.Context, helper string, d dependencies
 	if err = checkpoint("preparation"); err != nil {
 		return err
 	}
-	// Feed записывается до публикации слушателя и затем остаётся неизменным.
-	// manager связывает Feed входного RTMP с фактически созданным менеджером до публикации
+	// Порт допуска связывается с Manager до публикации слушателя и затем остаётся неизменным.
+	// manager связывает допуск входного RTMP с фактически созданным менеджером до публикации
 	// слушателя.
 	var manager *session.Manager
-	a.ingest, err = rtmp.NewServer(rtmp.Options{Core: a.core, Route: rtmp.ConventionalRoute, Feed: func(s core.Session) (*media.Router, error) {
-		// Получает входной маршрутизатор через собранный SessionManager; слушатель публикуется после
-		// присваивания manager.
-		return manager.Feed(s)
-	}, Limits: rtmp.Limits(a.config.Ingress), Logger: a.sink.Logger()})
+	// admissionTimeout содержит заранее проверенную сумму существующих сроков допуска OBS.
+	admissionTimeout, err := a.config.OBSAdmissionTimeout()
+	if err != nil {
+		return err
+	}
+	a.ingest, err = rtmp.NewServer(rtmp.Options{Core: a.core, Route: rtmp.ConventionalRoute, Admit: func(ctx context.Context, streamID core.ID, key string) (core.Session, *media.Router, error) {
+		// Передаёт ключ и срок публикации Manager после завершения сборки приложения.
+		return manager.AdmitOBS(ctx, streamID, key)
+	}, AdmissionTimeout: admissionTimeout, Limits: rtmp.Limits(a.config.Ingress), Logger: a.sink.Logger()})
 	if a.ingest != nil {
 		a.owners.ingest = newStopOwner("ingest", a.ingest.Shutdown)
 	}

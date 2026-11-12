@@ -154,6 +154,10 @@ func (c Config) Validate() error {
 			return fmt.Errorf("%s: %w", check.name, check.err)
 		}
 	}
+	// err сообщает о неположительном или переполненном общем сроке допуска OBS.
+	if _, err := c.OBSAdmissionTimeout(); err != nil {
+		return fmt.Errorf("ingress admission timeout: %w", err)
+	}
 	if c.Process.GracePeriod <= 0 {
 		return fmt.Errorf("process.grace_period: требуется положительный срок")
 	}
