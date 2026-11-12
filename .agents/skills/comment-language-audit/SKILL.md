@@ -10,6 +10,8 @@ Use this skill for portable language-policy work on code comments and code-adjac
 
 This skill covers natural-language quality only: target-language consistency, mixed prose, partial translation, grammar, inflection, source-language calques, noun-phrase construction, and audit workflow. Combine it with the active language or framework skill for syntax-specific rules such as Python docstrings, JSDoc, TSDoc, XML documentation comments, or framework documentation conventions.
 
+Semantic completeness, factual rationale, and documentation coverage belong to the separately activated `code_comment_quality.md` + `code-comment-quality` pair. Neither skill activates the other, and this language audit does not replace source-grounded technical review.
+
 ## Scope And Coordination
 
 - Read `CODEX_PROJECT.md` before editing code prose. Use its declared target natural language for comments, docstrings, test comments, and documentation blocks.

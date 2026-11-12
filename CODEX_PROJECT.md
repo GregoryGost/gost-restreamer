@@ -61,6 +61,7 @@
 - Обязательное правило маршрутизации запросов: `.codex/rules/request_routing.md`
 - Условно применяемые правила начальной настройки: `.codex/rules/material_dependencies.md`, `.codex/rules/subagent_coordination.md`
 - Общие правила: `source_code_hygiene.md`
+- Качество комментариев к коду: `code_comment_quality.md`
 - Правила Git: `git.md`
 - Поиск документации: `context7_documentation.md`
 - Правила Go: `go_core.md`, `go_testing.md`, `go_observability.md`, `go_security.md`, `go_huma_v2.md`, `go_local_cache.md`, `go_gorm.md`, `go_gorm_sqlite_goose.md`
@@ -72,10 +73,12 @@
 ## Активные навыки
 
 - Навыки языкового оформления: `comment-language-audit`
+- Навык качества комментариев к коду: `code-comment-quality`
 - Навыки Go: `go-core`, `go-testing`, `go-observability`, `go-security`, `go-huma-v2`, `go-local-cache`, `go-gorm`, `go-gorm-sqlite-goose`
 
 Имена навыков разрешаются в `.agents/skills/<name>/SKILL.md`. Полная цепочка обязательных зависимостей:
 
+- `code_comment_quality.md` ↔ `code-comment-quality`: намеренная взаимная зависимость; правило и навык активированы отдельными записями выше и проверяются через `.codex/rules/material_dependencies.md`.
 - `go_core.md` → `go-core`.
 - `go_testing.md` → `go-core`, `go-testing`; `go-testing` → `go-core`.
 - `go_observability.md` → `go-core`, `go-observability`; `go-observability` → `go-core`.
@@ -430,7 +433,7 @@
 ## Источники материалов
 
 - Источник: [GregoryGost/agent-projects-tools](https://github.com/GregoryGost/agent-projects-tools).
-- Версия источника: `v1.16.3`.
-- Коммит источника: `f12591ed8d838d4296d5791b5948a14ab3e122ff`.
+- Версия источника: `v1.19.0`.
+- Коммит источника: `6a6245a97603c87a7c0f96653fb5bf963fcd5fe7`.
 - Локальные настройки: корневой `AGENTS.md` задаёт правила проверки фактов, ревью и работы с консолью для проекта; этот профиль и пример конфигурации принадлежат проекту.
 - Обновлять переносимые материалы согласованно: начальные инструкции, маршрутизацию, зависимости, координацию, роли, навыки и этот профиль. Не заменять профиль полным шаблоном с чужими стеками.

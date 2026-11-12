@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Comment Quality"
+  short_description: "Human-readable, evidence-based code documentation"
+  default_prompt: "Use $code-comment-quality with the active code_comment_quality rule to explain real behavior, contracts, constraints and failure cases in clear natural prose for developers; study applicable contrasts, avoid agent-oriented jargon, and review semantic completeness without comment quotas."
