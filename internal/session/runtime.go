@@ -31,6 +31,11 @@ type sessionNode struct {
 	cancel context.CancelFunc
 	// done закрывается при возврате работника Session, отдельно от успешности физической очистки.
 	done chan struct{}
+	// startupDone публикует однократный исход запуска после Complete и освобождения mu,
+	// либо до длительной компенсации отказа. Канал создаётся до регистрации узла.
+	startupDone chan struct{}
+	// startupErr содержит неизменяемый отказ запуска; читается только после startupDone.
+	startupErr error
 	// mu защищает состояние выполнения, ресурсы и наборы членств и выходов Session.
 	mu sync.Mutex
 	// closing запрещает новое локальное исполнение; running допускает Feed и выходы; joined
@@ -198,6 +203,7 @@ func (m *Manager) startSession(c core.CommandReceipt) {
 		err = node.initialize(startup)
 	}
 	if err != nil {
+		node.finishStartup(err)
 		node.mu.Lock()
 		node.retirementNeeded = true
 		node.retirementFailure = err
@@ -230,6 +236,7 @@ func (m *Manager) startSession(c core.CommandReceipt) {
 		node.mu.Unlock()
 	}
 	if err != nil {
+		node.finishStartup(err)
 		node.mu.Lock()
 		node.retirementNeeded = true
 		node.retirementFailure = err
@@ -244,6 +251,7 @@ func (m *Manager) startSession(c core.CommandReceipt) {
 		node.cleanup()
 		return
 	}
+	node.finishStartup(nil)
 	m.commandFinished(c.ID)
 	m.signal()
 	// ticker задаёт период сверки работающей Session и её выходов.

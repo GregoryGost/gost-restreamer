@@ -27,6 +27,10 @@ type RouteResolver func(*url.URL) (core.ID, string, error)
 // вне RuntimeAuthority и не должна создавать Session или заменять её состояние в core.
 type FeedResolver func(core.Session) (*media.Router, error)
 
+// AdmissionResolver выбирает или запускает Session для авторизованной публикации и ждёт
+// её готовый Router в пределах ctx. Принятая Session сохраняется после отмены ctx.
+type AdmissionResolver func(context.Context, core.ID, string) (core.Session, *media.Router, error)
+
 // Options задаёт ограничения входящих соединений и зависимости проверки, маршрутизации и
 // журналирования публикаций.
 type Options struct {
@@ -38,6 +42,11 @@ type Options struct {
 	Route RouteResolver
 	// Feed возвращает маршрутизатор действующей сессии для допуска публикации.
 	Feed FeedResolver
+	// Admit при наличии связывает публикацию с автозапуском Manager вместо строгого Feed.
+	Admit AdmissionResolver
+	// AdmissionTimeout ограничивает допуск от publish до ActivateOBSFor при заданном Admit.
+	// Приложение вычисляет его из существующих сроков Session и записи ingress.
+	AdmissionTimeout time.Duration
 	// Logger при наличии записывает исходы соединений и сведения активированной публикации.
 	Logger *slog.Logger
 }
@@ -54,8 +63,8 @@ type Server struct {
 	opts Options
 	// mu защищает активные соединения, слушатели и начало остановки.
 	mu sync.Mutex
-	// active содержит принятые во владение соединения до завершения их обработки.
-	active map[net.Conn]struct{}
+	// active связывает зарегистрированные соединения с отменой их обработчиков до возврата handle.
+	active map[net.Conn]context.CancelFunc
 	// listeners содержит слушатели, закрываемые сервером при остановке.
 	listeners map[net.Listener]struct{}
 	// stopping запрещает регистрацию новых слушателей и соединений после начала Shutdown.
@@ -68,16 +77,17 @@ type Server struct {
 	dropped atomic.Uint64
 }
 
-// NewServer проверяет бюджеты до первого сетевого выделения ресурсов.
+// NewServer проверяет зависимости и бюджеты opts до первого сетевого выделения ресурсов.
+// Без Admit требуется строгий Feed; автозапуск требует положительный AdmissionTimeout.
 func NewServer(opts Options) (*Server, error) {
 	// err сообщает о некорректных бюджетах входящего сервера до выделения ресурсов.
 	if err := opts.Limits.ValidateIngress(); err != nil {
 		return nil, err
 	}
-	if opts.Core == nil || opts.Route == nil || opts.Feed == nil {
+	if opts.Core == nil || opts.Route == nil || (opts.Feed == nil && opts.Admit == nil) || (opts.Admit != nil && opts.AdmissionTimeout <= 0) {
 		return nil, core.ErrInvalid
 	}
-	return &Server{opts: opts, active: make(map[net.Conn]struct{}), listeners: make(map[net.Listener]struct{}), changed: make(chan struct{}), results: make(chan Result, opts.Limits.MaxConnections)}, nil
+	return &Server{opts: opts, active: make(map[net.Conn]context.CancelFunc), listeners: make(map[net.Listener]struct{}), changed: make(chan struct{}), results: make(chan Result, opts.Limits.MaxConnections)}, nil
 }
 
 // Results возвращает ограниченный канал исходов соединений; заполнение канала учитывается через
@@ -160,14 +170,16 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 			}
 			return errors.Join(err, stopErr)
 		}
-		if err = s.register(conn); err != nil {
+		// handlerCtx задаёт отменяемый сервером срок обработчика; err сообщает об отказе регистрации.
+		handlerCtx, err := s.register(ctx, conn)
+		if err != nil {
 			_ = conn.Close()
 			s.report(err)
 			continue
 		}
 		go func() {
 			// Обслуживает зарегистрированное соединение; закрытие, учёт и сообщение результата выполняет handle.
-			_ = s.handle(ctx, conn)
+			_ = s.handle(handlerCtx, conn)
 		}()
 	}
 }
@@ -183,22 +195,25 @@ func (s *Server) report(err error) {
 }
 
 // Под блокировкой проверяет остановку, предел соединений и отсутствие повторной регистрации, затем
-// принимает соединение во владение Server.
-func (s *Server) register(conn net.Conn) error {
+// принимает conn во владение Server и возвращает дочерний срок ctx, отменяемый Shutdown.
+func (s *Server) register(ctx context.Context, conn net.Conn) (context.Context, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stopping {
-		return core.ErrClosed
+		return nil, core.ErrClosed
 	}
 	if uint64(len(s.active)) >= uint64(s.opts.Limits.MaxConnections) {
-		return ErrLimit
+		return nil, ErrLimit
 	}
 	// exists показывает, было ли соединение уже зарегистрировано этим сервером.
 	if _, exists := s.active[conn]; exists {
-		return core.ErrInvalid
+		return nil, core.ErrInvalid
 	}
-	s.active[conn] = struct{}{}
-	return nil
+	// lifetime наследует ctx; cancel регистрируется под той же mu, что и stopping,
+	// поэтому Shutdown не может пропустить отмену принятого обработчика.
+	lifetime, cancel := context.WithCancel(ctx)
+	s.active[conn] = cancel
+	return lifetime, nil
 }
 
 // Handle синхронно обслуживает и закрывает одно соединение. Предел соединений
@@ -207,12 +222,14 @@ func (s *Server) Handle(ctx context.Context, conn net.Conn) error {
 	if conn == nil {
 		return core.ErrInvalid
 	}
-	// err сообщает об остановке сервера, переполнении или повторной регистрации соединения.
-	if err := s.register(conn); err != nil {
+	// lifetime ограничивает обработчик контекстом ctx и явной остановкой Server;
+	// err сообщает об отказе регистрации.
+	lifetime, err := s.register(ctx, conn)
+	if err != nil {
 		_ = conn.Close()
 		return err
 	}
-	return s.handle(ctx, conn)
+	return s.handle(lifetime, conn)
 }
 
 // Обслуживает зарегистрированное соединение: ограничивает запуск, проверяет публикацию через core и
@@ -246,6 +263,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) (result error) {
 			s.opts.Logger.Error("obs_connection", "component", "rtmp", "operation", "handle", "error", result)
 		}
 		s.mu.Lock()
+		s.active[conn]()
 		delete(s.active, conn)
 		s.signalLocked()
 		s.mu.Unlock()
@@ -277,15 +295,25 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) (result error) {
 	if err != nil {
 		return err
 	}
-	// session содержит действующую Session, разрешённую для Stream и ключа.
-	session, err := s.opts.Core.AuthorizeOBS(ctx, streamID, key)
-	if err != nil {
-		_ = rc.RejectAction()
+	// После publish автозапуск получает отдельный срок от сетевого согласования.
+	if s.opts.Admit != nil {
+		wire.startupDeadline = time.Now().Add(s.opts.AdmissionTimeout)
+	}
+	// callerDeadline сохраняет более ранний срок владельца соединения; bounded показывает его наличие.
+	if callerDeadline, bounded := ctx.Deadline(); bounded && callerDeadline.Before(wire.startupDeadline) {
+		wire.startupDeadline = callerDeadline
+	}
+	// admissionCtx ограничивает только выбор Session, сетевое принятие и активацию;
+	// cancelAdmission освобождает его таймер и не прекращает активный медиапоток.
+	admissionCtx, cancelAdmission := context.WithDeadline(ctx, wire.startupDeadline)
+	defer cancelAdmission()
+	if err = conn.SetDeadline(wire.startupDeadline); err != nil {
 		return err
 	}
-	// router содержит маршрутизатор, возвращённый владельцем разрешённой сессии.
-	router, err := s.opts.Feed(session)
+	// session фиксирует разрешённый запуск; router принадлежит именно этому запуску.
+	session, router, err := s.admit(admissionCtx, streamID, key)
 	if err != nil {
+		_ = rc.RejectAction()
 		return err
 	}
 	if router == nil {
@@ -299,7 +327,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) (result error) {
 	// fence сохраняет точную идентичность разрешённой Session для повторной проверки при активации.
 	fence := core.RuntimeSessionFence{SessionID: session.ID, Incarnation: session.Incarnation, Lifecycle: session.Lifecycle}
 	// lease содержит допуск OBS, ограничивающий обработку сообщений и отзыв источника.
-	lease, err := s.opts.Core.ActivateOBSFor(ctx, fence, streamID, key, func(lease *core.RuntimeLease) (func(), error) {
+	lease, err := s.opts.Core.ActivateOBSFor(admissionCtx, fence, streamID, key, func(lease *core.RuntimeLease) (func(), error) {
 		// Создаёт источник маршрутизатора для выданного допуска OBS, связывает наблюдения с ID допуска и
 		// возвращает действие отзыва.
 
@@ -322,6 +350,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) (result error) {
 	if err != nil {
 		return err
 	}
+	cancelAdmission()
 	if s.opts.Logger != nil {
 		s.opts.Logger.Info("obs_publication", "component", "rtmp", "operation", "activate", "stream_id", streamID, "session_id", session.ID, "lease_id", lease.ID(), "url", rc.URL.String(), "publication_key", key)
 	}
@@ -373,15 +402,17 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) (result error) {
 	}
 }
 
-// Shutdown запрещает новые соединения, закрывает собственные сокеты и ждёт их
+// Shutdown запрещает новые соединения, отменяет их обработчики, закрывает собственные сокеты и ждёт их
 // завершения. Истечение ctx оставляет незавершённую очистку наблюдаемой повторным вызовом.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	s.stopping = true
 	// conns сохраняет снимок активных соединений для закрытия вне блокировки.
 	conns := make([]net.Conn, 0, len(s.active))
-	// c обозначает соединение при создании снимка остановки.
-	for c := range s.active {
+	// c обозначает соединение; cancel прекращает его зарегистрированный обработчик
+	// до ожидания и закрытия сокетов, включая ожидание Manager без сетевого чтения.
+	for c, cancel := range s.active {
+		cancel()
 		conns = append(conns, c)
 	}
 	// listeners сохраняет снимок принадлежащих серверу слушателей для закрытия вне блокировки.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/GregoryGost/gost-restreamer/internal/core"
@@ -115,7 +116,7 @@ type Manager struct {
 	// mu защищает приём обращений, выполняющиеся команды и локальные узлы сессий.
 	mu sync.Mutex
 	// closed запрещает новые обращения и выдачу Feed после начала закрытия.
-	closed bool
+	closed atomic.Bool
 	// commands отмечает квитанции, для которых уже выполняется ограниченный обработчик команды.
 	commands map[core.ID]bool
 	// sessions связывает идентификатор Session с её текущим локальным узлом исполнения и очистки.
@@ -186,20 +187,21 @@ func (m *Manager) signal() {
 
 // admission проверяет, что Manager ещё принимает команды и сохраняет действующий допуск диспетчера.
 func (m *Manager) admission() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.closed || !m.dispatcher.Valid() {
+	if m.closed.Load() || !m.dispatcher.Valid() {
 		return core.ErrClosed
 	}
 	return nil
 }
 
 // enter учитывает принятое обращение до снятия блокировки, чтобы закрытие дождалось всех обращений,
-// допущенных ранее.
-func (m *Manager) enter() error {
-	m.mu.Lock()
+// допущенных ранее. ctx прерывает ожидание общей блокировки.
+func (m *Manager) enter(ctx context.Context) error {
+	// err сообщает об отмене ожидания общей блокировки до регистрации обращения.
+	if err := m.lockAdmission(ctx, &m.mu); err != nil {
+		return err
+	}
 	defer m.mu.Unlock()
-	if m.closed || !m.dispatcher.Valid() {
+	if m.closed.Load() || !m.dispatcher.Valid() {
 		return core.ErrClosed
 	}
 	m.admissions.Add(1)
@@ -211,7 +213,7 @@ func (m *Manager) enter() error {
 // время закрытия, дополнительно запрашивается остановка.
 func (m *Manager) StartSession(ctx context.Context, request core.StartSessionRequest) (core.CommandReceipt, error) {
 	// err сообщает об отказе допуска нового обращения StartSession.
-	if err := m.enter(); err != nil {
+	if err := m.enter(ctx); err != nil {
 		return core.CommandReceipt{}, err
 	}
 	defer m.admissions.Done()
@@ -261,7 +263,7 @@ func (m *Manager) StartSession(ctx context.Context, request core.StartSessionReq
 // запроса.
 func (m *Manager) AddOutput(ctx context.Context, request core.AddOutputRequest) (core.CommandReceipt, error) {
 	// err сообщает об отказе допуска нового обращения AddOutput.
-	if err := m.enter(); err != nil {
+	if err := m.enter(ctx); err != nil {
 		return core.CommandReceipt{}, err
 	}
 	defer m.admissions.Done()
@@ -368,7 +370,7 @@ func (m *Manager) checkBinding(ctx context.Context, b core.PreparedBinding) erro
 // диспетчер о возможной работе.
 func (m *Manager) sessionCommand(ctx context.Context, r core.SessionCommand, call func(context.Context, core.SessionCommand) (core.CommandReceipt, error)) (core.CommandReceipt, error) {
 	// err сообщает об отказе допуска управляющего обращения Session.
-	if err := m.enter(); err != nil {
+	if err := m.enter(ctx); err != nil {
 		return core.CommandReceipt{}, err
 	}
 	defer m.admissions.Done()
@@ -400,7 +402,7 @@ func (m *Manager) StopSession(ctx context.Context, r core.SessionCommand) (core.
 // диспетчер независимо от результата вызова.
 func (m *Manager) outputCommand(ctx context.Context, r core.OutputCommand, call func(context.Context, core.OutputCommand) (core.CommandReceipt, error)) (core.CommandReceipt, error) {
 	// err сообщает об отказе допуска управляющего обращения выхода.
-	if err := m.enter(); err != nil {
+	if err := m.enter(ctx); err != nil {
 		return core.CommandReceipt{}, err
 	}
 	defer m.admissions.Done()
@@ -431,7 +433,7 @@ func (m *Manager) DetachOutput(ctx context.Context, r core.OutputCommand) (core.
 func (m *Manager) Feed(session core.Session) (*media.Router, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed || !m.dispatcher.Valid() {
+	if m.closed.Load() || !m.dispatcher.Valid() {
 		return nil, core.ErrClosed
 	}
 	// node содержит текущий локальный узел Session для проверки точного работающего Feed.
@@ -482,12 +484,14 @@ func (m *Manager) run() {
 	}
 }
 
-// beginClose запрещает новые обращения, однократно закрывает приём подготовки и поддерживающего эту
-// операцию приёма публикаций OBS, затем отменяет длительное исполнение Manager.
+// beginClose сразу запрещает новые обращения и отменяет срок Manager, затем ждёт
+// завершения регистрации под mu и однократно закрывает приём подготовки и публикаций OBS.
 func (m *Manager) beginClose() {
-	m.mu.Lock()
-	m.closed = true
-	m.mu.Unlock()
+	// Закрытие становится видимым допускаемому I/O до ожидания общей блокировки:
+	// dispatch может удерживать mu, ожидая node.mu и завершения Complete.
+	m.closed.Store(true)
+	m.cancel()
+	m.waitAdmissionRegistrations()
 	m.closeAdmission.Do(func() {
 		// Однократно закрывает приём подготовки и, при наличии соответствующего метода, приём публикаций OBS
 		// при начале закрытия Manager.
@@ -503,7 +507,15 @@ func (m *Manager) beginClose() {
 			owner.CloseAdmission()
 		}
 	})
-	m.cancel()
+}
+
+// waitAdmissionRegistrations после установки closed ждёт завершения регистрации
+// обращений, уже прошедших проверку enter под mu. После возврата они не смогут
+// вызвать admissions.Add позже admissions.Wait из finishDispatch. Блокировка
+// освобождается при возврате, до вызовов внешних владельцев из beginClose.
+func (m *Manager) waitAdmissionRegistrations() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 }
 
 // finishDispatch ждёт ранее допущенные обращения и завершает глобальный отзыв сессий до освобождения
@@ -609,7 +621,7 @@ func (m *Manager) dispatch(receipt core.CommandReceipt) {
 		return
 	}
 	m.mu.Lock()
-	if m.closed || m.commands[receipt.ID] || len(m.commands) >= m.config.MaxCommands {
+	if m.closed.Load() || m.commands[receipt.ID] || len(m.commands) >= m.config.MaxCommands {
 		m.mu.Unlock()
 		return
 	}
@@ -654,7 +666,7 @@ func (m *Manager) dispatch(receipt core.CommandReceipt) {
 		// lifetime задаёт срок создаваемой Session от Manager; cancel прекращает её локальное
 		// исполнение.
 		lifetime, cancel := context.WithCancel(m.ctx)
-		m.sessions[receipt.SessionID] = &sessionNode{manager: m, id: receipt.SessionID, ctx: lifetime, cancel: cancel, done: make(chan struct{}), members: map[core.ID]*membership{}, outputs: map[core.ID]*outputNode{}, excluded: map[core.ID]uint64{}}
+		m.sessions[receipt.SessionID] = &sessionNode{manager: m, id: receipt.SessionID, ctx: lifetime, cancel: cancel, done: make(chan struct{}), startupDone: make(chan struct{}), members: map[core.ID]*membership{}, outputs: map[core.ID]*outputNode{}, excluded: map[core.ID]uint64{}}
 	}
 	m.commands[receipt.ID] = true
 	m.workers.Add(1)
