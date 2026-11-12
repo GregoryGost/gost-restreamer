@@ -1,0 +1,73 @@
+name: develop-pr-checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+    branches: [develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: develop-pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    # Имя задания используется как обязательная проверка защиты ветки develop.
+    name: develop-pr-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: golang:1.27.3-trixie
+    # CGO_ENABLED включает SQLite-драйвер; GOTOOLCHAIN запрещает загрузку другого SDK,
+    # GOWORK отключает внешнюю рабочую область, GOFLAGS сохраняет модули без изменений.
+    # GOOS и GOARCH выбирают ту же целевую платформу, что и сборка пакетов.
+    env:
+      CGO_ENABLED: "1"
+      GOTOOLCHAIN: local
+      GOWORK: "off"
+      GOFLAGS: -mod=readonly
+      GOOS: linux
+      GOARCH: amd64
+    steps:
+      - name: Получение результата слияния PR с develop
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # Версия v7.0.1.
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Настройка доверенного каталога Git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Установка инструментов проекта
+        run: make tools
+
+      - name: Полные проверки Go
+        run: make check
+
+      - name: Сохранение диагностики упавших тестов
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # Версия v7.0.2.
+        with:
+          name: gost-pr-test-diagnostics-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/gost-session-failure-*/diagnostics.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Установка GoReleaser Community
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # Версия v6.
+        with:
+          distribution: goreleaser
+          version: v2.19.0
+          install-only: true
+
+      - name: Проверка конфигураций и повторных выпусков
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # Версия v8.0.0.
+        with:
+          script: |
+            // spawnSync запускает проверки выпуска через Node.js предоставленного действия.
+            const { spawnSync } = require('node:child_process');
+            // result содержит исход проверки конфигураций и тестов выпуска без публикации.
+            const result = spawnSync('make', ['release-check', `NODE=${process.execPath}`], { stdio: 'inherit' });
+            if (result.status !== 0) throw new Error('Проверки выпуска завершились ошибкой.');

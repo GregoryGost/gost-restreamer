@@ -1,4 +1,4 @@
-name: Проверки Go
+name: ci-develop
 
 on:
   pull_request:
@@ -14,8 +14,8 @@ concurrency:
   queue: max
 
 jobs:
-  check:
-    name: Go и сборка для Debian 13
+  build:
+    name: Сборка для Debian 13
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -84,9 +84,11 @@ jobs:
           printf 'Версия обоих бинарников: %s\n' "$EXPECTED_VERSION" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Установка инструментов проекта
+        if: github.event.pull_request.base.ref == 'main'
         run: make tools
 
       - name: Проверка основы проекта
+        if: github.event.pull_request.base.ref == 'main'
         run: make bootstrap-check
 
       - name: Определение доступных Go-пакетов
@@ -108,7 +110,7 @@ jobs:
           fi
 
       - name: Анализ, тесты и сборка пакетов
-        if: steps.source.outputs.packages == 'true'
+        if: github.event.pull_request.base.ref == 'main' && steps.source.outputs.packages == 'true'
         run: make vet lint coverage test-race build
 
       - name: Сохранение диагностики упавших тестов
@@ -133,6 +135,7 @@ jobs:
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # Версия v8.0.0.
         with:
           script: |
+            // spawnSync запускает проверку выпуска тем же Node.js, который предоставляет этот шаг.
             const { spawnSync } = require('node:child_process');
             // result содержит код завершения проверки выпуска, выполняемой тем же Node.js, что и этот шаг.
             const result = spawnSync('make', ['release-check', `NODE=${process.execPath}`], { stdio: 'inherit' });

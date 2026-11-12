@@ -1,25 +1,47 @@
-# Workflow Go и установочные пакеты
+# Проверки PR и сборка установочных пакетов
 
-Исполняемый workflow — [workflows/go.yml](workflows/go.yml). Проверки, планировщик версий и публикация тегов сохранены; упаковка CI выполняется GoReleaser Community `2.19.0` со встроенным nFPM. Используются поддерживаемые возможности [draft и extra_files](https://goreleaser.com/customization/publish/scm/), [архивов](https://goreleaser.com/customization/package/archive/) и [nFPM](https://goreleaser.com/customization/package/nfpm/); конфигурации проверяются самим закреплённым executable.
+CI разделён на два workflow:
+
+| Workflow | Когда запускается | Что выполняет |
+| --- | --- | --- |
+| [develop-pr-checks](workflows/develop-pr-checks.yml) | Создание, обновление, повторное открытие, изменение или перевод PR в готовое состояние; целевая ветка `develop`. | Полный `make check`, проверка конфигураций GoReleaser и тесты выпуска до слияния. |
+| [ci-develop](workflows/ci-develop.yml) | Только `pull_request: closed` в `develop` или `main`, с `merged == true`. | Версия точного commit слияния, сборка и проверка пакетов, тег и артефакты. Для `main` дополнительно сохранены полные проверки Go и Draft Release. |
+
+Предварительная проверка использует результат пробного слияния PR с `develop`, который `actions/checkout` получает по умолчанию для события `pull_request`. Доступ ограничен `contents: read`; версия не назначается, теги и релизы не создаются. Фильтров по путям, пропуска draft PR и условного пропуска задания нет: изменения только документации тоже проходят обязательную проверку. Событие `edited` учитывает в том числе смену целевой ветки PR. Новый запуск отменяет устаревшую проверку только того же PR; разные PR проверяются независимо.
+
+Упаковка выполняется GoReleaser Community `2.19.0` со встроенным nFPM. Используются поддерживаемые возможности [draft и extra_files](https://goreleaser.com/customization/publish/scm/), [архивов](https://goreleaser.com/customization/package/archive/) и [nFPM](https://goreleaser.com/customization/package/nfpm/); конфигурации проверяются самим закреплённым executable.
 
 | Параметр | Значение |
 | --- | --- |
 | Платформа | Только Debian 13 (`trixie`), `linux/amd64`, `GOAMD64=v1`. |
 | Окружение | `ubuntu-24.04`, контейнер `golang:1.27.3-trixie`, `CGO_ENABLED=1`. |
 | Go / линтер | Go `1.27.3` из `go.mod`; `golangci-lint` `2.15.0` из `Makefile`. |
-| Запуск | Только `pull_request: closed` в `develop` или `main`, с `merged == true`. |
+| Запуск сборки | Только `pull_request: closed` в `develop` или `main`, с `merged == true`; до слияния PR в `develop` работает отдельный `develop-pr-checks`. |
 | Версии | Закреплённый `GregoryGost/version-tagger v1.2.0`, локальный план и повторное использование версии commit. |
-| Конкурентность | Общая группа двух веток, `cancel-in-progress: false`, `queue: max`. |
+| Конкурентность сборки | Общая группа двух веток, `cancel-in-progress: false`, `queue: max`; проверки PR используют отдельную группу на каждый PR с отменой устаревшего запуска. |
 | Результат develop | Dev-тег и Actions Artifact: `.deb`, `.tar.gz`, `SHA256SUMS`; GitHub Release отсутствует. |
 | Результат main | Stable-тег и Draft GitHub Release с тремя файлами; `draft: true`, `prerelease: false`. |
 
-Пуши в ветки и теги, открытие и обновление PR не запускают workflow. Закрытие PR без merge пропускает задание. Тег через `GITHUB_TOKEN` не запускает новый workflow: draft создаётся в том же задании после публикации тега. Docker-образы приложения не создаются.
+Пуши в ветки и теги не запускают сборку; новые коммиты в открытом PR в `develop` повторяют предварительные проверки. Закрытие PR без merge пропускает сборочное задание. Тег через `GITHUB_TOKEN` не запускает новый workflow: draft создаётся в том же задании после публикации тега. Docker-образы приложения не создаются.
+
+## Обязательная проверка перед слиянием в develop
+
+Сам YAML не запрещает слияние. Для запрета нужна активная защита ветки `develop` с обязательным статусом задания **`develop-pr-checks`**. Имя задания уникально среди workflow; название всего workflow не заменяет выбор конкретного статуса. Это отдельная настройка GitHub, не файл репозитория: наличие workflow не подтверждает, что правило уже включено.
+
+После первого запуска проверки PR откройте Settings → Branches → Branch protection rules и создайте либо дополните правило точной ветки `develop`:
+
+1. Включите `Require status checks to pass before merging` и выберите `develop-pr-checks`. Если GitHub предлагает источник статуса, выберите GitHub Actions. Для выбора статус должен быть доступен после недавнего запуска.
+2. Включите `Require branches to be up to date before merging`: после изменения `develop` PR нужно обновить и повторно проверить совместно с новой базой.
+3. Включите `Do not allow bypassing the above settings`, чтобы правило распространялось и на администратора репозитория. При настройке через ruleset используйте активное правило для `develop` без разрешённого обхода.
+4. Сохраните прочие действующие ограничения ветки. Сборку `ci-develop` не делайте обязательной проверкой PR: она запускается только после слияния. Если в правиле уже требовалось прежнее сборочное задание, замените этот статус на `develop-pr-checks`.
+
+Проверить результат нужно на GitHub: пока проверка не завершена или упала, слияние должно блокироваться; после исправления и успешного повторного запуска — разрешаться при выполнении остальных правил. Сначала добейтесь появления нового статуса, затем включайте требование: требование отсутствующего статуса оставит PR в ожидании. Правила и действие запрета для администраторов описаны в [GitHub Docs](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches).
 
 ## Проверки и порядок выпуска
 
 1. Checkout точного `pull_request.merge_commit_sha`, полная история и теги, без сохранения Git credentials. Actions закреплены по SHA; общий доступ — `contents: read`, задание выпуска получает `contents: write`.
 2. `tools/releaseplan` проверяет HEAD и теги. Неоднозначные версии, неподдерживаемые version-like теги и metadata, не совпадающие с commit, останавливают выпуск. Для существующего тега того же commit и канала используется прежний номер. Новый номер должен совпасть с `version-tagger` в режиме `dryrun: true`.
-3. `make bootstrap-check` проверяет Go, форматирование, `go mod tidy -diff`, `go mod verify` и конфигурацию линтера. `make vet lint coverage test-race build` сохраняет scope `./...` и точный порог покрытия 85% без исключений. Пропуски при отсутствии Go-пакетов или точки входа явно отражаются в сводке.
+3. Для `develop` полные проверки выполняются до слияния: `develop-pr-checks` устанавливает закреплённый линтер и запускает `make check`, включая Go, форматирование, `go mod tidy -diff`, `go mod verify`, vet, lint, покрытие всех `./...` с точным порогом 85%, race и проверочную сборку. Затем выполняется `make release-check`; ошибка любого этапа завершает обязательное задание отказом. После слияния сборка `develop` не повторяет тесты Go. Для `main` в сборочном задании сохранены `make bootstrap-check` и `make vet lint coverage test-race build`. Сборочный workflow явно сообщает об отсутствии пакетов или точки входа; предварительный `make check` при отсутствии Go-пакетов завершается ошибкой.
 4. GoReleaser Action устанавливает Community `2.19.0`. `make release-check` проверяет обе конфигурации и запускает тесты выпуска через Node.js `24` из `actions/github-script`; npm-зависимостей нет.
 5. Назначенный тег создаётся локально до компиляции и проверяется по commit. `make package-debian VERSION=…` использует общую [.goreleaser.yaml](../.goreleaser.yaml): для dev — `--snapshot --skip=publish`, для stable — `--skip=publish`. В конфигурации упаковки дополнительно стоит `release.disable: true`. Бинарники собираются с CGO, `-trimpath`, `-buildvcs=true` и одной полной `VERSION` в `internal/buildinfo`.
 6. [verify-packages.sh](scripts/verify-packages.sh) проверяет SHA256, состав, архитектуру и версию `.deb`, права, conffiles, maintainer scripts, равенство бинарников в двух форматах, `--version` и встроенные Go/VCS-метаданные. `dpkg --compare-versions` проверяет порядок dev/stable и переход следующего цикла. Время всех записей архива фиксируется датой commit; [package-reproducibility.sh](scripts/package-reproducibility.sh) меняет только даты YAML/unit, повторно упаковывает тот же checkout и требует прежние SHA256 всех трёх файлов, затем восстанавливает даты.
