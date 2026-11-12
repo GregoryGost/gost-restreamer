@@ -11,7 +11,9 @@ var ErrInvalidTimeBase = errors.New("некорректная единица в�
 
 // TimeBase задаёт число секунд на одну единицу отсчёта положительной дробью.
 type TimeBase struct {
-	Numerator   uint32
+	// Numerator задаёт положительный числитель дроби секунд на один отсчёт.
+	Numerator uint32
+	// Denominator задаёт положительный знаменатель дроби секунд на один отсчёт.
 	Denominator uint32
 }
 

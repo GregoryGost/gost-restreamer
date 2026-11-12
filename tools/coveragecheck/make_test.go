@@ -12,30 +12,45 @@ import (
 	"time"
 )
 
+// Проверяет настоящий рецепт make coverage с управляемым Go: свежий полный запуск, последовательность
+// преобразования и проверки, остановку при каждой ошибке и удаление только собственных артефактов.
 func TestMakeCoverageRequiresSuccessfulFreshRunAndCleansArtifacts(t *testing.T) {
+	// sourcePath содержит путь текущего тестового файла; ok подтверждает его получение для поиска
+	// корня проекта.
 	_, sourcePath, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("не удалось определить путь к тесту")
 	}
+	// root указывает корень проекта, из которого читается настоящий рецепт покрытия.
 	root := filepath.Clean(filepath.Join(filepath.Dir(sourcePath), "../.."))
+	// makefile содержит действующий Makefile; err содержит отказ чтения рецепта для изолированной
+	// проверки.
 	makefile, err := os.ReadFile(filepath.Join(root, "Makefile"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	// module содержит действующий go.mod, необходимый проверке версии Go в копии рецепта.
 	module, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	// makePath содержит найденный исполняемый make для запуска настоящей цели coverage.
 	makePath, err := exec.LookPath("make")
 	if err != nil {
 		t.Fatalf("объявленный проектом make недоступен: %v", err)
 	}
+	// tc задаёт точку отказа рецепта и ожидаемые выполненные стадии проверки покрытия.
 	for _, tc := range []struct {
+		// name задаёт название сценария; scenario выбирает поведение подставленного Go.
 		name, scenario string
-		pass           bool
+		// pass задаёт ожидаемый успешный или ошибочный код make coverage.
+		pass bool
+		// wantConversion показывает, должен ли рецепт дойти до преобразования покрытия helper.
 		wantConversion bool
-		wantReport     bool
-		wantChecker    bool
+		// wantReport показывает, должен ли рецепт дойти до отчёта go tool cover.
+		wantReport bool
+		// wantChecker показывает, должен ли рецепт запустить точную проверку порога.
+		wantChecker bool
 	}{
 		{"successful_gate", "success", true, true, true, true},
 		{"failed_tests_leave_profile", "test_failure", false, false, false, false},
@@ -53,25 +68,47 @@ func TestMakeCoverageRequiresSuccessfulFreshRunAndCleansArtifacts(t *testing.T) 
 		{"below_threshold", "checker_failure", false, true, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Дважды проверяет выбранный исход make coverage, свежесть профиля, порядок этапов и удаление только
+			// собственных артефактов.
+
+			// workdir выделяет изолированный проект с копиями настоящих Makefile и go.mod.
 			workdir := t.TempDir()
+			// artifactRoot содержит отдельный временный корень с пробелом в пути для
+			// проверки размещения и очистки артефактов.
 			artifactRoot := filepath.Join(workdir, "temporary files")
+			// err содержит отказ создания изолированного корня временных профилей.
 			if err := os.Mkdir(artifactRoot, 0o700); err != nil {
 				t.Fatal(err)
 			}
 			writeTestFile(t, filepath.Join(workdir, "Makefile"), string(makefile), 0o600)
 			writeTestFile(t, filepath.Join(workdir, "go.mod"), string(module), 0o600)
 			writeTestFile(t, filepath.Join(artifactRoot, "coverage.out"), "старый профиль принадлежит другому запуску", 0o600)
+			// fakeGo указывает управляемую замену Go, проверяющую аргументы и задающую
+			// выбранный отказ.
 			fakeGo := filepath.Join(workdir, "fake-go")
 			writeTestFile(t, fakeGo, fakeCoverageGo, 0o700)
+			// logPath указывает журнал реально выполненных стадий рецепта.
 			logPath := filepath.Join(workdir, "commands.log")
+			// profileRecord указывает журнал путей профилей для проверки нового каталога
+			// каждого запуска.
 			profileRecord := filepath.Join(workdir, "profiles.log")
+			// previousProfile сохраняет путь предыдущего запуска, который следующий запуск
+			// не должен переиспользовать.
 			var previousProfile string
+			// attempt указывает первый или второй запуск одного сценария для проверки
+			// свежести артефактов.
 			for attempt := range 2 {
 				writeTestFile(t, logPath, "", 0o600)
+				// ctx ограничивает отдельный make-запуск 20 секундами; cancel
+				// освобождает срок сразу после его возврата.
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				// cmd запускает настоящий рецепт coverage с подставленным Go в
+				// изолированной копии проекта.
 				cmd := exec.CommandContext(ctx, makePath, "--no-print-directory", "coverage", "GO="+fakeGo)
 				cmd.Dir = workdir
 				cmd.Env = coverageMakeEnv(artifactRoot, logPath, profileRecord, tc.scenario)
+				// output содержит объединённую диагностику make; runErr содержит
+				// результат выполнения рецепта.
 				output, runErr := cmd.CombinedOutput()
 				cancel()
 				if ctx.Err() == context.DeadlineExceeded {
@@ -80,7 +117,10 @@ func TestMakeCoverageRequiresSuccessfulFreshRunAndCleansArtifacts(t *testing.T) 
 				if (runErr == nil) != tc.pass {
 					t.Fatalf("успешность make = %t, ожидается %t: %v\n%s", runErr == nil, tc.pass, runErr, output)
 				}
+				// log содержит наблюдённую последовательность стадий из управляемого Go.
 				log := readTestFile(t, logPath)
+				// wantLog строит точную ожидаемую последовательность до выбранной точки
+				// отказа.
 				wantLog := "TEST\n"
 				if tc.wantConversion {
 					wantLog += "CONVERT\n"
@@ -97,18 +137,26 @@ func TestMakeCoverageRequiresSuccessfulFreshRunAndCleansArtifacts(t *testing.T) 
 				if !strings.Contains(log, "TEST\n") {
 					t.Fatalf("полный тестовый запуск не выполнен: %q\n%s", log, output)
 				}
+				// profiles содержит все записанные пути профилей для проверки одного
+				// нового пути на попытку.
 				profiles := strings.Split(strings.TrimSpace(readTestFile(t, profileRecord)), "\n")
 				if len(profiles) != attempt+1 {
 					t.Fatalf("ожидается один новый профиль на попытку: %q", profiles)
 				}
+				// profile содержит путь профиля текущей попытки для проверки
+				// принадлежности и удаления его каталога.
 				profile := profiles[attempt]
 				if profile == previousProfile || !strings.HasPrefix(profile, artifactRoot+string(os.PathSeparator)) {
 					t.Errorf("профиль не принадлежит отдельному новому каталогу: %q", profile)
 				}
 				previousProfile = profile
+				// err содержит результат проверки существования каталога текущего
+				// профиля после очистки рецептом.
 				if _, err := os.Stat(filepath.Dir(profile)); !os.IsNotExist(err) {
 					t.Errorf("временный каталог не удалён: %q, ошибка %v", profile, err)
 				}
+				// stale содержит прежний чужой профиль, который очистка текущего запуска
+				// обязана сохранить.
 				if stale := readTestFile(t, filepath.Join(artifactRoot, "coverage.out")); stale != "старый профиль принадлежит другому запуску" {
 					t.Errorf("изменён посторонний профиль: %q", stale)
 				}
@@ -117,7 +165,11 @@ func TestMakeCoverageRequiresSuccessfulFreshRunAndCleansArtifacts(t *testing.T) 
 	}
 }
 
+// coverageMakeEnv изолирует переменные проверки покрытия и намеренно задаёт прежние медианастройки,
+// чтобы проверить их очистку рецептом обязательного запуска.
 func coverageMakeEnv(artifactRoot, logPath, profileRecord, scenario string) []string {
+	// controlled задаёт изолированные переменные make и покрытия, включая намеренно прежние
+	// медианастройки.
 	controlled := map[string]string{
 		"TMPDIR":                            artifactRoot,
 		"COVERAGE_TEST_LOG":                 logPath,
@@ -131,21 +183,30 @@ func coverageMakeEnv(artifactRoot, logPath, profileRecord, scenario string) []st
 		"GOST_MEDIA_VIDEOTOOLBOX":           "1",
 		"GOST_TEST_PROCESS_HELPER_COVERDIR": "/не-использовать/старое-покрытие-helper",
 	}
+	// env собирает окружение дочернего make без дублирования управляемых переменных.
 	var env []string
+	// entry содержит очередную запись исходного окружения, проверяемую перед копированием.
 	for _, entry := range os.Environ() {
+		// key содержит имя исходной переменной окружения без её значения.
 		key, _, _ := strings.Cut(entry, "=")
+		// found отмечает управляемую переменную, которую следует заменить вместо копирования.
 		if _, found := controlled[key]; !found {
 			env = append(env, entry)
 		}
 	}
+	// key задаёт имя управляемой переменной; value содержит её изолированное значение для дочернего
+	// make.
 	for key, value := range controlled {
 		env = append(env, fmt.Sprintf("%s=%s", key, value))
 	}
 	return env
 }
 
+// readTestFile читает текст тестового артефакта и завершает сценарий при ошибке.
 func readTestFile(t *testing.T, path string) string {
 	t.Helper()
+	// data содержит текст тестового артефакта; err содержит отказ чтения для проверки результата
+	// рецепта.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -153,6 +214,8 @@ func readTestFile(t *testing.T, path string) string {
 	return string(data)
 }
 
+// fakeCoverageGo имитирует закреплённые команды Go, проверяет полный запуск покрытия и порядок
+// объединения helper-профиля, создавая выбранные ошибки и журнал стадий.
 const fakeCoverageGo = `#!/bin/sh
 set -eu
 test "$GOTOOLCHAIN" = local

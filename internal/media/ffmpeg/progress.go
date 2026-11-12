@@ -20,6 +20,8 @@ type ProgressConfig struct {
 	MaxFields int
 }
 
+// Validate допускает полностью нулевую конфигурацию отключённого разбора либо требует положительные
+// согласованные пределы строки, отчёта и числа полей.
 func (c ProgressConfig) Validate() error {
 	if c == (ProgressConfig{}) {
 		return nil
@@ -30,56 +32,88 @@ func (c ProgressConfig) Validate() error {
 	return nil
 }
 
-// ProgressReport содержит значения CLI FFmpeg; FPS и bitrate являются его накопительными оценками.
-// BitrateKbitsPerSecond имеет единицу 1000 bit/s, OutTimeUS — микросекунды.
-// Has-поля отличают N/A или отсутствие поля от измеренного нуля.
+// ProgressReport хранит принятые значения отчёта CLI FFmpeg: BitrateKbitsPerSecond измеряется в 1000
+// бит/с, OutTimeUS — в микросекундах; Has-поля отличают доступное значение, включая ноль, от
+// отсутствующего или N/A.
 type ProgressReport struct {
-	SampledAt             time.Time
-	Frame                 uint64
-	HasFrame              bool
-	FPS                   float64
-	HasFPS                bool
-	TotalSizeBytes        uint64
-	HasTotalSize          bool
+	// SampledAt содержит время получения полного пригодного отчёта FFmpeg.
+	SampledAt time.Time
+	// Frame содержит сообщённое FFmpeg накопленное число кадров.
+	Frame uint64
+	// HasFrame отличает пригодное поле frame от отсутствующего или N/A.
+	HasFrame bool
+	// FPS хранит сообщённую FFmpeg частоту обработки видео в кадрах в секунду.
+	FPS float64
+	// HasFPS отличает пригодное поле fps от отсутствующего или N/A.
+	HasFPS bool
+	// TotalSizeBytes содержит сообщённый FFmpeg размер выхода в байтах.
+	TotalSizeBytes uint64
+	// HasTotalSize отличает пригодное поле total_size от отсутствующего или N/A.
+	HasTotalSize bool
+	// BitrateKbitsPerSecond содержит оценку битрейта FFmpeg в тысячах бит в секунду.
 	BitrateKbitsPerSecond float64
-	HasBitrate            bool
-	OutTimeUS             int64
-	HasOutTime            bool
-	DupFrames             uint64
-	HasDupFrames          bool
-	DropFrames            uint64
-	HasDropFrames         bool
-	Speed                 float64
-	HasSpeed              bool
-	End                   bool
+	// HasBitrate отличает пригодное поле bitrate от отсутствующего или N/A.
+	HasBitrate bool
+	// OutTimeUS содержит время выхода из out_time_us либо запасного out_time_ms в микросекундах.
+	OutTimeUS int64
+	// HasOutTime показывает наличие пригодного времени выхода в отчёте.
+	HasOutTime bool
+	// DupFrames содержит сообщённое FFmpeg число продублированных кадров.
+	DupFrames uint64
+	// HasDupFrames отличает пригодное поле dup_frames от отсутствующего или N/A.
+	HasDupFrames bool
+	// DropFrames содержит сообщённое FFmpeg число пропущенных кадров.
+	DropFrames uint64
+	// HasDropFrames отличает пригодное поле drop_frames от отсутствующего или N/A.
+	HasDropFrames bool
+	// Speed содержит сообщённое FFmpeg отношение скорости обработки к реальному времени.
+	Speed float64
+	// HasSpeed отличает пригодное поле speed от отсутствующего или N/A.
+	HasSpeed bool
+	// End показывает, завершён ли отчёт разделителем progress=end.
+	End bool
 }
 
 // ProgressSnapshot копируется по значению и не удерживает изменяемых ссылок.
 // SampledAt обозначает время чтения источника, Report.SampledAt — последний успешный отчёт.
 // Счётчики потерь накоплены за весь Supervisor, Attempt относится только к текущей попытке.
 type ProgressSnapshot struct {
-	SampledAt          time.Time
-	Attempt            uint64
-	Report             ProgressReport
-	HasReport          bool
-	DroppedReports     uint64
+	SampledAt time.Time
+	Attempt   uint64
+	// Report содержит последний полный пригодный отчёт текущей попытки.
+	Report ProgressReport
+	// HasReport показывает, получен ли пригодный отчёт после начала текущей попытки.
+	HasReport bool
+	// DroppedReports считает отвергнутые или незавершённые отчёты за срок работы Supervisor.
+	DroppedReports uint64
+	// DroppedDiagnostics считает события диагностики, отвергнутые очередью за срок работы
+	// Supervisor.
 	DroppedDiagnostics uint64
 }
 
+// progressStore хранит последний отчёт текущей попытки и общий счётчик потерь под блокировкой.
 type progressStore struct {
-	mu      sync.Mutex
+	// mu защищает номер попытки, последний отчёт и счётчик потерь.
+	mu sync.Mutex
+	// attempt задаёт текущую попытку и исключает публикацию запоздавших отчётов прежнего процесса.
 	attempt uint64
-	report  ProgressReport
-	has     bool
+	// report хранит последний полный пригодный отчёт текущей попытки.
+	report ProgressReport
+	// has отмечает наличие отчёта после последнего begin.
+	has bool
+	// dropped накапливает число потерянных отчётов с насыщением на MaxUint64.
 	dropped uint64
 }
 
+// Начинает новую попытку с пустым последним отчётом, сохраняя накопленное число потерь Supervisor.
 func (s *progressStore) begin(attempt uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.attempt, s.report, s.has = attempt, ProgressReport{}, false
 }
 
+// Сохраняет полный отчёт только при совпадении номера текущей попытки, исключая поздние отчёты
+// прежнего процесса.
 func (s *progressStore) publish(attempt uint64, report ProgressReport) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -88,6 +122,7 @@ func (s *progressStore) publish(attempt uint64, report ProgressReport) {
 	}
 }
 
+// Учитывает потерю отчёта только текущей попытки с насыщением счётчика на MaxUint64.
 func (s *progressStore) drop(attempt uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -96,32 +131,51 @@ func (s *progressStore) drop(attempt uint64) {
 	}
 }
 
+// Возвращает независимый снимок текущей попытки, последнего отчёта и накопленных потерь с временем
+// чтения.
 func (s *progressStore) snapshot() ProgressSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return ProgressSnapshot{SampledAt: time.Now(), Attempt: s.attempt, Report: s.report, HasReport: s.has, DroppedReports: s.dropped}
 }
 
-// progressParser принадлежит одному stdout. Write и finish сериализованы собственным mutex.
-// Буфер имеет фиксированную capacity; неизвестные поля нигде не сохраняются.
+// progressParser принадлежит одному stdout. write и finish выполняются под собственным мьютексом.
+// Буфер имеет фиксированную ёмкость; неизвестные поля нигде не сохраняются.
 type progressParser struct {
-	mu        sync.Mutex
-	config    ProgressConfig
-	store     *progressStore
-	attempt   uint64
-	line      []byte
-	longLine  bool
-	used      int
-	fields    int
-	bad       bool
-	pending   bool
-	closed    bool
-	report    ProgressReport
-	seen      uint16
+	// mu исключает одновременное изменение состояния разбора при write и finish.
+	mu sync.Mutex
+	// config задаёт пределы строки, отчёта и числа полей.
+	config ProgressConfig
+	// store принимает пригодные отчёты и учитывает их потери.
+	store *progressStore
+	// attempt связывает результаты разбора с конкретным запуском процесса.
+	attempt uint64
+	// line накапливает байты текущей строки без завершающего LF в пределах MaxLineBytes.
+	line []byte
+	// longLine отмечает превышение длины строки и запрещает разбор её остатка.
+	longLine bool
+	// used считает байты текущего отчёта вместе с разделителями строк до его отклонения.
+	used int
+	// fields считает поля текущего отчёта, включая завершающий progress.
+	fields int
+	// bad отмечает уже отвергнутый отчёт и предотвращает повторный учёт его потери.
+	bad bool
+	// pending отмечает наличие незавершённого отчёта для учёта потери при finish.
+	pending bool
+	// closed запрещает разбор данных после finish.
+	closed bool
+	// report накапливает известные поля до пригодного разделителя progress.
+	report ProgressReport
+	// seen содержит биты уже встреченных известных полей для отклонения повторов.
+	seen uint16
+	// outTimeMS хранит запасное поле out_time_ms, которое разборщик трактует как микросекунды.
 	outTimeMS int64
+	// hasTimeMS отмечает пригодное запасное время, используемое при отсутствии out_time_us.
 	hasTimeMS bool
 }
 
+// Создаёт разборщик с фиксированной ёмкостью строки для одной попытки; нулевые ограничения отключают
+// разбор и возвращают nil.
 func newProgressParser(config ProgressConfig, store *progressStore, attempt uint64) *progressParser {
 	if config == (ProgressConfig{}) {
 		return nil
@@ -129,6 +183,8 @@ func newProgressParser(config ProgressConfig, store *progressStore, attempt uint
 	return &progressParser{config: config, store: store, attempt: attempt, line: make([]byte, 0, config.MaxLineBytes)}
 }
 
+// Единожды помечает текущий отчёт непригодным и учитывает его потерю до следующего корректного
+// разделителя.
 func (p *progressParser) reject() {
 	if !p.bad {
 		p.bad = true
@@ -136,6 +192,8 @@ func (p *progressParser) reject() {
 	}
 }
 
+// Разбирает произвольные фрагменты stdout под блокировкой, ограничивая строку и весь отчёт до
+// накопления лишних данных; после finish данные пропускаются.
 func (p *progressParser) write(data []byte) {
 	if p == nil {
 		return
@@ -145,6 +203,7 @@ func (p *progressParser) write(data []byte) {
 	if p.closed {
 		return
 	}
+	// b содержит очередной байт фрагмента stdout для накопления строки и учёта размера отчёта.
 	for _, b := range data {
 		p.pending = true
 		if !p.bad {
@@ -170,9 +229,15 @@ func (p *progressParser) write(data []byte) {
 	}
 }
 
+// Проверяет строку key=value, число полей и разделитель progress; только полный пригодный отчёт
+// публикуется, после разделителя начинается новый.
 func (p *progressParser) consumeLine() {
+	// line содержит накопленную строку после удаления необязательного завершающего CR.
 	line := bytes.TrimSuffix(p.line, []byte{'\r'})
+	// key содержит имя поля, value содержит его текст после первого знака равенства, ok показывает
+	// наличие этого разделителя.
 	key, value, ok := bytes.Cut(line, []byte{'='})
+	// delimiter отмечает корректное поле progress=continue или progress=end, завершающее отчёт.
 	delimiter := ok && bytes.Equal(key, []byte("progress")) && (bytes.Equal(value, []byte("continue")) || bytes.Equal(value, []byte("end")))
 	if !p.bad {
 		if p.fields == p.config.MaxFields {
@@ -200,6 +265,7 @@ func (p *progressParser) consumeLine() {
 		p.reject()
 		return
 	}
+	// b содержит очередной байт имени поля для проверки допустимого ASCII-набора.
 	for _, b := range key {
 		if (b < 'a' || b > 'z') && (b < 'A' || b > 'Z') && (b < '0' || b > '9') && b != '_' {
 			p.reject()
@@ -211,12 +277,14 @@ func (p *progressParser) consumeLine() {
 	}
 }
 
+// Сбрасывает состояние текущего отчёта и признаков полей, сохраняя буфер строки и привязку попытки.
 func (p *progressParser) reset() {
 	p.used, p.fields, p.seen = 0, 0, 0
 	p.bad, p.pending, p.hasTimeMS = false, false, false
 	p.report, p.outTimeMS = ProgressReport{}, 0
 }
 
+// Завершает разбор единожды, учитывая неполный последний отчёт как потерю и освобождая буфер строки.
 func (p *progressParser) finish() {
 	if p == nil {
 		return
@@ -230,7 +298,10 @@ func (p *progressParser) finish() {
 	p.line = nil
 }
 
+// Разбирает известное поле с проверкой повторов и единиц; N/A оставляет значение отсутствующим,
+// неизвестные поля не сохраняются.
 func (p *progressParser) field(key, value string) bool {
+	// bit задаёт маску известного поля в наборе уже встреченных полей.
 	var bit uint16
 	switch key {
 	case "frame":
@@ -263,6 +334,7 @@ func (p *progressParser) field(key, value string) bool {
 	if value == "N/A" {
 		return true
 	}
+	// r указывает на накапливаемый отчёт, в который записывается разобранное поле.
 	r := &p.report
 	switch key {
 	case "frame":
@@ -281,10 +353,14 @@ func (p *progressParser) field(key, value string) bool {
 		r.BitrateKbitsPerSecond, r.HasBitrate = progressFloat(strings.TrimSpace(strings.TrimSuffix(value, "kbits/s")))
 		return r.HasBitrate
 	case "out_time_us":
+		// v содержит разобранное out_time_us в микросекундах; err сообщает о неверном формате
+		// или выходе за int64.
 		v, err := strconv.ParseInt(value, 10, 64)
 		r.OutTimeUS, r.HasOutTime = v, err == nil
 		return err == nil
 	case "out_time_ms":
+		// v содержит запасное out_time_ms в микросекундах; err сообщает о неверном формате или
+		// выходе за int64.
 		v, err := strconv.ParseInt(value, 10, 64)
 		p.outTimeMS, p.hasTimeMS = v, err == nil
 		return err == nil
@@ -304,12 +380,19 @@ func (p *progressParser) field(key, value string) bool {
 	return false
 }
 
+// Разбирает десятичный uint64 для поля progress и отдельно сообщает пригодность значения.
 func progressUint(value string) (uint64, bool) {
+	// v содержит разобранное неотрицательное целое поле progress; err сообщает о неверном формате
+	// или выходе за uint64.
 	v, err := strconv.ParseUint(value, 10, 64)
 	return v, err == nil
 }
 
+// Разбирает конечное неотрицательное число progress, отвергая NaN, бесконечность и отрицательные
+// значения.
 func progressFloat(value string) (float64, bool) {
+	// v содержит числовое поле progress в binary64; err сообщает об отказе числового разбора до
+	// проверки конечности и знака.
 	v, err := strconv.ParseFloat(value, 64)
 	return v, err == nil && !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0
 }

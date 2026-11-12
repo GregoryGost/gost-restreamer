@@ -16,11 +16,18 @@ var ErrInvalidWatchdogPolicy = core.ErrInvalidWatchdogPolicy
 
 // QueueLimits задаёт явные бюджеты очереди и ограничение ожидания синхронизации.
 type QueueLimits struct {
-	MaxPackets     uint32
-	MaxBytes       uint64
+	// MaxPackets ограничивает общее число пакетов в очереди и ожидающем аудио.
+	MaxPackets uint32
+	// MaxBytes ограничивает логический вес удерживаемых пакетов вместе с парой конфигураций, в
+	// байтах.
+	MaxBytes uint64
+	// MaxPacketBytes ограничивает логический вес одного пакета вместе с его конфигурацией, в байтах.
 	MaxPacketBytes uint64
+	// MaxConfigBytes ограничивает размер заголовков каждой дорожки, в байтах.
 	MaxConfigBytes uint64
-	ResyncTimeout  time.Duration
+	// ResyncTimeout задаёт максимальное время ожидания согласованного запуска аудио и видео после
+	// сброса.
+	ResyncTimeout time.Duration
 }
 
 // Validate проверяет положительность бюджетов и вложенность ограничений байтов.

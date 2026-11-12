@@ -7,21 +7,32 @@ import (
 	"time"
 )
 
+// Проверяет насыщение потерь только при переполнении, неизменность срока синхронизации и терминальное
+// завершение при исчерпании поколений.
 func TestSubscriptionStatsIdentityExhaustionAndSaturation(t *testing.T) {
+	// r содержит маршрутизатор для проверки крайних значений счётчиков подписки. err сообщает об
+	// отказе его создания.
 	r, err := NewRouter(RouterLimits{MaxConsumers: 1, MaxRetainedBytes: 100, MaxConfigBytes: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		// Закрывает маршрутизатор после проверки исчерпания поколений и насыщения счётчиков, сообщая ошибку
+		// закрытия.
+
+		// err сообщает об отказе закрытия тестового маршрутизатора.
 		if err := r.Close(); err != nil {
 			t.Error(err)
 		}
 	})
+	// sub содержит подписку, поколение и счётчик потерь которой доводятся до предела.
 	sub, err := r.Subscribe(QueueLimits{MaxPackets: 2, MaxBytes: 16, MaxPacketBytes: 8, MaxConfigBytes: 3, ResyncTimeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.mu.Lock()
+	// originalDeadline сохраняет срок первой синхронизации для проверки, что сброс его не
+	// продлевает.
 	originalDeadline := sub.deadline
 	sub.generation = math.MaxUint64 - 1
 	sub.drops.Overflow = math.MaxUint64 - 1
@@ -36,6 +47,7 @@ func TestSubscriptionStatsIdentityExhaustionAndSaturation(t *testing.T) {
 	}
 	sub.resetForLocked(time.Now(), dropSourceReset)
 	r.mu.Unlock()
+	// got содержит итоговый снимок после исчерпания поколений и переполнения счётчика потерь.
 	got := sub.Snapshot()
 	if got.Generation != math.MaxUint64 || !got.Saturated || got.Drops.Overflow != math.MaxUint64 || !errors.Is(sub.Err(), ErrSubscriptionGeneration) {
 		t.Fatal(got, sub.Err())

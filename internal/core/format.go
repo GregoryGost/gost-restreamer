@@ -14,14 +14,19 @@ var ErrInvalidFormat = errors.New("некорректное описание ф�
 type Codec string
 
 const (
-	CodecAV1  Codec = "av1"
+	// CodecAV1 обозначает кодек AV1 для видеодорожки.
+	CodecAV1 Codec = "av1"
+	// CodecH264 обозначает кодек H.264 для видеодорожки.
 	CodecH264 Codec = "h264"
-	CodecAAC  Codec = "aac"
+	// CodecAAC обозначает кодек AAC для аудиодорожки.
+	CodecAAC Codec = "aac"
 )
 
 // FrameRate задаёт число кадров в секунду положительной дробью.
 type FrameRate struct {
-	Numerator   uint32
+	// Numerator содержит числитель частоты кадров.
+	Numerator uint32
+	// Denominator содержит положительный знаменатель частоты кадров.
 	Denominator uint32
 }
 
@@ -47,16 +52,23 @@ func (r FrameRate) Equal(other FrameRate) bool {
 
 // ColorInfo содержит заявленные характеристики цвета.
 type ColorInfo struct {
-	Range     string
+	// Range указывает диапазон значений цвета.
+	Range string
+	// Primaries указывает основные цвета изображения.
 	Primaries string
-	Transfer  string
-	Matrix    string
+	// Transfer указывает передаточную характеристику изображения.
+	Transfer string
+	// Matrix указывает матрицу преобразования цвета.
+	Matrix string
 }
 
 // Validate проверяет наличие каждой характеристики цвета.
 func (c ColorInfo) Validate() error {
+	// field содержит очередную характеристику цвета вместе с её именем для диагностики.
 	for _, field := range []struct {
-		name  string
+		// name указывает имя проверяемой характеристики цвета в диагностике.
+		name string
+		// value содержит текст проверяемой характеристики цвета.
 		value string
 	}{
 		{"Range", c.Range},
@@ -73,16 +85,26 @@ func (c ColorInfo) Validate() error {
 
 // VideoFormat содержит структурное описание видеодорожки.
 type VideoFormat struct {
-	Codec        Codec
-	Width        uint32
-	Height       uint32
-	FrameRate    FrameRate
+	// Codec указывает кодек сжатой дорожки.
+	Codec Codec
+	// Width содержит ширину видеокадра в пикселях.
+	Width uint32
+	// Height содержит высоту видеокадра в пикселях.
+	Height uint32
+	// FrameRate задаёт частоту видеокадров точной положительной дробью.
+	FrameRate FrameRate
+	// CodecProfile содержит профиль выбранного кодека.
 	CodecProfile string
-	Level        string
-	Tier         string
-	PixelFormat  string
-	BitDepth     uint8
-	Color        ColorInfo
+	// Level содержит ограничение уровня видеокодека.
+	Level string
+	// Tier содержит ограничение категории видеокодека.
+	Tier string
+	// PixelFormat содержит обозначение формата пикселей.
+	PixelFormat string
+	// BitDepth содержит глубину компонента пикселя в битах.
+	BitDepth uint8
+	// Color содержит заявленные характеристики цвета.
+	Color ColorInfo
 }
 
 // Validate проверяет структуру формата без проверки возможностей кодека.
@@ -96,6 +118,7 @@ func (f VideoFormat) Validate() error {
 	if f.Height == 0 {
 		return fmt.Errorf("%w: VideoFormat.Height должен быть положительным", ErrInvalidFormat)
 	}
+	// err содержит причину отказа проверки частоты видеокадров.
 	if err := f.FrameRate.Validate(); err != nil {
 		return fmt.Errorf("VideoFormat.FrameRate: %w", err)
 	}
@@ -108,6 +131,7 @@ func (f VideoFormat) Validate() error {
 	if f.BitDepth == 0 {
 		return fmt.Errorf("%w: VideoFormat.BitDepth должен быть положительным", ErrInvalidFormat)
 	}
+	// err содержит причину отказа проверки характеристик цвета.
 	if err := f.Color.Validate(); err != nil {
 		return fmt.Errorf("VideoFormat.Color: %w", err)
 	}
@@ -116,10 +140,15 @@ func (f VideoFormat) Validate() error {
 
 // AudioFormat содержит структурное описание аудиодорожки.
 type AudioFormat struct {
-	Codec         Codec
-	CodecProfile  string
-	SampleRateHz  uint32
-	Channels      uint16
+	// Codec указывает кодек сжатой дорожки.
+	Codec Codec
+	// CodecProfile содержит профиль выбранного кодека.
+	CodecProfile string
+	// SampleRateHz содержит частоту дискретизации аудио в герцах.
+	SampleRateHz uint32
+	// Channels содержит число аудиоканалов.
+	Channels uint16
+	// ChannelLayout содержит схему расположения аудиоканалов.
 	ChannelLayout string
 }
 
@@ -145,15 +174,19 @@ func (f AudioFormat) Validate() error {
 
 // MediaFormat описывает обе обязательные дорожки группы.
 type MediaFormat struct {
+	// Video содержит описание обязательной видеодорожки.
 	Video VideoFormat
+	// Audio содержит описание обязательной аудиодорожки.
 	Audio AudioFormat
 }
 
 // Validate проверяет обе обязательные дорожки.
 func (f MediaFormat) Validate() error {
+	// err содержит причину отказа проверки обязательной видеодорожки.
 	if err := f.Video.Validate(); err != nil {
 		return fmt.Errorf("MediaFormat.Video: %w", err)
 	}
+	// err содержит причину отказа проверки обязательной аудиодорожки.
 	if err := f.Audio.Validate(); err != nil {
 		return fmt.Errorf("MediaFormat.Audio: %w", err)
 	}
@@ -178,12 +211,18 @@ func CompatibleFormat(actual, desired MediaFormat) error {
 	if actual.Validate() != nil || desired.Validate() != nil {
 		return ErrInvalidFormat
 	}
+	// a содержит копию фактических параметров видео, а d — копию требуемых параметров для
+	// нормализации допустимых различий.
 	a, d := actual.Video, desired.Video
 	if !a.FrameRate.Equal(d.FrameRate) {
 		return ErrInvalidFormat
 	}
 	a.FrameRate = d.FrameRate
+	// normalize приводит псевдонимы tv и pc к сопоставимым обозначениям диапазона цвета.
 	normalize := func(c ColorInfo) ColorInfo {
+		// Приводит только псевдонимы диапазона tv и pc к limited и full в копии ColorInfo для сравнения
+		// измеренного и заданного форматов.
+
 		switch c.Range {
 		case "tv":
 			c.Range = "limited"

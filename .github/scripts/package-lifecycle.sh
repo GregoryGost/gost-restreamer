@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+# fail выводит причину отказа в stderr и завершает проверку ненулевым кодом до следующих операций с
+# пакетом.
 fail() {
     printf '%s\n' "$*" >&2
     exit 1
@@ -16,6 +18,7 @@ fail() {
 [ "$(dpkg --print-architecture)" = amd64 ] || fail 'Нужен Debian amd64.'
 [ ! -e /run/systemd/system ] || fail 'Проверка не должна управлять действующим systemd.'
 
+# package указывает на проверяемый Debian-пакет из второго аргумента сценария.
 package=$2
 [ -f "$package" ] || fail 'Файл пакета отсутствует.'
 [ "$(dpkg-deb --field "$package" Package)" = gost-restreamer ] || fail 'Неверное имя пакета.'
@@ -23,17 +26,21 @@ package=$2
 if dpkg-query --show gost-restreamer >/dev/null 2>&1; then
     fail 'В контейнере уже есть запись пакета gost-restreamer.'
 fi
+# target обозначает очередной путь, который установка могла бы занять; существующий путь запрещает тест.
 for target in /opt/gost-restreamer /etc/gost-restreamer /var/lib/gost-restreamer /run/gost-restreamer \
     /etc/systemd/system/gost-restreamer.service /lib/systemd/system/gost-restreamer.service \
     /usr/lib/systemd/system/gost-restreamer.service; do
     [ ! -e "$target" ] && [ ! -L "$target" ] || fail "Обнаружен существующий путь: $target"
 done
 
+# work хранит изолированные распакованные пакеты и эталонные файлы; trap удаляет этот каталог при выходе.
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT HUP INT TERM
 dpkg-deb --raw-extract "$package" "$work/original"
 grep -Fx /etc/gost-restreamer/config.yaml "$work/original/DEBIAN/conffiles" >/dev/null || fail 'Конфигурация не объявлена conffile.'
 
+# check_mode требует точные права и владельца root:root у установленного пути; несовпадение
+# останавливает сценарий.
 check_mode() {
     [ "$(stat -c '%a:%u:%g' "$1")" = "$2:0:0" ] || fail "Неверные права или владелец: $1"
 }
@@ -41,6 +48,7 @@ check_mode() {
 # --force-depends используется только здесь: FFmpeg и systemd в тестовый контейнер не устанавливаются.
 dpkg --force-depends --install "$package"
 [ "$(dpkg-query --show --showformat='${Status}' gost-restreamer)" = 'install ok installed' ] || fail 'Первичная установка не завершена.'
+# binary выбирает исполняемый файл, чьи байты, права и владелец сверяются после установки.
 for binary in gost-restreamer gost-process-helper; do
     cmp "$work/original/opt/gost-restreamer/$binary" "/opt/gost-restreamer/$binary"
     check_mode "/opt/gost-restreamer/$binary" 755
@@ -63,8 +71,9 @@ printf 'synthetic-media-data\n' > /var/lib/gost-restreamer/media/sentinel
 cp /var/lib/gost-restreamer/state.sqlite "$work/state"
 cp /var/lib/gost-restreamer/media/sentinel "$work/media"
 
-# Копия с изменёнными metadata/default проверяет dpkg, а не новую сборку бинарников.
+# Копия с изменёнными метаданными и настройками по умолчанию проверяет работу dpkg.
 cp -a "$work/original" "$work/upgrade"
+# old_version содержит версию исходного пакета; upgrade_version задаёт более новую версию его тестовой копии.
 old_version=$(dpkg-deb --field "$package" Version)
 upgrade_version="${old_version}+lifecycle.1"
 dpkg --compare-versions "$upgrade_version" gt "$old_version" || fail 'Тестовая версия не выше исходной.'
@@ -86,6 +95,7 @@ dpkg --remove gost-restreamer
 cmp "$work/user-config" /etc/gost-restreamer/config.yaml
 cmp "$work/state" /var/lib/gost-restreamer/state.sqlite
 cmp "$work/media" /var/lib/gost-restreamer/media/sentinel
+# binary обозначает очередной исполняемый файл, который удаление пакета должно убрать с диска.
 for binary in gost-restreamer gost-process-helper; do
     [ ! -e "/opt/gost-restreamer/$binary" ] || fail 'Удаление сохранило бинарник.'
 done

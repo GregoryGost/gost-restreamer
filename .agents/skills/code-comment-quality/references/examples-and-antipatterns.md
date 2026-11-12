@@ -1,23 +1,37 @@
 # Worked Contrasts: What a Maintainer Actually Needs to Know
 
-**Illustrative examples, not executable project code or universally correct contracts.** Assume the stated behavior exists in each hypothetical component; before using a similar comment, verify it against the target's complete source, tests, callers and dependency contracts. The snippets use several languages only to expose different engineering situations. Translate natural-language prose to the project's selected language and use its doc-comment syntax. Each lesson concerns **semantic information**, not length. The comments should sound like something a developer would explain to a teammate, not like an agent's summary or scoring rubric. Technical terms are welcome where useful, but unexplained abstractions are not.
+**Illustrative examples, not executable project code or universally correct contracts.** Assume the stated behavior exists in each hypothetical component; before using a similar comment, verify it against the target's complete source, tests, callers and dependency contracts. The snippets use several languages only to expose different engineering situations. Fragments without complete declarations teach a local explanation only; the containing function and all authored declarations must still be documented in real code. Translate natural-language prose to the project's selected language and use its doc-comment syntax. Each lesson concerns **semantic information**, not length. The comments should sound like something a developer would explain to a teammate, not like an agent's summary or scoring rubric. Technical terms are welcome where useful, but unexplained abstractions are not.
 
-## 1. Obvious behavior: no comment is better (TypeScript)
+## 1. A small method still needs a useful block (TypeScript)
 
-**Unhelpful:**
-
-~~~ts
-// Increase the retry counter by one.
-retryCount += 1
-~~~
-
-**Better:**
+**Insufficient:**
 
 ~~~ts
-retryCount += 1
+class Task {
+    private id: string
+    idValue(): string { return this.id }
+}
 ~~~
 
-**Why:** the comment contributes no additional fact. An invented rationale would be worse. A short function can be sufficiently self-documenting.
+**Correct for a task whose ID is stored at construction:**
+
+~~~ts
+/** Keeps the identifier assigned when this task is created. */
+class Task {
+    /** Identifier supplied by the task creator. */
+    private readonly id: string
+
+    /** Creates a task that stores the given identifier.
+     * @param id Identifier assigned by the calling code.
+     */
+    constructor(id: string) { this.id = id }
+
+    /** Returns the stored identifier without changing the task. */
+    idValue(): string { return this.id }
+}
+~~~
+
+**Why:** even the one-line method is documented. The field, constructor, parameter, and accessor have distinct roles and explanations. The example's `readonly` modifier supports its non-reassignment property; do not infer that other implementations provide the same guarantee.
 
 ## 2. Module role and shared invariants (Python)
 
@@ -263,9 +277,9 @@ Task SendAsync(Batch batch, CancellationToken cancellationToken);
 await transport.send(payload)
 ~~~
 
-**Better:** confirm what `send` and the surrounding caller actually guarantee. If retries or ambiguous outcomes are possible, replace the false promise with a verified account of commit/replay semantics. If no non-obvious invariant remains, **remove the comment** rather than replacing it with another guess.
+**Better:** confirm what `send` and the surrounding caller actually guarantee. If retries or ambiguous outcomes are possible, replace the false promise with a verified account of commit/replay semantics. Replace a false declaration comment with a truthful description of its actual purpose and behavior, even when that explanation is short. Only remove extra narration that does **not** serve as the mandatory documentation for a declaration.
 
-**Why:** elaborate but false documentation is worse than a missing comment.
+**Why:** invented guarantees are harmful, but deleting a function or variable's required documentation is not a valid fix.
 
 ## 14. Excess narration versus one high-value constraint
 
@@ -284,6 +298,7 @@ if enabled {
 **Better where a real startup invariant applies:**
 
 ~~~go
+// routing holds the complete table built from the current configuration.
 routing := buildRoutingTable(config)
 publishRoutingTable(routing)
 // Workers must start after publication of the complete routing table;
@@ -293,7 +308,7 @@ if config.Enabled {
 }
 ~~~
 
-**Why:** one fact explaining an ordering dependency can replace a series of obvious comments. If startup ordering is not enforced here, that improved comment would also be misleading.
+**Why:** the useful comments explain what `routing` stores and why the sequence matters, rather than narrating each operation. If startup ordering is not enforced here, the proposed explanation would be misleading.
 
 ---
 
@@ -319,6 +334,246 @@ if (requestInFlight) return
 
 ---
 
+## 16. Short method and field (Go)
+
+**Missing documentation (not acceptable):**
+
+~~~go
+type Task struct { id string }
+func (t Task) ID() string { return t.id }
+~~~
+
+**Documented (for the hypothetical task model below):**
+
+~~~go
+// Task keeps the identifier assigned when a task is created.
+type Task struct {
+    // id is the stored identifier used to refer to this task.
+    id string
+}
+
+// ID returns the identifier kept in the task without modifying it.
+func (t Task) ID() string { return t.id }
+~~~
+
+**Why:** brief implementation is no exception. The method and field each have a different role to describe.
+
+## 17. Function contract and local variables (Python)
+
+**Insufficient:** `def page_bounds(start, count): return max(start, 0), max(start, 0) + count` (no docstring and no named explanation).
+
+**Documented for a function whose caller supplies a non-negative count:**
+
+~~~python
+def page_bounds(start: int, count: int) -> tuple[int, int]:
+    """Return the start and exclusive end of a page within a sequence.
+
+    Negative start values are treated as zero. The caller provides a
+    non-negative count; this function does not validate it.
+    """
+    # first is the starting index after adjusting a negative input.
+    first = max(start, 0)
+    # end is the index immediately after the selected page.
+    end = first + count
+    return first, end
+~~~
+
+**Why:** the function block describes both inputs, output and a restriction; each local value has a documented role.
+
+## 18. Grouped and destructured variables (TypeScript)
+
+**Insufficient:**
+
+~~~ts
+const { endpoint, retryDelayMs } = loadConfig()
+~~~
+
+**Documented:**
+
+~~~ts
+// Values taken from the current client configuration:
+// - endpoint is the address used for outgoing API requests.
+// - retryDelayMs is the pause in milliseconds before a permitted retry.
+const { endpoint, retryDelayMs } = loadConfig()
+~~~
+
+**Why:** a single nearby block is sufficient for related variables **only because it names each one and explains what it means**. A generic label such as "Client settings" would not cover either binding.
+
+## 19. Properties and constructor (C#)
+
+**Documented for a class that normalizes a lower attempt bound:**
+
+~~~csharp
+/// <summary>Holds the retry limit used by the request sender.</summary>
+public sealed class RetrySettings
+{
+    /// <summary>The maximum number of attempts; always at least one.</summary>
+    public int MaxAttempts { get; }
+
+    /// <summary>Creates settings with at least one allowed attempt.</summary>
+    /// <param name="attempts">Requested attempt limit; values below one become one.</param>
+    public RetrySettings(int attempts)
+    {
+        MaxAttempts = Math.Max(1, attempts);
+    }
+}
+~~~
+
+**Why:** the constructor and property are independently documented. The parameter's meaning is covered by the constructor block; no duplicate inline comment is required.
+
+## 20. Loop bindings and a temporary value (Go)
+
+**Documented:**
+
+~~~go
+// collectNames returns the names in the input records, preserving their order.
+func collectNames(records []Record) []string {
+    // names collects the values returned to the caller in input order.
+    names := make([]string, 0, len(records))
+    // index is the position of the record currently being read.
+    for index := range records {
+        // record is the item from that position in the input slice.
+        record := records[index]
+        names = append(names, record.Name)
+    }
+    return names
+}
+~~~
+
+**Why:** the loop index and temporary are variables too. Their roles are described without inserting a comment after every operation.
+
+## 21. Test function and test-local values (Python)
+
+**Documented:**
+
+~~~python
+def test_empty_page_returns_no_items():
+    """Check that an empty input produces an empty page without a cursor."""
+    # records represents a source with no available events.
+    records = []
+    # result is the page returned for that empty source.
+    result = make_page(records)
+    assert result.items == []
+    assert result.next_cursor is None
+~~~
+
+**Why:** the test function has its own docstring and both local values are explained. A descriptive test name does not replace required documentation.
+
+---
+
+## 22. Standalone global variable and constant (TypeScript)
+
+**Insufficient:**
+
+~~~ts
+export const MAX_PAGE_ITEMS = 250
+let lastRefreshMs: number | null = null
+~~~
+
+**Documented for a client using this paging and refresh policy:**
+
+~~~ts
+/** Maximum number of records this client requests in a single page. */
+export const MAX_PAGE_ITEMS = 250
+
+// Time of the last successful refresh in milliseconds, or null if
+// this module has not completed a refresh yet.
+let lastRefreshMs: number | null = null
+~~~
+
+**Why:** constants and module variables require the same coverage as fields. Their descriptions explain the meaning, use and units of their values.
+
+## 23. Anonymous callback, its parameter, locals and a catch binding (TypeScript)
+
+**Documented:**
+
+~~~ts
+/**
+ * Watches for a socket closing and reports the reason.
+ * connection is the socket whose close events will be observed.
+ */
+function watchConnection(connection: WebSocket): void {
+    // onClose runs after the socket closes. Its event parameter contains
+    // the close reason; the callback sends that reason to the logger.
+    const onClose = (event: CloseEvent): void => {
+        // reason is the description received with this close event,
+        // or "unknown" when the event contains no reason.
+        const reason = event.reason || "unknown"
+        try {
+            reportDisconnect(reason)
+        } catch (error) {
+            // error is the exception thrown while reporting this disconnect.
+            logDisconnectFailure(String(error))
+        }
+    }
+    connection.addEventListener("close", onClose)
+}
+~~~
+
+**Why:** the named function has its own block, the anonymous function is documented through the declaration that owns it, and its parameter and local/catch bindings are explained. This is a hypothetical fragment: validate the real callback lifecycle, error contract and listener cleanup instead of copying it blindly.
+
+---
+
+## 24. Русская калька о владении HTTP-транспортом
+
+Это отдельные фрагменты условных реализаций, а не полные классы. Фактическую ответственность за транспорт необходимо установить по коду, включая создание и закрытие ресурса.
+
+**Неудачно:**
+
+~~~python
+# Владеть транспортом интеграции.
+self._transport = transport
+~~~
+
+**Если клиент использует переданный ему транспорт, а закрывает его вызывающий код:**
+
+~~~python
+# Клиент отправляет HTTP-запросы через переданный транспорт.
+# Его закрывает компонент, который передал транспорт клиенту.
+self._transport = transport
+~~~
+
+**Если клиент самостоятельно создаёт транспорт и закрывает его при завершении работы:**
+
+~~~python
+# Клиент создаёт транспорт для отправки запросов и закрывает его
+# при завершении своей работы.
+self._transport = create_transport()
+~~~
+
+**Почему:** слово "владеть" само по себе не объясняет ни использование, ни закрытие ресурса. В каждом исправленном варианте указаны конкретные действия. Выбирать вариант без проверки устройства реального клиента нельзя.
+
+## 25. Тема класса и реальное чтение настроек графа
+
+**Неудачно для класса, отвечающего за чтение конфигурации:**
+
+~~~python
+class GraphConfigReader:
+    """Настройки одного графа."""
+~~~
+
+**Если он читает соответствующий раздел и возвращает параметры:**
+
+~~~python
+class GraphConfigReader:
+    """Читает настройки указанного графа из конфигурации.
+
+    Находит относящийся к графу раздел и возвращает параметры,
+    которые затем использует код создания графа.
+    """
+~~~
+
+**Если другой класс только хранит готовые параметры, а не читает их:**
+
+~~~python
+class GraphSettings:
+    """Хранит параметры, используемые при создании одного графа."""
+~~~
+
+**Почему:** "Настройки одного графа" называет тему, но не объясняет, что класс читает конфигурацию. Допустимо и короткое именное описание, если оно действительно передаёт роль хранилища данных. Не приписывайте чтение разделов, возврат значений или другие действия, пока они не подтверждены реализацией.
+
+---
+
 ## Calibrate by consequence, not size
 
-A single sentence may completely explain a local invariant. A public boundary with cancellation, replay, persistence, and concurrent state can need several paragraphs plus a transition table. A long comment is not evidence of quality: ask which supported fact would be lost if each sentence were removed, and which important fact is still missing. Do not retrofit every example into one component.
+Each authored declaration in the affected scope requires a documentation block or an explicit grouped-variable explanation, even when its implementation is short. Some examples above focus on a fragment of a larger function; they do **not** waive documentation for the enclosing function or other variables in real source. A complex public boundary can need several paragraphs and a transition table. Keep every necessary fact, without filler or invented guarantees.

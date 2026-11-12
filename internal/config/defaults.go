@@ -4,8 +4,13 @@ import "time"
 
 // Default возвращает начальные конечные бюджеты; это не обещание производительности.
 func Default() Config {
+	// second задаёт общую единицу времени для начальных сроков и интервалов конфигурации.
 	const second = time.Second
+	// container содержит начальные пределы разбора fMP4, общие для рабочего медиатракта и проверки
+	// заглушек.
 	container := Container{MaxBoxBytes: 16 << 20, MaxInitBytes: 1 << 20, MaxMoofBytes: 1 << 20, MaxMdatBytes: 16 << 20, MaxSampleBytes: 8 << 20, MaxExtradataBytes: 64 << 10, MaxSamples: 4096}
+	// queue содержит начальные пределы пакетов и памяти очереди, используемые группами и
+	// отправителями.
 	queue := Queue{MaxPackets: 512, MaxBytes: 32 << 20, MaxPacketBytes: 10 << 20, MaxConfigBytes: 64 << 10, ResyncTimeout: 5 * second}
 	return Config{
 		Paths:       Paths{Data: "/var/lib/gost-restreamer", Runtime: "/run/gost-restreamer"},

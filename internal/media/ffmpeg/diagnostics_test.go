@@ -8,17 +8,29 @@ import (
 	"testing"
 )
 
+// Проверяет восстановление исходных бинарных байтов из нумерованных ограниченных фрагментов,
+// сохранение отдельных argv и учёт потерь по числу и весу событий.
 func TestDiagnosticChunksPreserveBytesAndLossAccounting(t *testing.T) {
+	// q хранит тестовую диагностику; после проверки фрагментов заменяется очередью на одно событие
+	// для проверки потерь.
 	q := newDiagnosticQueue(20, 8192)
+	// w разбивает stderr попытки 42 на диагностические фрагменты не более трёх байтов.
 	w := &diagnosticWriter{queue: q, attempt: 42, kind: "stderr", chunk: 3}
+	// original содержит контрольные бинарные байты, включая ноль и неполные последовательности
+	// UTF-8.
 	original := []byte{0xff, '\n', 'a', 0xe2, 0x82, 0xac, 0, 0xfe}
+	// n содержит число принятых байтов записи; err сообщает об отказе diagnosticWriter.Write.
 	if n, err := w.Write(original); err != nil || n != len(original) {
 		t.Fatalf("Write: %d %v", n, err)
 	}
 	q.close()
+	// reconstructed накапливает данные прочитанных фрагментов для сравнения с исходными байтами.
 	var reconstructed []byte
+	// seq содержит ожидаемый следующий порядковый номер диагностического фрагмента.
 	var seq uint64
 	for {
+		// d содержит очередной диагностический фрагмент; err сообщает об отказе чтения или EOF
+		// после закрытия очереди.
 		d, err := q.next(context.Background())
 		if errors.Is(err, io.EOF) {
 			break
@@ -41,6 +53,7 @@ func TestDiagnosticChunksPreserveBytesAndLossAccounting(t *testing.T) {
 	if q.losses() != 1 {
 		t.Fatal(q.losses())
 	}
+	// d содержит сохранённое событие с отдельными argv; err сообщает об отказе его чтения.
 	d, err := q.next(context.Background())
 	if err != nil || len(d.Args) != 2 || d.Args[1] != "c\nd" {
 		t.Fatalf("argv: %+v %v", d, err)

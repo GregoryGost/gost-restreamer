@@ -30,6 +30,13 @@ Semantic completeness, factual rationale, and documentation coverage belong to t
 - Rewrite awkward literal translations into simple natural sentences while preserving exact code names and contract tokens.
 - For target languages where noun modifiers require case, agreement, hyphenation, adjective forms, or genitive constructions, do not keep source-language noun stacks as-is. Rewrite them into natural target-language noun phrases.
 
+## Meaning-sensitive language review
+
+- Literal translations can be grammatically correct yet useless. Recover the verified declaration purpose before translating expressions such as English "owns transport" or "settings for one graph" into Russian.
+- For a resource owner, say who **creates, uses and closes** it only to the extent these facts are established. For a configuration reader, describe what it actually reads or returns. Avoid imperative fragments like "Владеть транспортом интеграции" and topic-only labels such as "Настройки одного графа" where the role is a reader.
+- Do not blacklist grammatical forms. A noun phrase is appropriate for some data containers; an infinitive can be natural in context. Judge the completeness, naturalness, and truth of the whole explanation.
+- This skill audits natural language when independently active; the source-comment quality pair must still check explanatory meaning when this language skill is inactive.
+
 ## Audit Workflow
 
 Use this workflow when the task asks to clean, review, or enforce comment/docstring language policy.

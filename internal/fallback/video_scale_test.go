@@ -9,9 +9,15 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
+// Проверяет точную шкалу видео для дробных частот, границы int32 у длительности кадра и отказ для
+// неделимой или неверной шкалы.
 func TestPreparedVideoScalePreservesRangeAndChecksFrameStep(t *testing.T) {
+	// tc содержит дробь FPS, шкалу контейнера и ожидаемую шкалу видеодорожки.
 	for _, tc := range []struct {
-		name              string
+		// name обозначает сценарий выбора шкалы в имени подтеста.
+		name string
+		// n задаёт числитель FPS. d задаёт знаменатель FPS. movie задаёт шкалу контейнера. want
+		// задаёт ожидаемую шкалу видео либо ноль при отказе.
 		n, d, movie, want uint32
 	}{
 		{"low-rational", 75, 2, 48000, 48000},
@@ -28,6 +34,11 @@ func TestPreparedVideoScalePreservesRangeAndChecksFrameStep(t *testing.T) {
 		{"overflow-movie", 30, 1, math.MaxUint32, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Сверяет выбранную шкалу видео и ошибку с независимым ожиданием для заданной дроби FPS, шкалы фильма
+			// и границы шага кадра.
+
+			// got содержит выбранную шкалу видеодорожки. err сообщает о недопустимой шкале
+			// или шаге кадра.
 			got, err := preparedVideoScale(core.FrameRate{Numerator: tc.n, Denominator: tc.d}, tc.movie)
 			if got != tc.want || (err != nil) != (tc.want == 0) {
 				t.Fatal(got, err)
@@ -36,22 +47,30 @@ func TestPreparedVideoScalePreservesRangeAndChecksFrameStep(t *testing.T) {
 	}
 }
 
+// Проверяет передачу выбранной точной шкалы видео в команду подготовки для низких и больших
+// знаменателей частоты.
 func TestPreparedArgumentsUseExactVideoClockWithoutExpandingHighScale(t *testing.T) {
+	// rate содержит очередную низкую или дробную частоту для проверки аргументов подготовки.
 	for _, rate := range []core.FrameRate{{Numerator: 75, Denominator: 2}, {Numerator: 32749, Denominator: 65536}, {Numerator: 32749, Denominator: 131072}} {
+		// profile содержит профиль H.264 с выбранной частотой кадров.
 		profile := selfProfile(core.CodecH264)
 		profile.Format.Video.FrameRate = rate
+		// loop содержит длительность на общей сетке A/V. err сообщает об отказе выравнивания.
 		loop, err := EffectiveLoopDuration(time.Second, profile, 30*24*time.Hour)
 		if err != nil {
 			t.Fatal(err)
 		}
+		// command содержит построенную команду с проверяемой шкалой видео.
 		command, err := ProductionBuilder("ffmpeg")(GenerateRequest{Source: Source{Kind: core.AssetImage, Duration: time.Second, Demuxer: "png_pipe"}, Profile: profile, LoopDuration: loop})
 		if err != nil {
 			t.Fatal(err)
 		}
+		// want содержит ожидаемый десятичный аргумент шкалы видеодорожки.
 		want := "32749"
 		if rate.Numerator == 75 {
 			want = "48000"
 		}
+		// at задаёт позицию параметра -video_track_timescale в аргументах команды.
 		at := slices.Index(command.Args, "-video_track_timescale")
 		if at < 0 || command.Args[at+1] != want {
 			t.Fatal(command.Args)

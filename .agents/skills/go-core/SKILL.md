@@ -14,7 +14,7 @@ HTTP/Huma, GORM/SQLite/Goose and testing framework specifics belong to separatel
 - Inspect `CODEX_PROJECT.md`, `go.mod`, `go.work` if present, source, build tags, CI and the declared active stack. Select only active rules and skills using `AGENTS.md` and `.codex/rules/material_dependencies.md`.
 - Use `.codex/rules/go_core.md` when it is independently active. This skill does not activate that rule or any optional overlay by itself.
 - When a target project selects only `go-core` without the rule, respect that active selection and do not silently create an undeclared dependency.
-- Obey project language, code-comment policy, existing conventions, dependency policy, mutation scope and approved validation commands.
+- Obey project language, code-comment policy, existing conventions, dependency policy, mutation scope and approved validation commands. When `code_comment_quality.md` + `code-comment-quality` is independently active, document **every** new/affected function and method (including short/private helpers), every field, constant and local/loop binding in owned affected definitions, using nearby comments or an explicitly mapped group for variables. Go declaration comments must keep idiomatic symbol-leading text for exported names; this skill does not activate the pair.
 
 ## Required investigation before an expert judgment
 

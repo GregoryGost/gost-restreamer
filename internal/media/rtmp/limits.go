@@ -8,32 +8,52 @@ import (
 )
 
 var (
-	ErrLimit   = codec.ErrLimit
+	// ErrLimit сохраняет общую категорию превышения бюджета кодека или RTMP.
+	ErrLimit = codec.ErrLimit
+	// ErrFraming обозначает повреждённую структуру сообщений или блоков RTMP.
 	ErrFraming = errors.New("некорректное обрамление RTMP")
-	ErrCodec   = codec.ErrCodec
+	// ErrCodec сохраняет общую категорию неподдержанного сжатого потока.
+	ErrCodec = codec.ErrCodec
+	// ErrUnready сохраняет общую категорию недостаточно определённого формата.
 	ErrUnready = codec.ErrUnready
 )
 
 // Limits задаёт положительные бюджеты на одно соединение, включая память читателя библиотеки.
 // MaxRetainedBytes учитывает верхнюю границу удерживаемых полезных данных и структурных слотов,
-// копии сборки/декодирования и буфер bufio; это не предел RSS процесса.
+// копии сборки/декодирования и буфер bufio; это не предел объёма резидентной памяти процесса.
 type Limits struct {
-	MaxConnections    uint32
-	MaxChunkStreams   uint32
-	MaxMessageBytes   uint32
-	MaxChunkBytes     uint32
-	MaxFragments      uint32
-	MaxRetainedBytes  uint64
-	MaxControlBytes   uint32
-	MaxConfigBytes    uint32
-	MaxAMFBytes       uint32
-	MaxAMFDepth       uint32
-	MaxAMFElements    uint32
+	// MaxConnections ограничивает число одновременно зарегистрированных входящих соединений сервера.
+	MaxConnections uint32
+	// MaxChunkStreams ограничивает число используемых потоков блоков одного соединения.
+	MaxChunkStreams uint32
+	// MaxMessageBytes ограничивает объявленную длину тела сообщения в байтах.
+	MaxMessageBytes uint32
+	// MaxChunkBytes ограничивает допустимый размер блока в байтах.
+	MaxChunkBytes uint32
+	// MaxFragments ограничивает число фрагментов одного сообщения.
+	MaxFragments     uint32
+	MaxRetainedBytes uint64
+	// MaxControlBytes ограничивает тело управляющего сообщения в байтах.
+	MaxControlBytes uint32
+	// MaxConfigBytes ограничивает тело сообщения конфигурации кодека в байтах.
+	MaxConfigBytes uint32
+	// MaxAMFBytes ограничивает тело проверяемого AMF-сообщения в байтах.
+	MaxAMFBytes uint32
+	// MaxAMFDepth ограничивает глубину вложенности AMF до построения графа объектов.
+	MaxAMFDepth uint32
+	// MaxAMFElements ограничивает общее число значений AMF.
+	MaxAMFElements uint32
+	// MaxReadAheadBytes ограничивает объём одного читаемого вперёд блока вместе с заголовком, в
+	// байтах.
 	MaxReadAheadBytes uint32
-	HandshakeTimeout  time.Duration
-	ReadTimeout       time.Duration
-	WriteTimeout      time.Duration
-	ShutdownTimeout   time.Duration
+	// HandshakeTimeout ограничивает общий этап согласования и допуска входящей публикации.
+	HandshakeTimeout time.Duration
+	// ReadTimeout задаёт срок очередного чтения блока после согласования.
+	ReadTimeout time.Duration
+	// WriteTimeout задаёт срок очередной транспортной записи.
+	WriteTimeout time.Duration
+	// ShutdownTimeout ограничивает отдельное ожидание остановки соединений и отзыва допуска.
+	ShutdownTimeout time.Duration
 }
 
 // Validate исключает неограниченные и несовместимые с gortmplib значения.
@@ -46,6 +66,7 @@ func (l Limits) Validate() error {
 
 // ValidateIngress проверяет полный резерв входного сервера до открытия ресурсов.
 func (l Limits) ValidateIngress() error {
+	// err сообщает о некорректных общих ограничениях до проверки полного входного резерва.
 	if err := l.Validate(); err != nil {
 		return err
 	}
@@ -55,6 +76,8 @@ func (l Limits) ValidateIngress() error {
 	return nil
 }
 
+// Вычисляет базовый логический резерв соединения для буферов, копий сообщений и двух ограниченных
+// графов AMF; текущие фрагменты учитываются отдельно.
 func (l Limits) baseRetained() uint64 {
 	// Два ограниченных графа AMF покрывают сохранённую команду публикации и
 	// следующее типизированное сообщение, включая внутренние массивы и заголовки элементов.

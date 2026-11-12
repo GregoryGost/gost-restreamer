@@ -10,32 +10,57 @@ import (
 	"github.com/bluenviron/gortmplib/pkg/rawmessage"
 )
 
+// outboundChunkStream сохраняет наследуемые заголовки и сборку одного входящего потока блоков RTMP.
 type outboundChunkStream struct {
-	known, active, extended               bool
-	typ                                   byte
+	// known показывает наличие заголовка для наследования. active отмечает незавершённое сообщение.
+	// extended требует четырёхбайтовой расширенной метки.
+	known, active, extended bool
+	// typ хранит тип собираемого RTMP-сообщения.
+	typ byte
+	// length хранит объявленную длину тела в байтах. received считает собранные байты тела.
+	// fragments считает блоки сообщения. streamID хранит MessageStreamID.
 	length, received, fragments, streamID uint32
-	timestamp, delta, extendedValue       uint32
-	deadline                              time.Time
-	body                                  []byte
+	// timestamp хранит абсолютную сетевую метку сообщения. delta хранит наследуемое приращение.
+	// extendedValue сохраняет значение для проверки расширенной метки продолжений.
+	timestamp, delta, extendedValue uint32
+	// deadline сохраняет первоначальный срок сборки сообщения без продления продолжениями.
+	deadline time.Time
+	// body содержит заранее ограниченный буфер собираемого тела.
+	body []byte
 }
 
 // outboundReader принадлежит одной горутине. Завершённое тело передаётся владельцу
 // сообщения; незавершённые тела учитываются до выделения памяти и освобождаются при Abort.
 type outboundReader struct {
-	c                       *OutboundConn
-	streams                 map[uint32]*outboundChunkStream
-	chunkSize               uint32
-	retained                uint64
+	// c указывает на соединение, чьи транспорт, бюджеты и очередь ACK использует читатель.
+	c *OutboundConn
+	// streams связывает полный идентификатор потока блоков с его историей и сборкой.
+	streams map[uint32]*outboundChunkStream
+	// chunkSize задаёт текущую максимальную длину входящего фрагмента тела в байтах.
+	chunkSize uint32
+	// retained считает объявленные полные размеры незавершённых тел для проверки бюджета до
+	// выделения памяти.
+	retained uint64
+	// readBytes считает фактически прочитанные байты вместе с согласованием. acknowledged сохраняет
+	// объём последнего поставленного в очередь собственного ACK.
 	readBytes, acknowledged uint64
-	window                  uint32
-	messageChunkStreamID    uint32
+	// window задаёт интервал прочитанных байтов между собственными ACK.
+	window uint32
+	// messageChunkStreamID сохраняет полный идентификатор потока последнего собранного сообщения.
+	messageChunkStreamID uint32
 }
 
+// Выбирает самый ранний срок кандидата, общего запуска и всех незавершённых сообщений, чтобы
+// чередование фрагментов не продлевало старое ожидание.
 func (r *outboundReader) earliest(candidate time.Time) time.Time {
+	// d накапливает наиболее ранний срок среди кандидата, запуска и всех незавершённых сообщений.
 	d := candidate
+	// n содержит общий срок запуска RTMP в наносекундах Unix либо ноль после подтверждения
+	// публикации.
 	if n := r.c.startup.Load(); n != 0 {
 		d = earlierDeadline(d, time.Unix(0, n))
 	}
+	// s обозначает состояние очередного потока блоков при поиске ближайшего срока.
 	for _, s := range r.streams {
 		if s.active {
 			d = earlierDeadline(d, s.deadline)
@@ -44,6 +69,7 @@ func (r *outboundReader) earliest(candidate time.Time) time.Time {
 	return d
 }
 
+// Возвращает более ранний ненулевой срок; ноль означает отсутствие ограничения.
 func earlierDeadline(a, b time.Time) time.Time {
 	if a.IsZero() || !b.IsZero() && b.Before(a) {
 		return b
@@ -51,8 +77,12 @@ func earlierDeadline(a, b time.Time) time.Time {
 	return a
 }
 
+// Заполняет переданный срез, учитывая каждый положительный Read и отправляя собственные ACK по окну;
+// некорректный результат, переполнение счётчика или отсутствие продвижения возвращают ошибку.
 func (r *outboundReader) read(p []byte) error {
 	for len(p) > 0 {
+		// n содержит фактически прочитанное число байтов. err сообщает об отказе транспортного
+		// чтения.
 		n, err := r.c.conn.Read(p)
 		if n < 0 || n > len(p) {
 			return fmt.Errorf("некорректный результат чтения: phase=read received=%d requested=%d: %w", n, len(p), ErrFraming)
@@ -62,6 +92,7 @@ func (r *outboundReader) read(p []byte) error {
 		}
 		r.readBytes += uint64(n)
 		p = p[n:]
+		// ackErr сообщает об отказе постановки собственного ACK после учёта прочитанных байтов.
 		if ackErr := r.ack(); ackErr != nil {
 			return ackErr
 		}
@@ -78,8 +109,11 @@ func (r *outboundReader) read(p []byte) error {
 	return nil
 }
 
+// Читает блоки до полного сообщения, проверяя необходимость собственного ACK после каждого блока.
 func (r *outboundReader) next() (*rawmessage.Message, error) {
 	for {
+		// m содержит полное сообщение либо nil после промежуточного блока. err сообщает об
+		// отказе разбора блока.
 		m, err := r.chunk()
 		if err != nil {
 			return nil, err
@@ -93,12 +127,16 @@ func (r *outboundReader) next() (*rawmessage.Message, error) {
 	}
 }
 
+// Ставит в очередь ACK фактически прочитанных байтов при достижении окна, передавая сетевое значение
+// по модулю 2³².
 func (r *outboundReader) ack() error {
 	if r.window == 0 || r.readBytes-r.acknowledged < uint64(r.window) {
 		return nil
 	}
+	// body содержит четырёхбайтовое сетевое значение накопленных прочитанных байтов по модулю 2³².
 	var body [4]byte
 	binary.BigEndian.PutUint32(body[:], uint32(r.readBytes%(uint64(1)<<32)))
+	// err сообщает об отказе постановки ACK в ограниченную очередь управления.
 	if err := r.c.queueControl(3, body[:]); err != nil {
 		return err
 	}
@@ -106,33 +144,48 @@ func (r *outboundReader) ack() error {
 	return nil
 }
 
+// Разбирает один блок с полным идентификатором потока, наследуемой меткой и конечным сроком начатого
+// сообщения. Проверяет бюджеты до выделения тела и передаёт завершённое тело без удержания его в
+// читателе.
 func (r *outboundReader) chunk() (*rawmessage.Message, error) {
+	// l содержит проверенные ограничения входящих сообщений текущего соединения.
 	l := r.c.opts.Limits
 	// При отсутствии незавершённых сообщений тишина не ограничивается сроком чтения.
+	// err сообщает об отказе установки срока для ожидания следующего заголовка.
 	if err := r.c.conn.SetReadDeadline(r.earliest(time.Time{})); err != nil {
 		return nil, err
 	}
+	// header служит временным буфером основного и расширенного заголовков блока.
 	var header [18]byte
+	// err сообщает об отказе чтения первого байта заголовка.
 	if err := r.read(header[:1]); err != nil {
 		return nil, err
 	}
+	// started содержит первоначальный срок сообщения, начинаемый после получения первого байта
+	// блока.
 	started := time.Now().Add(l.MessageTimeout)
+	// err сообщает об отказе установки ближайшего срока незавершённого сообщения.
 	if err := r.c.conn.SetReadDeadline(r.earliest(started)); err != nil {
 		return nil, err
 	}
+	// fmtID содержит формат наследования заголовка блока. id содержит полный идентификатор его
+	// потока.
 	fmtID, id := header[0]>>6, uint32(header[0]&63)
 	switch id {
 	case 0:
+		// err сообщает об отказе чтения однобайтового расширения идентификатора потока.
 		if err := r.read(header[1:2]); err != nil {
 			return nil, err
 		}
 		id = 64 + uint32(header[1])
 	case 1:
+		// err сообщает об отказе чтения двухбайтового расширения идентификатора потока.
 		if err := r.read(header[1:3]); err != nil {
 			return nil, err
 		}
 		id = 64 + uint32(header[1]) + 256*uint32(header[2])
 	}
+	// s содержит историю и незавершённое тело текущего потока блоков.
 	s := r.streams[id]
 	if s == nil {
 		if uint32(len(r.streams)) >= l.MaxChunkStreams {
@@ -144,8 +197,11 @@ func (r *outboundReader) chunk() (*rawmessage.Message, error) {
 	if fmtID != 0 && !s.known || fmtID != 3 && s.active {
 		return nil, fmt.Errorf("недопустимая история чанка: phase=chunk_header check=history fmt=%d csid=%d known=%t active=%t received=%d message_len=%d read_bytes=%d: %w", fmtID, id, s.known, s.active, s.received, s.length, r.readBytes, ErrFraming)
 	}
+	// newMessage показывает, начинает ли текущий блок новое сообщение этого потока.
 	newMessage := !s.active
+	// n задаёт число байтов заголовка сообщения для выбранного fmtID.
 	n := [...]int{11, 7, 3, 0}[fmtID]
+	// err сообщает об отказе чтения полей заголовка сообщения.
 	if err := r.read(header[:n]); err != nil {
 		return nil, err
 	}
@@ -156,12 +212,14 @@ func (r *outboundReader) chunk() (*rawmessage.Message, error) {
 	if fmtID == 0 {
 		s.streamID = binary.LittleEndian.Uint32(header[7:11])
 	}
+	// value содержит обычную либо расширенную метку или приращение текущего заголовка.
 	var value uint32
 	if fmtID <= 2 {
 		value = be24(header[:3])
 		s.extended = value == 0xffffff
 	}
 	if s.extended {
+		// err сообщает об отказе чтения расширенной временной метки.
 		if err := r.read(header[11:15]); err != nil {
 			return nil, err
 		}
@@ -201,7 +259,9 @@ func (r *outboundReader) chunk() (*rawmessage.Message, error) {
 		return nil, fmt.Errorf("превышено число фрагментов: phase=chunk_body check=fragment_limit csid=%d fragments=%d max_fragments=%d received=%d message_len=%d: %w", id, s.fragments, l.MaxFragments, s.received, s.length, ErrLimit)
 	}
 	s.fragments++
+	// amount задаёт число байтов тела в текущем блоке с учётом остатка сообщения и chunkSize.
 	amount := min(s.length-s.received, r.chunkSize)
+	// err сообщает об отказе чтения фрагмента тела в его отведённый буфер.
 	if err := r.read(s.body[s.received : s.received+amount]); err != nil {
 		return nil, err
 	}
@@ -209,6 +269,7 @@ func (r *outboundReader) chunk() (*rawmessage.Message, error) {
 	if s.received != s.length {
 		return nil, nil
 	}
+	// m передаёт полное собранное тело владельцу сообщения после удаления его из удержания читателя.
 	m := &rawmessage.Message{Type: s.typ, MessageStreamID: s.streamID, Timestamp: time.Duration(s.timestamp) * time.Millisecond, Body: s.body}
 	// В публичном rawmessage.Message поле ChunkStreamID имеет тип byte.
 	// Проверка управляющих сообщений использует полный идентификатор; ограниченное представление наружу не передаётся.
@@ -223,6 +284,8 @@ func (r *outboundReader) chunk() (*rawmessage.Message, error) {
 	return m, nil
 }
 
+// Записывает младшие 24 бита числа в три байта сетевого порядка; размер буфера обеспечивает
+// вызывающий.
 func putOutbound24(dst []byte, v uint32) {
 	dst[0] = byte(v >> 16)
 	dst[1] = byte(v >> 8)
@@ -235,22 +298,27 @@ func (c *OutboundConn) writeFramed(csid, typ byte, streamID, timestamp uint32, b
 	if csid < 2 || csid > 63 || uint64(len(body)) > uint64(c.opts.Limits.MaxMessageBytes) || len(body) > 0xffffff {
 		return outboundError(OutboundProtocol, ErrLimit)
 	}
+	// h содержит заголовок первого исходящего блока или продолжения.
 	var h [16]byte
 	h[0] = csid
 	putOutbound24(h[1:4], min(timestamp, uint32(0xffffff)))
 	putOutbound24(h[4:7], uint32(len(body)))
 	h[7] = typ
 	binary.LittleEndian.PutUint32(h[8:12], streamID)
+	// hn задаёт длину текущего заголовка с учётом расширенной временной метки.
 	hn := 12
 	if timestamp >= 0xffffff {
 		binary.BigEndian.PutUint32(h[12:16], timestamp)
 		hn = 16
 	}
+	// err сообщает об отказе полной записи заголовка первого блока.
 	if err := c.writeAll(h[:hn]); err != nil {
 		return err
 	}
 	for {
+		// n задаёт размер очередного исходящего фрагмента тела.
 		n := min(len(body), int(c.outboundChunkSize))
+		// err сообщает об отказе полной записи очередного фрагмента тела.
 		if err := c.writeAll(body[:n]); err != nil {
 			return err
 		}
@@ -264,6 +332,7 @@ func (c *OutboundConn) writeFramed(csid, typ byte, streamID, timestamp uint32, b
 			binary.BigEndian.PutUint32(h[1:5], timestamp)
 			hn = 5
 		}
+		// err сообщает об отказе полной записи заголовка продолжения.
 		if err := c.writeAll(h[:hn]); err != nil {
 			return err
 		}

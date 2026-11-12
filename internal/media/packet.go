@@ -11,22 +11,34 @@ var ErrInvalidPacket = errors.New("некорректный сжатый пак�
 
 // PacketInfo содержит временные метки одной единицы доступа в единицах конфигурации.
 type PacketInfo struct {
-	PTS           int64
-	DTS           int64
+	// PTS задаёт знаковое время показа единицы доступа в отсчётах TimeBase конфигурации.
+	PTS int64
+	// DTS задаёт знаковое время декодирования единицы доступа в отсчётах TimeBase конфигурации.
+	DTS int64
+	// DurationTicks сохраняет переданную длительность в отсчётах TimeBase конфигурации; ноль
+	// разрешён, отрицательное значение отклоняется.
 	DurationTicks int64
-	Keyframe      bool
+	// Keyframe сохраняет заявленный признак независимого видеокадра без проверки битового потока;
+	// для аудио должен быть false.
+	Keyframe bool
 }
 
 // Packet хранит неизменяемую единицу доступа со снимком конфигурации дорожки.
 type Packet struct {
-	info    PacketInfo
-	config  CodecConfig
+	// info хранит знаковые временные метки, неотрицательную длительность и заявленный признак
+	// независимого видеокадра.
+	info PacketInfo
+	// config сохраняет конфигурацию дорожки, которой принадлежат сжатые данные.
+	config CodecConfig
+	// payload хранит собственную копию сжатой единицы доступа.
 	payload []byte
 }
 
 // NewPacket проверяет пакет и сохраняет собственную копию полезной нагрузки.
 func NewPacket(info PacketInfo, config CodecConfig, payload []byte) (Packet, error) {
+	// packet объединяет входные данные для проверки перед копированием полезной нагрузки.
 	packet := Packet{info: info, config: config, payload: payload}
+	// err сообщает о некорректной конфигурации, длительности, признаке кадра или пустой нагрузке.
 	if err := packet.Validate(); err != nil {
 		return Packet{}, err
 	}
@@ -56,6 +68,7 @@ func (p Packet) StoredBytes() uint64 {
 
 // Validate проверяет структуру пакета без проверки последовательности и декодируемости.
 func (p Packet) Validate() error {
+	// err сообщает о некорректной конфигурации дорожки пакета.
 	if err := p.config.Validate(); err != nil {
 		return fmt.Errorf("%w: Packet.Config: %w", ErrInvalidPacket, err)
 	}

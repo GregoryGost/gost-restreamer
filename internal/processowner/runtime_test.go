@@ -8,13 +8,20 @@ import (
 	"testing"
 )
 
+// Проверяет журналирование рабочих объектов, сохранение файла до завершения зарегистрированного
+// построителя и очистку после его завершения. Закрытая область отклоняет новые ресурсы.
 func TestRuntimeResourcesAreExhaustiveAndOwned(t *testing.T) {
+	// r содержит изолированный реестр с настоящим helper для проверки рабочих файловых ресурсов.
 	r := testRegistry(t, buildHelper(t))
+	// s содержит область, учитывающую построитель и созданные им каталог и файл.
 	s := testScope(t, r)
+	// ctx ограничивает операции проверки десятисекундным сроком.
 	ctx := testContext(t)
 	if r.PageLimit() != testLimits().PageSize {
 		t.Fatal("page limit mismatch")
 	}
+	// owner содержит точного сохранённого владельца области; err сохраняет результаты операций
+	// регистрации и очистки.
 	owner, err := s.Owner()
 	if err != nil || owner == "" {
 		t.Fatalf("owner=%q %v", owner, err)
@@ -22,6 +29,8 @@ func TestRuntimeResourcesAreExhaustiveAndOwned(t *testing.T) {
 	if _, err = s.RuntimeIdentity("../escape", RegularFile); !errors.Is(err, ErrInvalid) {
 		t.Fatal(err)
 	}
+	// ticket удерживает незавершённую backend-операцию построителя до разрешения физической очистки
+	// файла.
 	ticket, err := s.Register(ctx, "runtime-builder")
 	if err != nil {
 		t.Fatal(err)
@@ -36,6 +45,7 @@ func TestRuntimeResourcesAreExhaustiveAndOwned(t *testing.T) {
 	if err = s.RegisterRuntime(ctx, "directory/file", RegularFile); err != nil {
 		t.Fatal(err)
 	}
+	// id содержит точную идентичность зарегистрированного рабочего файла.
 	id, err := s.RuntimeIdentity("directory/file", RegularFile)
 	if err != nil {
 		t.Fatal(err)
@@ -46,6 +56,7 @@ func TestRuntimeResourcesAreExhaustiveAndOwned(t *testing.T) {
 	if err = s.Seal(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// proof содержит результат сверки до и после фактического завершения построителя.
 	proof, err := s.Resolve(ctx)
 	if err != nil || proof.Joined || proof.PendingOperations == 0 {
 		t.Fatalf("builder not joined: %+v %v", proof, err)
@@ -81,6 +92,7 @@ func TestRuntimeResourcesAreExhaustiveAndOwned(t *testing.T) {
 	if _, err = r.Create(ctx, ""); !errors.Is(err, ErrInvalid) {
 		t.Fatal(err)
 	}
+	// cancelled передаёт уже отменённый контекст в Create; cancel инициирует отмену перед вызовом.
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
 	if _, err = r.Create(cancelled, "owner"); !errors.Is(err, context.Canceled) {
@@ -88,18 +100,29 @@ func TestRuntimeResourcesAreExhaustiveAndOwned(t *testing.T) {
 	}
 }
 
+// Проверяет сохранение запроса завершения после отмены его записи. Повтор закрывает только
+// действительно завершённую операцию, не выдавая Joined для оставшегося построителя.
 func TestCanceledCompletionRemainsRetryableWithoutInventingJoin(t *testing.T) {
+	// r содержит изолированный реестр для проверки повторяемой финальной записи.
 	r := testRegistry(t, buildHelper(t))
+	// s содержит область с одной вернувшейся и одной незавершённой backend-операцией.
 	s := testScope(t, r)
+	// ctx ограничивает операции проверки и окончательного закрытия области.
 	ctx := testContext(t)
+	// returned содержит физически вернувшуюся операцию с отменённой первой финальной записью; err
+	// сохраняет результаты регистрации и повторов.
 	returned, err := s.Register(ctx, "returned-builder")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// unfinished содержит ещё выполняющуюся операцию, которую RetryCompleted не должен объявлять
+	// завершённой.
 	unfinished, err := s.Register(ctx, "unfinished-builder")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// cancelled прерывает первую финальную запись и CloseContext; cancel отменяет его до этих
+	// вызовов.
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
 	if err = returned.Complete(cancelled); !errors.Is(err, context.Canceled) {
@@ -117,6 +140,8 @@ func TestCanceledCompletionRemainsRetryableWithoutInventingJoin(t *testing.T) {
 	if err = s.CloseContext(ctx); !errors.Is(err, ErrPending) {
 		t.Fatalf("unfinished operation falsely joined: %v", err)
 	}
+	// proof содержит результат сверки незавершённой операции и окончательного повтора после её
+	// Complete.
 	proof, err := s.Resolve(ctx)
 	if err != nil || proof.Joined || proof.PendingOperations != 1 {
 		t.Fatalf("proof=%+v %v", proof, err)

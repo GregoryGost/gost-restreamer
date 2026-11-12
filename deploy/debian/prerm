@@ -3,6 +3,7 @@ set -eu
 case "${1:-}" in
     remove|upgrade|deconfigure|failed-upgrade)
         if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+            # load_state содержит состояние загрузки файла службы; active_state — текущее состояние её выполнения.
             load_state="$(systemctl show --property=LoadState --value gost-restreamer.service)"
             active_state="$(systemctl show --property=ActiveState --value gost-restreamer.service)"
             test -n "$load_state"
@@ -12,6 +13,7 @@ case "${1:-}" in
                 systemctl stop gost-restreamer.service
             fi
             if [ "$1" = remove ]; then
+                # unit_files содержит список файлов этой службы; пустой ответ исключает лишний вызов disable.
                 unit_files="$(systemctl list-unit-files --no-legend --no-pager --full gost-restreamer.service)"
                 if [ -n "$unit_files" ]; then
                     systemctl disable gost-restreamer.service

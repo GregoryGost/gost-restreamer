@@ -13,6 +13,8 @@ func BuildFileCommand(binary string, file *os.File, a Attempt) (Command, error) 
 	if file == nil || !validCommand(binary, nil, 4096) || !filepath.IsAbs(a.OutputPath) || strings.ContainsRune(a.OutputPath, 0) {
 		return Command{}, ErrInvalidSupervisor
 	}
+	// info содержит метаданные переданного MP4-дескриптора для проверки обычного файла; err сообщает
+	// об отказе чтения этих метаданных.
 	info, err := file.Stat()
 	if err != nil {
 		return Command{}, err

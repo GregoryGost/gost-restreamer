@@ -49,11 +49,17 @@ package users
 
 import "errors"
 
+// User represents an account with an identifier and a required display name.
 type User struct {
-    id          string
+    // id is the identifier assigned when the user is created.
+    id string
+    // displayName is the non-empty name shown to other users.
     displayName string
 }
 
+// NewUser creates an account; neither identifier nor name may be empty.
+// id identifies the new account; displayName supplies the visible name.
+// Invalid inputs return an error instead of creating a User.
 func NewUser(id, displayName string) (User, error) {
     if id == "" || displayName == "" {
         return User{}, errors.New("id and display name required")
@@ -61,9 +67,14 @@ func NewUser(id, displayName string) (User, error) {
     return User{id: id, displayName: displayName}, nil
 }
 
-func (u User) ID() string          { return u.id }
+// ID returns the stored identifier without changing the user.
+func (u User) ID() string { return u.id }
+
+// DisplayName returns the user's current visible name.
 func (u User) DisplayName() string { return u.displayName }
 
+// Rename changes the visible name to a non-empty value; it leaves the
+// previous name unchanged and returns an error if name is empty.
 func (u *User) Rename(name string) error {
     if name == "" {
         return errors.New("display name required")

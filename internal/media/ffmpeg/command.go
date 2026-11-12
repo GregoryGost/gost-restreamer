@@ -17,23 +17,34 @@ import (
 // NVIDIAConfig задаёт наблюдаемый вход, выходной профиль и фактические шкалы обеих дорожек.
 // FPS и размеры преобразуются по профилю; преобразование HDR не поддерживается.
 type NVIDIAConfig struct {
-	Binary        string
-	Input         core.MediaFormat
-	Profile       core.GroupProfile
+	// Binary задаёт исполняемый файл FFmpeg для аппаратного перекодирования.
+	Binary string
+	// Input содержит проверяемый формат входных AV1 и AAC.
+	Input core.MediaFormat
+	// Profile задаёт целевой формат группы и параметры кодирования LIVE.
+	Profile core.GroupProfile
+	// VideoTimeBase задаёт фактическую шкалу временных меток входного видео.
 	VideoTimeBase media.TimeBase
+	// AudioTimeBase задаёт фактическую шкалу временных меток входного аудио.
 	AudioTimeBase media.TimeBase
 }
 
 // BuildNVIDIACommand строит отдельные argv для AV1 NVDEC → H.264 NVENC/AAC.
 // Неподдержанные настройки отвергаются; автоматического CPU fallback нет.
 func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
+	// invalid формирует отказ построения команды с ErrInvalidSupervisor и описанием неподдержанного
+	// параметра.
 	invalid := func(detail string) (Command, error) {
+		// Возвращает ErrInvalidSupervisor с конкретным описанием неподдержанного параметра команды.
+
 		return Command{}, fmt.Errorf("%w: %s", ErrInvalidSupervisor, detail)
 	}
 	if c.Input.Validate() != nil || c.Profile.Validate() != nil || c.VideoTimeBase.Validate() != nil || c.AudioTimeBase.Validate() != nil {
 		return invalid("неполный медиапрофиль")
 	}
+	// p содержит профиль группы, по которому проверяются выходные форматы и строятся аргументы.
 	p := c.Profile
+	// v содержит целевой формат видео; au содержит целевой формат AAC.
 	v, au := p.Format.Video, p.Format.Audio
 	if p.Mode != core.ModeTranscode {
 		return invalid("copy не запускает encoder")
@@ -65,6 +76,7 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 	if p.VideoEncoding.GOPFrames > math.MaxInt32 || p.VideoEncoding.MaxBFrames > math.MaxInt32 || p.VideoEncoding.TargetBitrateBPS > math.MaxInt64 || p.VideoEncoding.MaxBitrateBPS > math.MaxInt64 || p.VideoEncoding.BufferBits > math.MaxInt32 || p.AudioEncoding.BitrateBPS > math.MaxInt64 {
 		return invalid("параметры превышают диапазон FFmpeg")
 	}
+	// validLayout показывает, согласованы ли число каналов AAC и обозначение mono/stereo.
 	validLayout := au.Channels == 1 && au.ChannelLayout == "mono" || au.Channels == 2 && au.ChannelLayout == "stereo"
 	if au.CodecProfile != "LC" || !oneOf(strconv.FormatUint(uint64(au.SampleRateHz), 10), "96000", "88200", "64000", "48000", "44100", "32000", "24000", "22050", "16000", "12000", "11025", "8000", "7350") || !validLayout {
 		return invalid("поддержан AAC LC mono/stereo с известной частотой")
@@ -75,11 +87,15 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 	if !validCommand(c.Binary, nil, 4096) || !filepath.IsAbs(a.InputPath) || !filepath.IsAbs(a.OutputPath) || strings.ContainsRune(a.InputPath, 0) || strings.ContainsRune(a.OutputPath, 0) {
 		return invalid("некорректные binary/UDS")
 	}
+	// fps содержит сокращённую частоту кадров, допустимую для фильтра FFmpeg; err сообщает об отказе
+	// её проверки.
 	fps, err := filterFrameRate(v.FrameRate)
 	if err != nil {
 		return Command{}, err
 	}
+	// videoScale задаёт число единиц в секунду для выходной видеодорожки MP4.
 	videoScale := fps.Numerator
+	// movieScale задаёт общую шкалу MP4, точно представляющую перечисленные шкалы дорожек.
 	movieScale, err := fmp4.MovieTimeScale(c.VideoTimeBase, c.AudioTimeBase,
 		media.TimeBase{Numerator: 1, Denominator: videoScale},
 		media.TimeBase{Numerator: 1, Denominator: c.Input.Audio.SampleRateHz},
@@ -90,11 +106,17 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 	if movieScale > math.MaxInt32 || videoScale > math.MaxInt32 {
 		return invalid("timescale превышает диапазон FFmpeg")
 	}
-	n := func(x uint64) string { return strconv.FormatUint(x, 10) }
+	// n переводит беззнаковые числовые параметры команды в десятичные аргументы.
+	n := func(x uint64) string {
+		// Представляет числовые параметры FFmpeg десятичными строками без знака.
+		return strconv.FormatUint(x, 10)
+	}
+	// plan содержит аргументы видео и аудио, скомпилированные из профиля для LIVE.
 	plan, err := encoding.Compile(p, encoding.Live)
 	if err != nil {
 		return invalid("неподдержанный профиль кодирования")
 	}
+	// filter содержит цепочку преобразования FPS и, при разрешённом масштабировании, размеров видео.
 	filter := fmt.Sprintf("fps=fps=%d/%d:round=near:eof_action=round", fps.Numerator, fps.Denominator)
 	if p.Encoding.Version == 0 || p.Encoding.RescaleOutput {
 		filter += fmt.Sprintf(",scale_cuda=w=%d:h=%d:format=yuv420p", v.Width, v.Height)
@@ -102,6 +124,8 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 		return invalid("rescale_output=false требует совпадения входных и выходных размеров")
 	}
 	// async сохраняет конечное окно для обратного чтения заголовков; ignidx останавливает поиск на текущем mdat.
+	// args накапливает отдельные аргументы FFmpeg для чтения входного UDS, кодирования и записи
+	// выходного fMP4.
 	args := []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-progress", "pipe:1", "-stats_period", "2", "-nostats", "-xerror", "-copyts", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-c:v", "av1_cuvid", "-flags2:a", "+skip_manual", "-f", "mp4", "-fflags", "+ignidx", "-i", "async:unix:" + a.InputPath,
 		"-map", "0:v:0", "-map", "0:a:0", "-vf", filter, "-pix_fmt", "cuda", "-fps_mode:v", "passthrough", "-enc_time_base:v", "filter"}
 	args = append(args, plan.Video...)
@@ -110,6 +134,7 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 	return Command{Binary: c.Binary, Args: args}, nil
 }
 
+// Проверяет точное совпадение строки с одним из поддержанных значений параметра FFmpeg.
 func oneOf(s string, values ...string) bool {
 	return slices.Contains(values, s)
 }

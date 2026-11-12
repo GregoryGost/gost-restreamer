@@ -78,6 +78,7 @@ jobs:
             echo 'Вычисленная версия не совпала с планом; выпуск остановлен.' >&2
             exit 1
           fi
+          # deb_version хранит представление выделенной версии для имени Debian-пакета и сравнения dpkg.
           deb_version="$(printf '%s' "$EXPECTED_VERSION" | sed 's/^v//; s/-dev\./~dev./')"
           printf 'deb_version=%s\n' "$deb_version" >> "$GITHUB_OUTPUT"
           printf 'Версия обоих бинарников: %s\n' "$EXPECTED_VERSION" >> "$GITHUB_STEP_SUMMARY"
@@ -91,6 +92,7 @@ jobs:
       - name: Определение доступных Go-пакетов
         id: source
         run: |
+          # packages содержит список доступных Go-пакетов для решения о запуске анализа и тестов.
           packages="$(go list ./...)"
           if [ -n "$packages" ]; then
             echo 'packages=true' >> "$GITHUB_OUTPUT"
@@ -132,6 +134,7 @@ jobs:
         with:
           script: |
             const { spawnSync } = require('node:child_process');
+            // result содержит код завершения проверки выпуска, выполняемой тем же Node.js, что и этот шаг.
             const result = spawnSync('make', ['release-check', `NODE=${process.execPath}`], { stdio: 'inherit' });
             if (result.status !== 0) throw new Error('Проверки выпуска завершились ошибкой.');
 
@@ -178,8 +181,11 @@ jobs:
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
           REUSE: ${{ steps.plan.outputs.reuse }}
         run: |
+          # auth содержит кодированную пару для HTTP-аутентификации Git; маска регистрируется до сетевых команд.
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
           echo "::add-mask::$auth"
+          # GIT_CONFIG_COUNT ограничивает временную конфигурацию одной записью; GIT_CONFIG_KEY_0 выбирает
+          # заголовок сервера, а GIT_CONFIG_VALUE_0 передаёт значение авторизации командам Git этого шага.
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0="http.$SERVER_URL/.extraheader"
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
@@ -192,6 +198,7 @@ jobs:
           if [ "$REUSE" != true ]; then
             test "$(git rev-parse "refs/tags/$VERSION^{commit}")" = "$MERGE_SHA"
             git push origin "refs/tags/$VERSION:refs/tags/$VERSION"
+            # published хранит перечитанную удалённую ссылку для проверки точного коммита опубликованного тега.
             published="$(git ls-remote --tags --refs origin "refs/tags/$VERSION")"
             test "$published" = "$(printf '%s\t%s' "$MERGE_SHA" "refs/tags/$VERSION")"
           fi

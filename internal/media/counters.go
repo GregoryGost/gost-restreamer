@@ -10,12 +10,18 @@ import (
 // CounterSnapshot содержит накопительные измерения в границах одного владельца.
 // SampledAt сохраняет монотонную составляющую времени для расчёта скоростей.
 type CounterSnapshot struct {
-	SampledAt                             time.Time
+	SampledAt time.Time
+	// PayloadBytes считает байты подтверждённых единиц доступа. VideoFrames считает видеокадры.
+	// AudioUnits считает аудиоединицы.
 	PayloadBytes, VideoFrames, AudioUnits uint64
-	LastFrame                             time.Time
-	Video                                 core.VideoFormat
-	Audio                                 core.AudioFormat
-	Saturated                             bool
+	// LastFrame хранит время получения последнего подтверждённого видеокадра.
+	LastFrame time.Time
+	// Video хранит формат последнего учтённого видеокадра.
+	Video core.VideoFormat
+	// Audio хранит формат последней учтённой аудиоединицы.
+	Audio core.AudioFormat
+	// Saturated отмечает переполнение хотя бы одного накопительного счётчика.
+	Saturated bool
 }
 
 // Add учитывает подтверждённую единицу доступа; синхронизацией владеет вызывающий.
@@ -35,6 +41,8 @@ func (s *CounterSnapshot) AddPacket(p Packet, now time.Time) {
 	s.Add(p.config.info.Track, uint64(len(p.payload)), p.config.info.Video, p.config.info.Audio, now)
 }
 
+// Прибавляет значение с насыщением на MaxUint64 и отмечает фактическое переполнение; точное достижение
+// предела насыщением не считается.
 func addCounter(dst *uint64, n uint64, saturated *bool) {
 	if n > math.MaxUint64-*dst {
 		*dst, *saturated = math.MaxUint64, true
@@ -45,10 +53,14 @@ func addCounter(dst *uint64, n uint64, saturated *bool) {
 
 // IngressSnapshot привязывает счётчики к точному допуску публикации OBS.
 type IngressSnapshot struct {
+	// PublicationID обозначает допуск OBS, к которому относятся измерения.
 	PublicationID core.ID
-	Connected     bool
-	SourceEpoch   uint64
-	Counters      CounterSnapshot
+	// Connected показывает, остаётся ли соединение этого допуска действующим.
+	Connected bool
+	// SourceEpoch хранит сегмент источника, действовавший при последнем учёте входной единицы.
+	SourceEpoch uint64
+	// Counters содержит накопительные измерения текущего допуска OBS.
+	Counters CounterSnapshot
 }
 
 // BeginPublication сбрасывает измерения только при смене допуска, а не SourceEpoch.
@@ -89,9 +101,12 @@ func (s CounterSnapshot) Metrics(rates core.MediaRates) core.MediaMetrics {
 		Rates: rates, Format: core.ObservedFormat{VideoCodec: s.Video.Codec, AudioCodec: s.Audio.Codec, Width: s.Video.Width, Height: s.Video.Height, SampleRateHz: s.Audio.SampleRateHz, Channels: s.Audio.Channels}}
 }
 
+// IngressSnapshot возвращает под блокировкой состояние текущего допуска OBS и ставит время снятия
+// копии счётчиков.
 func (r *Router) IngressSnapshot() IngressSnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// s содержит копию входных измерений, которой назначается время снятия снимка.
 	s := r.ingress
 	s.Counters.SampledAt = time.Now()
 	return s

@@ -8,9 +8,15 @@ import (
 // parseSequence читает исходные биты поддержанного AV1 Main SDR по §5.5.1–5.5.3.
 // Сведения о задержке отображения сохраняются; модель декодера, несколько слоёв и HDR не поддержаны.
 func parseSequence(payload []byte) (av1.SequenceHeader, error) {
+	// r читает поля заголовка последовательности AV1 из переданного битового потока.
 	r := bitReader{b: payload}
+	// s накапливает разобранные параметры единственной поддержанной последовательности AV1.
 	s := av1.SequenceHeader{}
-	flag := func() bool { return r.read(1) != 0 }
+	// flag читает следующий логический признак через общий читатель r.
+	flag := func() bool {
+		// Читает следующий бит из общего читателя r как логический флаг, сохраняя ошибку чтения в r.
+		return r.read(1) != 0
+	}
 	s.SeqProfile = uint8(r.read(3))
 	s.StillPicture = flag()
 	s.ReducedStillPictureHeader = flag()
@@ -50,6 +56,8 @@ func parseSequence(payload []byte) (av1.SequenceHeader, error) {
 			s.InitialDisplayDelayMinus1[0] = uint8(r.read(4))
 		}
 	}
+	// widthBits задаёт длину поля максимальной ширины в битах. heightBits задаёт длину поля
+	// максимальной высоты в битах.
 	widthBits, heightBits := int(r.read(4))+1, int(r.read(4))+1
 	s.MaxFrameWidthMinus1 = r.read(widthBits)
 	s.MaxFrameHeightMinus1 = r.read(heightBits)
@@ -90,6 +98,7 @@ func parseSequence(payload []byte) (av1.SequenceHeader, error) {
 	if s.EnableSuperRes {
 		return s, ErrCodec
 	}
+	// c указывает на цветовые параметры разбираемой последовательности.
 	c := &s.ColorConfig
 	c.HighBitDepth = flag()
 	c.MonoChrome = flag()

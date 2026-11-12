@@ -1,19 +1,30 @@
+# .DEFAULT_GOAL выбирает справку при запуске make без явно указанной цели.
 .DEFAULT_GOAL := help
 
+# GO задаёт команду набора инструментов Go, используемую всеми целями.
 GO := go
+# GO_VERSION содержит требуемую версию Go из go.mod для проверки локального компилятора.
 GO_VERSION := $(shell sed -n 's/^go //p' go.mod)
+# GOLANGCI_LINT_VERSION закрепляет версию линтера; GOLANGCI_LINT указывает на его проектный бинарник.
 GOLANGCI_LINT_VERSION := 2.15.0
 GOLANGCI_LINT := $(CURDIR)/bin/golangci-lint
+# VERSION содержит полную версию для передачи через -ldflags; пустое значение отключает подстановку.
 VERSION ?=
+# VERSION_LDFLAGS добавляет версию в оба бинарника только при непустом VERSION.
 VERSION_LDFLAGS = $(if $(strip $(VERSION)),-X github.com/GregoryGost/gost-restreamer/internal/buildinfo.version=$(VERSION))
+# BIN_DIR задаёт каталог бинарников; DIST_DIR — каталог архива и его контрольной суммы.
 BIN_DIR ?= bin
 DIST_DIR ?= dist
+# GORELEASER задаёт команду упаковщика; GORELEASER_VERSION закрепляет её проверяемую версию.
 GORELEASER ?= goreleaser
 GORELEASER_VERSION := 2.19.0
+# NODE выбирает среду выполнения тестов выпуска, в том числе исполняемый файл CI.
 NODE ?= node
 
+# GOTOOLCHAIN запрещает автоматический выбор другого SDK; GOWORK отключает внешнюю рабочую область.
 export GOTOOLCHAIN := local
 export GOWORK := off
+# CGO_ENABLED включает драйвер SQLite с CGO; GOFLAGS запрещает неявное изменение графа модулей.
 export CGO_ENABLED := 1
 export GOFLAGS ?= -mod=readonly
 
@@ -21,6 +32,7 @@ export GOFLAGS ?= -mod=readonly
 	tidy tidy-check mod-verify vet test coverage test-race lint-config lint build binary \
 	bootstrap-check check process-helper package package-debian release-check
 
+# help выводит доступные пользователю команды подготовки, проверки и сборки проекта.
 help:
 	@printf '%s\n' \
 		'make tools            — установить закреплённый golangci-lint в ./bin.' \
@@ -35,18 +47,21 @@ help:
 	@printf '%s\n' 'make package-debian VERSION=… — GoReleaser: .deb, архив и SHA256 для Debian 13/amd64.'
 	@printf '%s\n' 'make release-check     — проверить конфигурации GoReleaser и безопасные повторы выпуска.'
 
+# toolchain-check требует установленный Go именно той версии, которая задана в go.mod.
 toolchain-check:
 	@$(GO) version
 	@test "$$($(GO) env GOVERSION)" = "go$(GO_VERSION)" || { \
 		printf '%s\n' 'Нужен Go $(GO_VERSION), указанный в go.mod.' >&2; exit 1; \
 	}
 
+# tools явно устанавливает закреплённый линтер в bin текущего проекта.
 tools: toolchain-check
 	mkdir -p bin
 	GOBIN="$(CURDIR)/bin" $(GO) install -trimpath \
 		-ldflags='-X main.version=$(GOLANGCI_LINT_VERSION)' \
 		github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$(GOLANGCI_LINT_VERSION)
 
+# require-linter проверяет наличие закреплённого бинарника; version хранит ответ его команды версии.
 require-linter:
 	@test -x "$(GOLANGCI_LINT)" || { \
 		printf '%s\n' 'Сначала выполните make tools.' >&2; exit 1; \
@@ -56,36 +71,48 @@ require-linter:
 		printf '%s\n' 'Версия golangci-lint не совпадает с Makefile; выполните make tools.' >&2; exit 1; \
 	}
 
+# require-packages требует непустой список Go-пакетов; packages содержит результат обхода go list.
 require-packages: toolchain-check
 	@packages="$$($(GO) list ./...)" || exit $$?; \
 		test -n "$$packages" || { \
 			printf '%s\n' 'Go-пакетов пока нет; доступна только make bootstrap-check.' >&2; exit 1; \
 		}
 
+# fmt применяет gofmt к Go-исходникам рабочей области.
 fmt: toolchain-check
 	gofmt -w .
 
+# fmt-check проверяет форматирование без правки; files содержит пути, которые gofmt предложил изменить.
 fmt-check: toolchain-check
 	@files="$$(gofmt -l .)" || exit $$?; \
 		test -z "$$files" || { \
 			printf '%s\n' "$$files" 'Выполните make fmt.' >&2; exit 1; \
 		}
 
+# tidy обновляет go.mod и go.sum по фактическим импортам и потому является изменяющей файлы командой.
 tidy: toolchain-check
 	$(GO) mod tidy
 
+# tidy-check выводит требуемые изменения модулей через -diff, сохраняя файлы проекта.
 tidy-check: toolchain-check
 	$(GO) mod tidy -diff
 
+# mod-verify проверяет целостность уже загруженных модулей.
 mod-verify: toolchain-check
 	$(GO) mod verify
 
+# vet выполняет стандартный статический анализ всех доступных пакетов.
 vet: require-packages
 	$(GO) vet ./...
 
+# test запускает тесты всех доступных пакетов с обычным окружением вызывающего процесса.
 test: require-packages
 	$(GO) test ./...
 
+# coverage объединяет покрытие тестов и реально запущенных вспомогательных процессов и проверяет порог 85%.
+# coverage_dir содержит частные артефакты прогона; coverage_status сохраняет код проверки до очистки.
+# profile указывает на объединяемый профиль, helper_dir — на данные покрытия дочерних процессов,
+# helper_profile — на преобразованный текстовый профиль этих процессов.
 coverage: require-packages
 	@coverage_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/gost-restreamer-coverage.XXXXXXXX")" || exit $$?; \
 		trap 'coverage_status=$$?; trap - EXIT HUP INT TERM; rm -rf "$$coverage_dir"; exit "$$coverage_status"' EXIT; \
@@ -105,26 +132,36 @@ coverage: require-packages
 		$(GO) build -o "$$coverage_dir/coveragecheck" ./tools/coveragecheck || exit $$?; \
 		"$$coverage_dir/coveragecheck" -profile "$$profile" -min 85
 
+# test-race запускает все тесты с детектором гонок данных.
 test-race: require-packages
 	$(GO) test -race ./...
 
+# lint-config проверяет конфигурацию именно закреплённым линтером.
 lint-config: require-linter
 	"$(GOLANGCI_LINT)" config verify
 
+# lint выполняет настроенные анализаторы всех доступных Go-пакетов.
 lint: require-packages lint-config
 	"$(GOLANGCI_LINT)" run ./...
 
+# build проверяет сборку пакетов без сохранения бинарников в рабочей области.
 build: require-packages
 	$(GO) build -o /dev/null ./...
 
+# binary собирает сервер с заданной версией в BIN_DIR.
 binary: require-packages
 	mkdir -p "$(BIN_DIR)"
 	$(GO) build -trimpath -ldflags="$(VERSION_LDFLAGS)" -o "$(BIN_DIR)/gost-restreamer" ./cmd/gost-restreamer
 
+# process-helper собирает отдельного владельца нативных процессов с той же заданной версией.
 process-helper: require-packages
 	mkdir -p "$(BIN_DIR)"
 	$(GO) build -trimpath -ldflags="$(VERSION_LDFLAGS)" -o "$(BIN_DIR)/gost-process-helper" ./cmd/gost-process-helper
 
+# package архивирует оба бинарника и конфигурацию, сверяет SHA-256 и байты распакованных файлов.
+# archive хранит имя архива текущей платформы; checksum выбирает доступную команду расчёта SHA-256.
+# verify_dir содержит распакованный эталон для сверки; package_status сохраняет результат до его удаления.
+# binary выбирает сверяемый исполняемый файл, asset — включённый в архив файл конфигурации.
 package: binary process-helper
 	@test -n "$(VERSION)" || { printf '%s\n' 'Для архива требуется явная VERSION.' >&2; exit 1; }
 	@set -eu; \
@@ -145,6 +182,8 @@ package: binary process-helper
 			cmp "$$asset" "$$verify_dir/$$asset"; \
 		done
 
+# package-debian требует чистую помеченную ревизию и нативную Debian 13/amd64 для локальной упаковки.
+# debian_version хранит преобразованную версию dpkg; позиционные аргументы включают --snapshot для dev-сборки.
 package-debian: toolchain-check
 	@test "$$($(GO) env GOHOSTOS)/$$($(GO) env GOHOSTARCH)" = linux/amd64 || { \
 		printf '%s\n' 'Для Debian-пакета нужен нативный компилятор Linux/amd64.' >&2; exit 1; \
@@ -166,11 +205,14 @@ package-debian: toolchain-check
 		VERSION='$(VERSION)' DEB_VERSION="$$debian_version" GORELEASER_CURRENT_TAG='$(VERSION)' \
 			$(GORELEASER) release --config .goreleaser.yaml --clean --skip=publish "$$@"
 
+# release-check проверяет обе конфигурации GoReleaser и управляемые сценарии повторного выпуска.
 release-check:
 	$(GORELEASER) check --config .goreleaser.yaml
 	$(GORELEASER) check --config .goreleaser-publish.yaml
 	$(NODE) --test .github/scripts/release.test.cjs
 
+# bootstrap-check объединяет проверки набора инструментов, форматирования, модулей и конфигурации линтера.
 bootstrap-check: toolchain-check fmt-check tidy-check mod-verify lint-config
 
+# check выполняет полную локальную проверку проекта, включая покрытие, гонки, анализ и сборку.
 check: bootstrap-check vet coverage test-race lint build
