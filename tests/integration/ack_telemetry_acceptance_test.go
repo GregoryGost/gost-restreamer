@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -80,14 +81,14 @@ func ackTelemetryOutput(t *testing.T, response map[string]any) map[string]any {
 	return publicTelemetryObject(t, value)
 }
 
-// Проверяет точные строковые счётчики аномалий ACK, отсутствие их дубликатов в counters и доступность
+// Проверяет точные числовые счётчики аномалий ACK, отсутствие их дубликатов в counters и доступность
 // времени аномалии в UTC.
 func ackTelemetryAssert(t *testing.T, m map[string]any, total, last, max string, absent bool) {
 	t.Helper()
-	// key называет проверяемое поле аномалий ACK, а want содержит его ожидаемое точное строковое
+	// key называет проверяемое поле аномалий ACK, а want содержит его ожидаемое точное десятичное
 	// значение.
 	for key, want := range map[string]string{"ack_ahead_events_total": total, "ack_ahead_bytes_last": last, "ack_ahead_bytes_max": max} {
-		if m[key] != want {
+		if m[key] != json.Number(want) {
 			t.Fatalf("метрика %s=%#v, ожидается %s; полный набор=%v", key, m[key], want, m)
 		}
 		// ok показывает, продублировано ли отдельное поле ACK во вложенном наборе counters.
@@ -180,7 +181,7 @@ func TestACKTelemetryAcceptanceNativeSessionRESTSSEAndReconnect(t *testing.T) {
 		// источника.
 
 		m = metrics()
-		return m != nil && publicTelemetryMedia(t, m)["written_bytes"] == strconv.FormatUint(receiver.bytes.Load(), 10) && publicTelemetryObject(t, publicTelemetryObject(t, publicTelemetryMedia(t, m)["rates"])["fps"])["value"] == float64(0)
+		return m != nil && publicTelemetryMedia(t, m)["written_bytes"] == json.Number(strconv.FormatUint(receiver.bytes.Load(), 10)) && publicTelemetryObject(t, publicTelemetryObject(t, publicTelemetryMedia(t, m)["rates"])["fps"])["value"] == json.Number("0")
 	})
 	ackTelemetryAssert(t, m, "0", "0", "0", true)
 	// anchor содержит курсор снимка, с которого начинается подписка на последующие события ACK.
@@ -200,7 +201,7 @@ func TestACKTelemetryAcceptanceNativeSessionRESTSSEAndReconnect(t *testing.T) {
 	sessionAcceptanceWait(t, func() bool {
 		// Ожидает учёт десяти опережающих ACK без влияния повторных и устаревших значений.
 		m = metrics()
-		return m != nil && m["ack_ahead_events_total"] == "10"
+		return m != nil && m["ack_ahead_events_total"] == json.Number("10")
 	})
 	ackTelemetryAssert(t, m, "10", "13", "13", false)
 	// parsed содержит время аномалии из REST для проверки попадания в интервал отправки ACK.
@@ -218,7 +219,7 @@ func TestACKTelemetryAcceptanceNativeSessionRESTSSEAndReconnect(t *testing.T) {
 		if frame.data["output"] != nil {
 			// event содержит метрики выхода из SSE для сравнения аномалий ACK с REST.
 			event := publicTelemetryObject(t, frame.data["output"])
-			if event["ack_ahead_events_total"] == "10" {
+			if event["ack_ahead_events_total"] == json.Number("10") {
 				ackTelemetryAssert(t, event, "10", "13", "13", false)
 				if event["ack_last_anomaly_at"] != m["ack_last_anomaly_at"] {
 					t.Fatal("REST/SSE различаются", event, m)
@@ -233,7 +234,7 @@ func TestACKTelemetryAcceptanceNativeSessionRESTSSEAndReconnect(t *testing.T) {
 		// Ожидает новое соединение и согласованные накопленные байты после разрыва назначения.
 
 		m = metrics()
-		return receiver.accepted.Load() == 2 && m != nil && publicTelemetryObject(t, m["counters"])["connections"] == "2" && publicTelemetryMedia(t, m)["written_bytes"] == strconv.FormatUint(receiver.bytes.Load(), 10)
+		return receiver.accepted.Load() == 2 && m != nil && publicTelemetryObject(t, m["counters"])["connections"] == json.Number("2") && publicTelemetryMedia(t, m)["written_bytes"] == json.Number(strconv.FormatUint(receiver.bytes.Load(), 10))
 	})
 	ackTelemetryAssert(t, m, "10", "13", "13", false)
 	// Новый ACK сравнивается с байтами нового соединения, а не суммой двух попыток.
@@ -244,12 +245,12 @@ func TestACKTelemetryAcceptanceNativeSessionRESTSSEAndReconnect(t *testing.T) {
 	sessionAcceptanceWait(t, func() bool {
 		// Ожидает следующую аномалию ACK, рассчитанную по байтам нового соединения.
 		m = metrics()
-		return m != nil && m["ack_ahead_events_total"] == "11"
+		return m != nil && m["ack_ahead_events_total"] == json.Number("11")
 	})
 	ackTelemetryAssert(t, m, "11", "20", "20", false)
 	// counters содержит счётчики попыток и переподключений для проверки отсутствия разрыва из-за
 	// числовых ACK.
-	if counters := publicTelemetryObject(t, m["counters"]); counters["attempts"] != "2" || counters["reconnects"] != "1" {
+	if counters := publicTelemetryObject(t, m["counters"]); counters["attempts"] != json.Number("2") || counters["reconnects"] != json.Number("1") {
 		t.Fatal("числовые ACK вызвали переподключение", counters)
 	}
 	// output содержит сохранённый выход сессии, который тест останавливает и запускает повторно.
@@ -275,7 +276,7 @@ func TestACKTelemetryAcceptanceNativeSessionRESTSSEAndReconnect(t *testing.T) {
 		// Ожидает новый запуск выхода с независимыми счётчиками соединений и ACK.
 
 		m = metrics()
-		return receiver.accepted.Load() == 3 && m != nil && publicTelemetryObject(t, m["counters"])["connections"] == "1"
+		return receiver.accepted.Load() == 3 && m != nil && publicTelemetryObject(t, m["counters"])["connections"] == json.Number("1")
 	})
 	ackTelemetryAssert(t, m, "0", "0", "0", true)
 	// stop содержит квитанцию остановки сессии после завершения проверки ACK.
@@ -359,7 +360,7 @@ func TestACKTelemetryAcceptanceExactLargeValuesUTCNullAndStaleOwner(t *testing.T
 	if err = observer.ObserveMetrics(ctx, value); err != nil {
 		t.Fatal(err)
 	}
-	// m содержит публичное представление метрик выхода для проверки точных десятичных строк.
+	// m содержит публичное представление метрик выхода для проверки точных числовых токенов.
 	m := ackTelemetryOutput(t, integrationAPIRequest(t, a, "GET", path, "", 200))
 	ackTelemetryAssert(t, m, "0", "0", "0", true)
 	// anchor содержит курсор снимка перед публикацией больших значений ACK.

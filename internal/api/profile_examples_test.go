@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -30,7 +29,7 @@ func TestDocumentedProfileExamplesUseRegisteredRequestContract(t *testing.T) {
 		}
 		// request принимает объект примера для отбора запросов с profile.
 		var request map[string]any
-		if err = json.Unmarshal([]byte(body), &request); err != nil {
+		if err = apiAcceptanceDecodeJSON([]byte(body), &request); err != nil {
 			t.Fatal(err)
 		}
 		if request["profile"] == nil {

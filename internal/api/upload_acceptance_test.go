@@ -296,7 +296,7 @@ func TestAcceptanceHTTPUploadOwnsTransferAndPreservesCurrentAfterIndependentFail
 		t.Fatal("pending изменил прежний current", current, err)
 	}
 	apiAcceptanceRequest(t, f.api, "DELETE", "/fallback-assets/"+id+"?expected_revision="+strconv.FormatUint(current.Revision, 10), "", 409)
-	apiAcceptanceRequest(t, f.api, "POST", "/fallback-assets/"+id+"/rebuild", `{"expected_revision":"`+strconv.FormatUint(current.Revision, 10)+`"}`, 409)
+	apiAcceptanceRequest(t, f.api, "POST", "/fallback-assets/"+id+"/rebuild", `{"expected_revision":`+strconv.FormatUint(current.Revision, 10)+`}`, 409)
 	// stale содержит тело дополнительной отвергаемой загрузки, которое не должно читаться при отказе
 	// в приёме задания.
 	stale := &apiAcceptanceUploadBody{reader: bytes.NewReader(apiAcceptancePNG(t)), closed: make(chan struct{})}

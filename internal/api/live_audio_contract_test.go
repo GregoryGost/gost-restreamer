@@ -155,8 +155,8 @@ func TestLiveAudioHTTPReplacementPreservesLegacyAndChecksCASBeforeMissingSelecto
 	if _, exists := legacy["live_audio_mode"]; exists {
 		t.Fatal("GET добавил селектор прежнему профилю")
 	}
-	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":"1","name":"Переименован"}`, 200)
-	apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": "2", "profile": legacy}), 200)
+	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":1,"name":"Переименован"}`, 200)
+	apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": json.Number("2"), "profile": legacy}), 200)
 	// stored содержит профиль после переименования и прежней полной замены; err содержит отказ
 	// чтения.
 	stored, err := f.service.GetProfile(context.Background(), old.ID)
@@ -165,19 +165,19 @@ func TestLiveAudioHTTPReplacementPreservesLegacyAndChecksCASBeforeMissingSelecto
 	}
 	legacy["live_audio_mode"] = "copy"
 	// selected содержит успешный явный выбор LIVE copy для сравнения после последующих отказов.
-	selected := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": "3", "profile": legacy}), 200))
-	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":"4","name":"Явный профиль"}`, 200)
+	selected := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": json.Number("3"), "profile": legacy}), 200))
+	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":4,"name":"Явный профиль"}`, 200)
 	delete(legacy, "live_audio_mode")
-	apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": "4", "profile": legacy}), 409)
+	apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": json.Number("4"), "profile": legacy}), 409)
 	// problem содержит отказ полной замены без селектора при правильной текущей ревизии.
-	problem := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": "5", "profile": legacy}), 422))
+	problem := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": json.Number("5"), "profile": legacy}), 422))
 	if problem["field"] != "profile.live_audio_mode" {
 		t.Fatalf("Не объяснён отсутствующий селектор: %+v", problem)
 	}
 	// got содержит окончательный GET для проверки сохранённых профиля и ревизии после CAS и отказа
 	// селектора.
 	got := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "GET", path, "", 200))
-	if got["revision"] != "5" || !reflect.DeepEqual(got["profile"], selected["profile"]) {
+	if got["revision"] != json.Number("5") || !reflect.DeepEqual(got["profile"], selected["profile"]) {
 		t.Fatalf("Отклонённая замена/имя изменили профиль: %+v", got)
 	}
 }

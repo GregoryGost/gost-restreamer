@@ -3,6 +3,7 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"testing"
@@ -78,7 +79,7 @@ func TestActiveSessionAndOutputResponsesKeepOriginalProfileVersions(t *testing.T
 		// конфигурации.
 		p := encodingRequestProfile(t, "transcode", "cbr")
 		p["live_audio_mode"] = "transcode"
-		apiAcceptanceRequest(t, f.api, "PATCH", "/transcode-profiles/"+string(id), encodingJSON(t, map[string]any{"expected_revision": "1", "profile": p}), 200)
+		apiAcceptanceRequest(t, f.api, "PATCH", "/transcode-profiles/"+string(id), encodingJSON(t, map[string]any{"expected_revision": json.Number("1"), "profile": p}), 200)
 	}
 	// path адресует созданную Session для чтения снимков запуска и выходов.
 	path := "/sessions/" + string(receipt.SessionID)
@@ -96,7 +97,7 @@ func TestActiveSessionAndOutputResponsesKeepOriginalProfileVersions(t *testing.T
 	for _, group := range groups {
 		// profile содержит профиль из снимка группы для сравнения с исходным before.
 		profile := group.(map[string]any)["profile"].(map[string]any)
-		if !reflect.DeepEqual(profile["profile"], before[profile["id"].(string)]) || profile["revision"] != "1" {
+		if !reflect.DeepEqual(profile["profile"], before[profile["id"].(string)]) || profile["revision"] != json.Number("1") {
 			t.Fatal("GET Session заменил снимок текущей конфигурацией:", profile)
 		}
 	}
@@ -116,7 +117,7 @@ func TestActiveSessionAndOutputResponsesKeepOriginalProfileVersions(t *testing.T
 			// profile содержит самостоятельный профиль выхода для проверки сохранности
 			// исходного рецепта и ревизии.
 			profile := response["profile"].(map[string]any)
-			if !reflect.DeepEqual(profile["profile"], before[profile["id"].(string)]) || profile["revision"] != "1" {
+			if !reflect.DeepEqual(profile["profile"], before[profile["id"].(string)]) || profile["revision"] != json.Number("1") {
 				t.Fatal("GET Output заменил снимок текущей конфигурацией:", profile)
 			}
 		}

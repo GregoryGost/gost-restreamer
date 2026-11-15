@@ -323,8 +323,8 @@ func newApplicationFlowFixture(t *testing.T, helper string) *sessionAcceptanceFi
 	return f
 }
 
-// Переводит формат и параметры кодирования профиля в DTO для запросов API, сохраняя точные строковые
-// представления численных полей.
+// Переводит формат и параметры кодирования профиля в DTO для запросов API, сохраняя точные числовые
+// значения полей.
 func applicationFlowProfileJSON(p core.GroupProfile) api.GroupProfileDTO {
 	// v содержит формат видео; a содержит формат аудио; e содержит общие видеонастройки для точного
 	// API-представления профиля.

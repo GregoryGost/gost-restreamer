@@ -130,7 +130,7 @@ func apiAcceptanceFFmpegWireMetrics(t *testing.T, snapshot map[string]any) map[s
 // отсутствующее представление progress.
 func apiAcceptanceCheckFFmpegWire(t *testing.T, metrics map[string]any, status, reason string, sampled, progressed time.Time, wantProgress map[string]any) {
 	t.Helper()
-	if metrics["status"] != status || metrics["reason"] != reason || metrics["progress_losses"] != "9007199254740993" || metrics["diagnostic_losses"] != "18446744073709551615" {
+	if metrics["status"] != status || metrics["reason"] != reason || metrics["progress_losses"] != json.Number("9007199254740993") || metrics["diagnostic_losses"] != json.Number("18446744073709551615") {
 		t.Errorf("утрачены доступность или точные счётчики потерь: %#v", metrics)
 	}
 	// key задаёт проверяемое временное поле; want содержит точное ожидаемое время измерения или
@@ -158,7 +158,7 @@ func TestAcceptanceFFmpegProgressAvailabilityAcrossRuntimeHTTP(t *testing.T) {
 	// zero задаёт присутствующие нулевые поля progress, отличные от отсутствующих измерений.
 	zero := core.FFmpegProgress{Frame: core.OptionalUint64{Present: true}, TotalSizeBytes: core.OptionalUint64{Present: true}, DupFrames: core.OptionalUint64{Present: true}, DropFrames: core.OptionalUint64{Present: true}, FPS: core.OptionalFloat64{Present: true}, BitrateBitsPerSecond: core.OptionalFloat64{Present: true}, Speed: core.OptionalFloat64{Present: true}, OutTimeUS: core.OptionalInt64{Present: true}}
 	// zeroWire задаёт точный публичный отчёт со всеми измеренными нулями.
-	zeroWire := map[string]any{"frame": "0", "total_size_bytes": "0", "dup_frames": "0", "drop_frames": "0", "fps": float64(0), "bitrate_bps": float64(0), "speed": float64(0), "out_time_us": "0", "end": false}
+	zeroWire := map[string]any{"frame": json.Number("0"), "total_size_bytes": json.Number("0"), "dup_frames": json.Number("0"), "drop_frames": json.Number("0"), "fps": json.Number("0"), "bitrate_bps": json.Number("0"), "speed": json.Number("0"), "out_time_us": json.Number("0"), "end": false}
 	// partial сохраняет часть присутствующих нулей и задаёт значения неприсутствующих полей для
 	// проверки их null.
 	partial := zero
@@ -168,7 +168,7 @@ func TestAcceptanceFFmpegProgressAvailabilityAcrossRuntimeHTTP(t *testing.T) {
 	partial.BitrateBitsPerSecond = core.OptionalFloat64{Value: 94}
 	partial.Speed = core.OptionalFloat64{Value: 95}
 	// partialWire задаёт ожидаемый публичный progress с нулями и отсутствующими полями.
-	partialWire := map[string]any{"frame": "0", "total_size_bytes": nil, "dup_frames": nil, "drop_frames": nil, "fps": float64(0), "bitrate_bps": nil, "speed": nil, "out_time_us": "0", "end": false}
+	partialWire := map[string]any{"frame": json.Number("0"), "total_size_bytes": nil, "dup_frames": nil, "drop_frames": nil, "fps": json.Number("0"), "bitrate_bps": nil, "speed": nil, "out_time_us": json.Number("0"), "end": false}
 	// old задаёт ненулевой прежний отчёт для сценариев устаревания.
 	old := zero
 	old.Frame.Value, old.TotalSizeBytes.Value, old.FPS.Value, old.End = 123, 456, 12.5, true
@@ -288,7 +288,7 @@ func TestAcceptanceFFmpegProgressAvailabilityAcrossRuntimeHTTP(t *testing.T) {
 						var event map[string]any
 						// err содержит отказ разбора JSON-данных SSE-события
 						// FFmpeg.
-						if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+						if err := apiAcceptanceDecodeJSON([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
 							t.Fatal(err)
 						}
 						if event["session_id"] != string(sessionID) || event["owner"] != "ffmpeg" {

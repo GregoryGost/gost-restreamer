@@ -487,7 +487,7 @@ func TestAcceptanceSnapshotAndEventsKeepUnavailableValuesDistinctFromZero(t *tes
 	zero := device["utilization"].(map[string]any)
 	// unavailable содержит неподдержанный Encoder с null вместо измеренного нуля.
 	unavailable := device["encoder_utilization"].(map[string]any)
-	if used["value"] != "9007199254740993" || zero["value"] != "0" || zero["status"] != "available" || unavailable["value"] != nil || unavailable["status"] != "unsupported" || unavailable["reason"] != "not_supported" {
+	if used["value"] != json.Number("9007199254740993") || zero["value"] != json.Number("0") || zero["status"] != "available" || unavailable["value"] != nil || unavailable["status"] != "unsupported" || unavailable["reason"] != "not_supported" {
 		t.Fatalf("потеряны точность/доступность: %s", w.Body)
 	}
 	// cursor сохраняет границу начального HTTP-снимка для следующего SSE-события.
@@ -564,8 +564,8 @@ func TestAcceptanceHTTPAnchorKeepsCursorAndGPUInOneAuthoritySnapshot(t *testing.
 							// Memory принимает публичный показатель memory_used_bytes
 							// текущего устройства.
 							Memory struct {
-								// Value отличает точную строку измеренных байтов от null.
-								Value *string `json:"value"`
+								// Value отличает точное число измеренных байтов от null и отвергает JSON-строки.
+								Value *uint64 `json:"value"`
 							} `json:"memory_used_bytes"`
 						} `json:"devices"`
 					} `json:"gpu"`
@@ -580,11 +580,11 @@ func TestAcceptanceHTTPAnchorKeepsCursorAndGPUInOneAuthoritySnapshot(t *testing.
 					failures <- err
 					return
 				}
-				// value сохраняет строку GPU из ответа либо пустоту до первой
+				// value сохраняет точную запись числа байтов GPU либо пустоту до первой
 				// публикации.
 				value := ""
 				if v.GPU != nil && len(v.GPU.Devices) > 0 && v.GPU.Devices[0].Memory.Value != nil {
-					value = *v.GPU.Devices[0].Memory.Value
+					value = strconv.FormatUint(*v.GPU.Devices[0].Memory.Value, 10)
 				}
 				responses <- observed{v.Cursor, value}
 			}
@@ -633,7 +633,7 @@ func TestAcceptanceHTTPAnchorKeepsCursorAndGPUInOneAuthoritySnapshot(t *testing.
 			// состоянием.
 			Sequence string `json:"sequence"`
 		}
-		if err = json.Unmarshal(raw, &cursor); err != nil {
+		if err = apiAcceptanceDecodeJSON(raw, &cursor); err != nil {
 			t.Fatal(err)
 		}
 		// expected содержит GPU-значение этой последовательности; ok подтверждает известное
@@ -712,7 +712,7 @@ func TestAcceptanceRuntimeCursorCannotEchoUserInput(t *testing.T) {
 		// problem принимает Problem Details для проверки отсутствия внутренних ошибок валидации.
 		var problem map[string]any
 		// err содержит отказ разбора безопасного JSON-ответа ошибки курсора.
-		if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil {
+		if err := apiAcceptanceDecodeJSON(w.Body.Bytes(), &problem); err != nil {
 			t.Fatal(err)
 		}
 		if problem["errors"] != nil || strings.Contains(w.Body.String(), cursor) {
@@ -734,7 +734,7 @@ func TestAcceptanceRuntimeCursorCannotEchoUserInput(t *testing.T) {
 	}
 	// cursor принимает публичные поля позиции для подстановки будущего номера последовательности.
 	var cursor map[string]any
-	if err = json.Unmarshal(raw, &cursor); err != nil {
+	if err = apiAcceptanceDecodeJSON(raw, &cursor); err != nil {
 		t.Fatal(err)
 	}
 	cursor["sequence"] = "18446744073709551615"

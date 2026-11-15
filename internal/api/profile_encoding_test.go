@@ -29,7 +29,7 @@ func encodingRequestProfile(t *testing.T, mode, rc string) map[string]any {
 	// битрейтом.
 	var p map[string]any
 	// err содержит отказ разбора встроенного допустимого JSON-профиля.
-	if err := json.Unmarshal([]byte(`{"mode":"transcode","format":{"video":{"codec":"h264","width":640,"height":360,"frame_rate":{"numerator":30,"denominator":1},"codec_profile":"high","level":"4.1","tier":"","pixel_format":"yuv420p","bit_depth":8,"color":{"range":"limited","primaries":"bt709","transfer":"bt709","matrix":"bt709"}},"audio":{"codec":"aac","codec_profile":"LC","sample_rate_hz":48000,"channels":2,"channel_layout":"stereo"}},"video_encoding":{"target_bitrate_bps":"4000000","max_bitrate_bps":"6000000","buffer_bits":"8000000","gop_frames":60,"max_b_frames":2,"closed_gop":true},"audio_encoding":{"bitrate_bps":"128000"}}`), &p); err != nil {
+	if err := apiAcceptanceDecodeJSON([]byte(`{"mode":"transcode","format":{"video":{"codec":"h264","width":640,"height":360,"frame_rate":{"numerator":30,"denominator":1},"codec_profile":"high","level":"4.1","tier":"","pixel_format":"yuv420p","bit_depth":8,"color":{"range":"limited","primaries":"bt709","transfer":"bt709","matrix":"bt709"}},"audio":{"codec":"aac","codec_profile":"LC","sample_rate_hz":48000,"channels":2,"channel_layout":"stereo"}},"video_encoding":{"target_bitrate_bps":4000000,"max_bitrate_bps":6000000,"buffer_bits":8000000,"gop_frames":60,"max_b_frames":2,"closed_gop":true},"audio_encoding":{"bitrate_bps":128000}}`), &p); err != nil {
 		t.Fatal(err)
 	}
 	// encoder выбирает NVENC для H.264 transcode либо SVT-AV1 для подготовки AV1 copy.
@@ -37,7 +37,7 @@ func encodingRequestProfile(t *testing.T, mode, rc string) map[string]any {
 	// ve указывает общие параметры видео, изменяемые для согласованного CBR/VBR и кодека.
 	ve := p["video_encoding"].(map[string]any)
 	if rc == "cbr" {
-		ve["max_bitrate_bps"] = "4000000"
+		ve["max_bitrate_bps"] = json.Number("4000000")
 	}
 	if mode == "copy" {
 		encoder = "libsvtav1"
@@ -47,7 +47,7 @@ func encodingRequestProfile(t *testing.T, mode, rc string) map[string]any {
 		vf["codec"], vf["codec_profile"] = "av1", "main"
 		ve["max_b_frames"] = 0
 		if rc == "vbr" {
-			ve["max_bitrate_bps"], ve["buffer_bits"] = "0", "0"
+			ve["max_bitrate_bps"], ve["buffer_bits"] = json.Number("0"), json.Number("0")
 		}
 	}
 	p["encoding"] = map[string]any{"version": 2, "video_encoder": encoder, "rate_control": rc}
@@ -92,20 +92,20 @@ func TestProfileEncodingMaterializesDefaultsAndRoundTripsBothRateControls(t *tes
 				if mode == "transcode" {
 					// want задаёт полный ожидаемый набор значений NVENC по
 					// умолчанию.
-					want := map[string]any{"preset": "p4", "tuning": "hq", "multipass": "disabled", "lookahead_frames": float64(0), "enable_spatial_aq": false, "enable_temporal_aq": false, "aq_strength": float64(8)}
+					want := map[string]any{"preset": "p4", "tuning": "hq", "multipass": "disabled", "lookahead_frames": json.Number("0"), "enable_spatial_aq": false, "enable_temporal_aq": false, "aq_strength": json.Number("8")}
 					if e["svt_av1"] != nil || !reflect.DeepEqual(e["nvenc"], want) {
 						t.Fatal("Неполные настройки NVENC:", e)
 					}
 				} else {
 					// lookahead задаёт ожидаемое значение SVT-AV1 по умолчанию: 0
 					// для CBR или -1 для VBR.
-					lookahead := float64(0)
+					lookahead := json.Number("0")
 					if rc == "vbr" {
-						lookahead = -1
+						lookahead = json.Number("-1")
 					}
 					// want задаёт полный ожидаемый набор значений SVT-AV1 по
 					// умолчанию для текущего режима битрейта.
-					want := map[string]any{"preset": float64(8), "tuning": "psnr", "aq_mode": float64(2), "lookahead_frames": lookahead}
+					want := map[string]any{"preset": json.Number("8"), "tuning": "psnr", "aq_mode": json.Number("2"), "lookahead_frames": lookahead}
 					if e["nvenc"] != nil || !reflect.DeepEqual(e["svt_av1"], want) {
 						t.Fatal("Неполные настройки SVT-AV1:", e)
 					}
@@ -153,7 +153,7 @@ func TestProfileEncodingPreservesFalseZeroAndNormalizesCustom(t *testing.T) {
 	e["video_custom"] = "lp=+0"
 	created = encodingCreate(t, f, p)
 	got = created["profile"].(map[string]any)["encoding"].(map[string]any)
-	if got["svt_av1"].(map[string]any)["preset"] != float64(0) || got["svt_av1"].(map[string]any)["lookahead_frames"] != float64(-1) || got["video_custom"] != "lp=0" {
+	if got["svt_av1"].(map[string]any)["preset"] != json.Number("0") || got["svt_av1"].(map[string]any)["lookahead_frames"] != json.Number("-1") || got["video_custom"] != "lp=0" {
 		t.Fatal("Явный ноль или auto заменён значением по умолчанию:", got)
 	}
 	p = encodingRequestProfile(t, "copy", "vbr")
@@ -252,7 +252,7 @@ func TestProfileEncodingCustomErrorsKeepTrustedDetailsWithoutRejectedValues(t *t
 	}
 	// p содержит AV1 VBR-профиль с недопустимым ненулевым buffer_bits.
 	p := encodingRequestProfile(t, "copy", "vbr")
-	p["video_encoding"].(map[string]any)["buffer_bits"] = "1"
+	p["video_encoding"].(map[string]any)["buffer_bits"] = json.Number("1")
 	// problem содержит проверенное объяснение отказа общего video_encoding для AV1 VBR.
 	problem := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "POST", "/transcode-profiles", encodingJSON(t, map[string]any{"name": "Ошибка", "profile": p}), 422))
 	if problem["code"] != "invalid_profile" || problem["field"] != "profile.video_encoding" || !strings.Contains(problem["detail"].(string), "VBR") {
@@ -275,7 +275,7 @@ func TestProfileEncodingPatchPreservesLegacyAndRequiresExplicitReplacement(t *te
 	if before["profile"].(map[string]any)["encoding"] != nil {
 		t.Fatal("Прежнему профилю выданы вымышленные значения по умолчанию")
 	}
-	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":"1","name":"Прежний"}`, 200)
+	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":1,"name":"Прежний"}`, 200)
 	// stored содержит профиль после переименования; err содержит отказ чтения для проверки
 	// неизменности содержимого.
 	stored, err := f.service.GetProfile(context.Background(), old.ID)
@@ -302,8 +302,8 @@ func TestProfileEncodingPatchPreservesLegacyAndRequiresExplicitReplacement(t *te
 	// p содержит новый явный рецепт для полной замены прежнего профиля.
 	p := encodingRequestProfile(t, "transcode", "vbr")
 	// changed содержит ответ успешной полной замены для сравнения после отклонённых изменений.
-	changed := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": "2", "profile": p}), 200))
-	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":"3","name":"Новое имя"}`, 200)
+	changed := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": json.Number("2"), "profile": p}), 200))
+	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":3,"name":"Новое имя"}`, 200)
 	// encoding выбирает null либо отсутствие блока при запрещённом удалении уже сохранённой версии
 	// 2.
 	for _, encoding := range []any{nil, "absent"} {
@@ -315,11 +315,11 @@ func TestProfileEncodingPatchPreservesLegacyAndRequiresExplicitReplacement(t *te
 		} else {
 			delete(legacy, "encoding")
 		}
-		apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": "4", "profile": legacy}), 422)
+		apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": json.Number("4"), "profile": legacy}), 422)
 	}
 	// got содержит итоговый ресурс после отказов для проверки неизменной версии профиля и ревизии.
 	got := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "GET", path, "", 200))
-	if !reflect.DeepEqual(got["profile"], changed["profile"]) || got["revision"] != "4" {
+	if !reflect.DeepEqual(got["profile"], changed["profile"]) || got["revision"] != json.Number("4") {
 		t.Fatal("Отклонённая замена изменила профиль:", got)
 	}
 }
@@ -401,16 +401,16 @@ func TestProfileLiveAudioCreationReplacementAndTrustedErrors(t *testing.T) {
 		delete(profile, "live_audio_mode")
 		// body содержит JSON полной замены, включая отсутствующий либо явный селектор
 		// LIVE-аудио.
-		body := encodingJSON(t, map[string]any{"expected_revision": "1", "profile": profile})
+		body := encodingJSON(t, map[string]any{"expected_revision": json.Number("1"), "profile": profile})
 		// problem содержит отказ отсутствующего селектора после явного сохранённого выбора.
 		problem := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "PATCH", path, body, 422))
 		if problem["field"] != "profile.live_audio_mode" || problem["code"] != "invalid_profile" {
 			t.Fatal("Полная замена потеряла путь селектора:", problem)
 		}
-		body = encodingJSON(t, map[string]any{"expected_revision": "9", "profile": profile})
+		body = encodingJSON(t, map[string]any{"expected_revision": json.Number("9"), "profile": profile})
 		apiAcceptanceRequest(t, f.api, "PATCH", path, body, 409)
 		// named содержит успешное переименование и его новую ревизию.
-		named := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":"1","name":"Другое имя"}`, 200))
+		named := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":1,"name":"Другое имя"}`, 200))
 		profile["live_audio_mode"] = "transcode"
 		body = encodingJSON(t, map[string]any{"expected_revision": named["revision"], "profile": profile})
 		// updated содержит успешную полную замену с явным LIVE transcode.

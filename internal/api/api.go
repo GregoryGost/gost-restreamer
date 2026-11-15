@@ -142,6 +142,8 @@ type API struct {
 	active, streams int
 	// drained закрывается после ухода последнего принятого обработчика при закрытом допуске.
 	drained chan struct{}
+	// registrationErr сохраняет отказ подготовки внутренней схемы тела до возврата из New.
+	registrationErr error
 }
 
 // New связывает маршрутизатор с доменом и заданными владельцами команд и подготовки. После регистрации
@@ -229,7 +231,7 @@ func New(config Config) (*API, error) {
 		}
 		_, err = w.Write(data)
 		return err
-	}, Unmarshal: json.Unmarshal}
+	}, Unmarshal: unmarshalJSON}
 	hc.Formats = map[string]huma.Format{"application/json": format, "json": format}
 	a.huma = humachi.New(a.router, hc)
 	a.huma.UseMiddleware(func(ctx huma.Context, next func(huma.Context)) {
@@ -260,6 +262,11 @@ func New(config Config) (*API, error) {
 	a.registerFallback()
 	a.registerRuntime()
 	a.registerSystem()
+	if a.registrationErr != nil {
+		cancel()
+		return nil, a.registrationErr
+	}
+	repairPublicNumericSchemas(a.huma.OpenAPI().Components.Schemas)
 	// schemas хранит подготовленные JSON-байты публичных схем по имени файла для дальнейшего
 	// неизменяемого чтения.
 	schemas := map[string][]byte{}
@@ -554,6 +561,41 @@ func operation(method, path, id, summary string) huma.Operation {
 // ошибок. Ответ проверяется на представимость в JSON до записи; схема 422 профиля уточняется после
 // регистрации Huma.
 func register[I, O any](a *API, op huma.Operation, handler func(context.Context, *I) (*O, error)) {
+	if a.registrationErr != nil {
+		return
+	}
+	// publicBody сохраняет исходную схему; bodyMedia удерживает её описание содержимого,
+	// пока Huma захватывает отдельный указатель внутренней схемы для проверки запросов.
+	var publicBody *huma.Schema
+	var bodyMedia *huma.MediaType
+	// body описывает поле Body; hasBody отличает JSON-операции от query-only запросов.
+	if body, hasBody := reflect.TypeFor[I]().FieldByName("Body"); hasBody {
+		// registry хранит публичный граф DTO; hint повторяет правило именования Huma.
+		registry := a.huma.OpenAPI().Components.Schemas
+		hint := reflect.TypeFor[I]().Name() + "Body"
+		if reflect.TypeFor[I]().Name() == "" {
+			hint = op.OperationID + "Request"
+		}
+		if body.Tag.Get("nameHint") != "" {
+			hint = body.Tag.Get("nameHint")
+		}
+		publicBody = huma.SchemaFromField(registry, body, hint)
+		repairPublicNumericSchema(registry, publicBody, body.Type, body.Tag, map[*huma.Schema]bool{})
+		// private содержит независимую строковую проекцию; err сообщает об отказе её подготовки.
+		private, err := privateBodySchema(registry, publicBody)
+		if err != nil {
+			a.registrationErr = err
+			return
+		}
+		if op.RequestBody == nil {
+			op.RequestBody = &huma.RequestBody{}
+		}
+		if op.RequestBody.Content == nil {
+			op.RequestBody.Content = map[string]*huma.MediaType{}
+		}
+		bodyMedia = &huma.MediaType{Schema: private}
+		op.RequestBody.Content["application/json"] = bodyMedia
+	}
 	// profileErrorResponse хранит специальную схему ответа 422 для операций создания и изменения
 	// профиля.
 	var profileErrorResponse *huma.Response
@@ -584,6 +626,9 @@ func register[I, O any](a *API, op huma.Operation, handler func(context.Context,
 		}
 		return out, a.problem(err)
 	})
+	if bodyMedia != nil {
+		bodyMedia.Schema = publicBody
+	}
 	if profileErrorResponse != nil {
 		// Huma добавляет стандартную схему ошибок при регистрации, поэтому уточняем её после этого шага.
 		op.Responses["422"] = profileErrorResponse
@@ -613,7 +658,13 @@ func pageOne() core.PageRequest { return core.PageRequest{Query: core.ListQuery{
 func replaceSchemaRefs(data []byte) []byte {
 	// schema содержит разобранное JSON-дерево схемы для замены внутренних ссылок.
 	var schema any
-	if json.Unmarshal(data, &schema) != nil {
+	// decoder сохраняет точные числовые ограничения схемы при замене ссылок.
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if decoder.Decode(&schema) != nil {
+		return data
+	}
+	if decoder.Decode(new(any)) != io.EOF {
 		return data
 	}
 	// rewrite рекурсивно обходит объекты и массивы схемы, меняя только внутренние ссылки $ref.

@@ -15,13 +15,13 @@ type RateDTO struct {
 	Reason string `json:"reason"`
 	// Value содержит измеренную скорость только при available; null сохраняет отличие недоступности
 	// от нуля.
-	Value *float64 `json:"value"`
+	Value *float64 `json:"value" minimum:"0"`
 	// WindowStart содержит начало фактического окна в UTC либо null при неизвестном времени.
 	WindowStart *time.Time `json:"window_start"`
 	// WindowEnd содержит конец фактического окна в UTC либо null при неизвестном времени.
 	WindowEnd *time.Time `json:"window_end"`
 	// DurationNS содержит точную длительность фактического окна в наносекундах.
-	DurationNS Decimal `json:"duration_ns"`
+	DurationNS Decimal `json:"duration_ns" maximum:"9223372036854775807"`
 }
 
 // rateDTO раскрывает численное значение только доступного измерения и сохраняет причину и границы
@@ -199,14 +199,13 @@ type FFmpegProgressDTO struct {
 	// DropFrames содержит число отброшенных кадров либо null.
 	DropFrames *Decimal `json:"drop_frames"`
 	// FPS содержит сообщённую FFmpeg частоту кадров либо null.
-	FPS *float64 `json:"fps"`
+	FPS *float64 `json:"fps" minimum:"0"`
 	// BitrateBPS содержит сообщённый FFmpeg битрейт в битах за секунду либо null.
-	BitrateBPS *float64 `json:"bitrate_bps"`
+	BitrateBPS *float64 `json:"bitrate_bps" minimum:"0"`
 	// Speed содержит сообщённую скорость обработки относительно реального времени либо null.
-	Speed *float64 `json:"speed"`
-	// OutTimeUS содержит знаковое время выхода FFmpeg в микросекундах как точную десятичную строку
-	// либо null.
-	OutTimeUS *string `json:"out_time_us"`
+	Speed *float64 `json:"speed" minimum:"0"`
+	// OutTimeUS содержит точное знаковое время выхода FFmpeg в микросекундах либо null.
+	OutTimeUS *int64 `json:"out_time_us"`
 	// End показывает завершающий отчёт progress FFmpeg.
 	End bool `json:"end"`
 }
@@ -251,8 +250,8 @@ type FFmpegMetricsDTO struct {
 }
 
 // ffmpegMetricsDTO сохраняет статусы, времена и потери FFmpeg и добавляет Progress только при
-// MetricAvailable и HasProgress. Отсутствующие поля отчёта остаются nil, а знаковое время передаётся
-// десятичной строкой.
+// MetricAvailable и HasProgress. Отсутствующие поля отчёта остаются nil, а знаковое время
+// сохраняет полный диапазон int64 в микросекундах.
 func ffmpegMetricsDTO(m *core.FFmpegMetrics) *FFmpegMetricsDTO {
 	if m == nil {
 		return nil
@@ -270,11 +269,11 @@ func ffmpegMetricsDTO(m *core.FFmpegMetrics) *FFmpegMetricsDTO {
 		// p содержит исходный присутствующий отчёт FFmpeg для преобразования необязательных
 		// полей.
 		p := m.Progress
-		// out содержит знаковое время отчёта как строку либо nil при отсутствии OutTimeUS.
-		var out *string
+		// out содержит знаковое время отчёта либо nil при отсутствии OutTimeUS.
+		var out *int64
 		if p.OutTimeUS.Present {
-			// x содержит точную десятичную запись знакового времени выхода в микросекундах.
-			x := strconv.FormatInt(p.OutTimeUS.Value, 10)
+			// x содержит отдельную точную копию времени выхода в микросекундах.
+			x := p.OutTimeUS.Value
 			out = &x
 		}
 		v.Progress = &FFmpegProgressDTO{optionalUint(p.Frame), optionalUint(p.TotalSizeBytes), optionalUint(p.DupFrames), optionalUint(p.DropFrames), optionalFloat(p.FPS), optionalFloat(p.BitrateBitsPerSecond), optionalFloat(p.Speed), out, p.End}
@@ -340,7 +339,7 @@ type GPUDTO struct {
 	// SampledAt содержит UTC-время последнего общего опроса либо null.
 	SampledAt *time.Time `json:"sampled_at"`
 	// StaleAfterNS содержит точный срок свежести GPU-полей в наносекундах.
-	StaleAfterNS Decimal `json:"stale_after_ns"`
+	StaleAfterNS Decimal `json:"stale_after_ns" minimum:"1" maximum:"9223372036854775807"`
 	// Devices содержит текущие устройства с независимыми статусами показателей.
 	Devices []GPUDeviceDTO `json:"devices"`
 }
@@ -534,6 +533,14 @@ type SessionMetricsDTO struct {
 	Reason string `json:"reason"`
 	// Snapshot содержит текущий оперативный снимок только при available; иначе null.
 	Snapshot *RuntimeSessionDTO `json:"snapshot"`
+}
+
+// ResyncRequiredDTO сообщает, почему SSE-подписчику нужен новый атомарный снимок.
+type ResyncRequiredDTO struct {
+	// Reason сообщает о пропуске событий, смене эпохи либо превышении размера кадра.
+	Reason string `json:"reason"`
+	// SnapshotURL указывает маршрут получения нового снимка и позиции подписки.
+	SnapshotURL string `json:"snapshot_url"`
 }
 
 // RuntimeEventDTO передаёт безопасные типизированные данные одного события RAM-потока.

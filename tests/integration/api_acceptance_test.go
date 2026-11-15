@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -112,7 +113,7 @@ func integrationAPIRequest(t *testing.T, a http.Handler, method, path, body stri
 	// v содержит разобранный JSON-объект проверяемого HTTP-ответа.
 	var v map[string]any
 	// err сообщает о невозможности разобрать тело HTTP-ответа как JSON-объект.
-	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+	if err := integrationDecodeJSON(w.Body.Bytes(), &v); err != nil {
 		t.Fatal(err)
 	}
 	// runtime содержит оперативную часть ответа, где конфигурационные ключи запрещены независимо от
@@ -138,6 +139,24 @@ func integrationAPIRequest(t *testing.T, a http.Handler, method, path, body stri
 		}
 	}
 	return v
+}
+
+// integrationDecodeJSON разбирает данные в target, сохраняя точные числовые токены
+// в нетипизированных ответах REST и SSE вместо промежуточного float64.
+func integrationDecodeJSON(data []byte, target any) error {
+	// decoder читает исходные байты JSON с сохранением полной записи числа.
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	// err содержит отказ чтения единственного ожидаемого значения JSON.
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	// extra выявляет второе значение или мусор после первого объекта, как json.Unmarshal.
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return core.ErrInvalid
+	}
+	return nil
 }
 
 // Проверяет HTTP-управление настоящими сессиями и выходами: повтор RequestID, неизменяемые снимки,
@@ -197,7 +216,7 @@ func TestAcceptanceAPIRealManagerReceiptsSnapshotsMetricsAndMembership(t *testin
 		// v содержит JSON очередного ответа для сравнения идентичности квитанций.
 		var v map[string]any
 		// err сообщает об ошибке разбора ответа конкурентного запроса запуска.
-		if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+		if err := integrationDecodeJSON(w.Body.Bytes(), &v); err != nil {
 			t.Fatal(err)
 		}
 		if accepted != nil && accepted["id"] != v["id"] {
@@ -259,7 +278,7 @@ func TestAcceptanceAPIRealManagerReceiptsSnapshotsMetricsAndMembership(t *testin
 		// media содержит медиасчётчики выхода для проверки ненулевого числа переданных байтов
 		// полезной нагрузки.
 		media := m.(map[string]any)["media"].(map[string]any)
-		return media["payload_bytes"] != "0"
+		return publicTelemetryUint(t, media["payload_bytes"]) != 0
 	})
 	// before фиксирует публичный сохранённый снимок назначения до изменения его текущей
 	// конфигурации.
@@ -350,7 +369,7 @@ func TestAcceptanceAPIRealManagerReceiptsSnapshotsMetricsAndMembership(t *testin
 			// revision содержит строковую ревизию заглушки для запросов изменения с
 			// контролем версии.
 			revision := fmt.Sprint(asset.Revision)
-			integrationAPIRequest(t, a, "POST", "/fallback-assets/"+string(asset.ID)+"/rebuild", `{"expected_revision":"`+revision+`"}`, 409)
+			integrationAPIRequest(t, a, "POST", "/fallback-assets/"+string(asset.ID)+"/rebuild", `{"expected_revision":`+revision+`}`, 409)
 			integrationAPIRequest(t, a, "DELETE", "/fallback-assets/"+string(asset.ID)+"?expected_revision="+revision, "", 409)
 			// payload содержит тело загрузки, которое должно остаться непрочитанным при
 			// запрете подготовки.

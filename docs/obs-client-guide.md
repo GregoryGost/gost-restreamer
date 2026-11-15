@@ -29,10 +29,10 @@ curl --fail-with-body -H 'Content-Type: application/json' \
   "fallback": {
     "asset_id": "ASSET_ID",
     "watchdog": {
-      "video_timeout_ns": "3000000000",
-      "audio_timeout_ns": "3000000000",
-      "recovery_window_ns": "1000000000",
-      "keyframe_timeout_ns": "5000000000"
+      "video_timeout_ns": 3000000000,
+      "audio_timeout_ns": 3000000000,
+      "recovery_window_ns": 1000000000,
+      "keyframe_timeout_ns": 5000000000
     }
   }
 }
@@ -73,10 +73,10 @@ curl --fail-with-body -H 'Content-Type: application/json' \
       "audio": {"codec": "aac", "codec_profile": "LC", "sample_rate_hz": 48000, "channels": 2, "channel_layout": "stereo"}
     },
     "video_encoding": {
-      "target_bitrate_bps": "6000000", "max_bitrate_bps": "6000000", "buffer_bits": "12000000",
+      "target_bitrate_bps": 6000000, "max_bitrate_bps": 6000000, "buffer_bits": 12000000,
       "gop_frames": 120, "max_b_frames": 2, "closed_gop": true
     },
-    "audio_encoding": {"bitrate_bps": "192000"},
+    "audio_encoding": {"bitrate_bps": 192000},
     "encoding": {
       "version": 2, "video_encoder": "h264_nvenc", "audio_encoder": "aac",
       "rate_control": "cbr", "rescale_output": true,
@@ -109,10 +109,10 @@ curl --fail-with-body -H 'Content-Type: application/json' \
       "audio": {"codec": "aac", "codec_profile": "LC", "sample_rate_hz": 48000, "channels": 2, "channel_layout": "stereo"}
     },
     "video_encoding": {
-      "target_bitrate_bps": "12000000", "max_bitrate_bps": "16000000", "buffer_bits": "24000000",
+      "target_bitrate_bps": 12000000, "max_bitrate_bps": 16000000, "buffer_bits": 24000000,
       "gop_frames": 120, "max_b_frames": 2, "closed_gop": true
     },
-    "audio_encoding": {"bitrate_bps": "192000"},
+    "audio_encoding": {"bitrate_bps": 192000},
     "encoding": {
       "version": 2, "video_encoder": "h264_nvenc", "rate_control": "vbr",
       "nvenc": {"preset": "p5", "multipass": "qres", "lookahead_frames": 16, "enable_spatial_aq": true},
@@ -141,10 +141,10 @@ curl --fail-with-body -H 'Content-Type: application/json' \
       "audio": {"codec": "aac", "codec_profile": "LC", "sample_rate_hz": 48000, "channels": 2, "channel_layout": "stereo"}
     },
     "video_encoding": {
-      "target_bitrate_bps": "18000000", "max_bitrate_bps": "0", "buffer_bits": "0",
+      "target_bitrate_bps": 18000000, "max_bitrate_bps": 0, "buffer_bits": 0,
       "gop_frames": 120, "max_b_frames": 0, "closed_gop": true
     },
-    "audio_encoding": {"bitrate_bps": "192000"},
+    "audio_encoding": {"bitrate_bps": 192000},
     "encoding": {
       "version": 2, "video_encoder": "libsvtav1", "audio_encoder": "aac",
       "rate_control": "vbr", "rescale_output": false,
@@ -155,7 +155,7 @@ curl --fail-with-body -H 'Content-Type: application/json' \
 }
 ```
 
-Для AV1 CBR измените в полном третьем профиле `rate_control` на `cbr`, `max_bitrate_bps` на `"18000000"`, `buffer_bits` на `"36000000"` (2000 мс) и SVT `lookahead_frames` на 0. Ненулевой VBR max/buffer не принимается: библиотека не предоставляет это ограничение в выбранном режиме. Native настройки других кодировщиков OBS нельзя вставить в SVT-блок без сопоставления.
+Для AV1 CBR измените в полном третьем профиле `rate_control` на `cbr`, `max_bitrate_bps` на `18000000`, `buffer_bits` на `36000000` (2000 мс) и SVT `lookahead_frames` на 0. Ненулевой VBR max/buffer не принимается: библиотека не предоставляет это ограничение в выбранном режиме. Native настройки других кодировщиков OBS нельзя вставить в SVT-блок без сопоставления.
 
 Во всех трёх примерах LIVE AAC сохраняется исходным. Указанные аудиобитрейт и `audio_custom` управляют подготовкой беззвучной заглушки. Для перекодирования звука в одном из H.264-профилей явно замените корневой `live_audio_mode` на `"transcode"`: тогда те же аудиопараметры применятся и к LIVE. При копировании фактический профиль AAC, частота, число и расположение каналов OBS должны совпадать с `format.audio`; неподходящий LIVE оставляет группу на заглушке с причиной в журнале.
 
@@ -207,7 +207,7 @@ GET /api/v1/fallback-assets/ASSET_ID/generations/GENERATION_ID
 
 Читайте этот ресурс до `status=ready` либо `status=error`. Состояния `queued` и `preparing` промежуточные. Прежняя рабочая заглушка сохраняется при неудачной замене. После изменения полных профилей потребуется новая подготовка; upload и rebuild выполняются до эфира, включая запрет во время ручной паузы.
 
-Заглушки всегда подготавливаются с AAC-тишиной, в том числе из видео со звуком. После обновления со старого генератора выполните `POST /fallback-assets/ASSET_ID/rebuild` с `{"expected_revision":"ТЕКУЩАЯ_РЕВИЗИЯ"}`. Сохранённый оригинал используется повторно, передавать его заново не нужно. Ответ `202` и результат поколения проверяются так же, как при upload. Старый READY не даёт допуск воспроизведения; прежние снимки сохраняются, новый вариант не подставляется в уже прикреплённый Output автоматически. Ошибка rebuild сохраняет прежний текущий комплект, но его устаревшая версия остаётся непригодной до успешной подготовки.
+Заглушки всегда подготавливаются с AAC-тишиной, в том числе из видео со звуком. После обновления со старого генератора выполните `POST /fallback-assets/ASSET_ID/rebuild` с числовым `expected_revision`, например `{"expected_revision":12}`. Вместо 12 передайте текущую ревизию заглушки из GET. Сохранённый оригинал используется повторно, передавать его заново не нужно. Ответ `202` и результат поколения проверяются так же, как при upload. Старый READY не даёт допуск воспроизведения; прежние снимки сохраняются, новый вариант не подставляется в уже прикреплённый Output автоматически. Ошибка rebuild сохраняет прежний текущий комплект, но его устаревшая версия остаётся непригодной до успешной подготовки.
 
 Подготовленный файл и его повторы полностью беззвучны. Только непосредственно при LIVE → fallback допускается короткий остаток прежнего звука декодера получателя; он не является звуком исходного файла заглушки. Универсальный предел длительности для всех плееров не заявляется.
 
@@ -291,6 +291,6 @@ curl -N --get --data-urlencode "cursor=$event_cursor" \
 
 Heartbeat и комментарий `: connected` не являются изменением состояния. При передаче header и query одновременно их значения должны совпадать. После перезапуска сервера прежний epoch недействителен: клиент начинает с нового snapshot и отдельно читает сохранённые Session/квитанции.
 
-Все 64-битные значения и наносекундные длительности API — десятичные строки. Не пропускайте их через тип числа с потерей точности. PATCH различает отсутствие, `null`, `false` и пустую строку; изменения и удаления требуют текущего `expected_revision`. Подробный контракт ошибок, nullable и профилей — в [описании HTTP API](api-contracts.md).
+Все числовые значения REST и JSON-данных SSE, включая 64-битные целые и наносекундные длительности, передаются JSON-числами. Строки вместо чисел отклоняются; используйте разбор, сохраняющий точность полного применимого диапазона. Идентификаторы, даты и непрозрачные курсоры остаются строками. [Реестр числовых полей](numeric-json-contracts.md) описывает типы, единицы и диапазоны. PATCH различает отсутствие, `null`, `false` и пустую строку; изменения и удаления требуют текущего `expected_revision`. Подробный контракт ошибок, nullable и профилей — в [описании HTTP API](api-contracts.md).
 
 Показатели означают серверные наблюдения: фактические локальные записи RTMP, полученные кадры и отброшенные внутри backend пакеты. Они не доказывают воспроизведение на площадке. Недоступные/устаревшие измерения показываются явно; GPU проверяется на целевом сервере. Основной журнал приложения использует режим `full`. REST возвращает ключи и адреса в представлениях конфигурации и исторических снимках; SSE передаёт оперативные наблюдения без этих значений.

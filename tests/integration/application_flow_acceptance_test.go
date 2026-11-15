@@ -45,7 +45,7 @@ func applicationFlowRequest[T any](t *testing.T, a http.Handler, method, path st
 	}
 	// value принимает типизированный ответ T после повторного JSON-декодирования.
 	var value T
-	if err = json.Unmarshal(encoded, &value); err != nil {
+	if err = integrationDecodeJSON(encoded, &value); err != nil {
 		t.Fatal(err)
 	}
 	return value
@@ -256,7 +256,7 @@ func TestApplicationHTTPFlowPreparesThreeProfilesAndPreservesHistory(t *testing.
 	// asset содержит созданную через HTTP заглушку трёх профилей.
 	asset := applicationFlowRequest[api.AssetDTO](t, a, "POST", "/fallback-assets", map[string]any{"name": "Заглушка полного потока"}, 201)
 	// policy задаёт индивидуальные сроки watchdog и выбранную заглушку потока.
-	policy := map[string]any{"asset_id": asset.ID, "watchdog": map[string]any{"video_timeout_ns": "300000000", "audio_timeout_ns": "300000000", "recovery_window_ns": "70000000", "keyframe_timeout_ns": "1000000000"}}
+	policy := map[string]any{"asset_id": asset.ID, "watchdog": map[string]any{"video_timeout_ns": json.Number("300000000"), "audio_timeout_ns": json.Number("300000000"), "recovery_window_ns": json.Number("70000000"), "keyframe_timeout_ns": json.Number("1000000000")}}
 	// stream содержит созданный HTTP-поток с постоянным ключом и политикой.
 	stream := applicationFlowRequest[api.StreamDTO](t, a, "POST", "/streams", map[string]any{"name": "Полный поток", "publication_key": "synthetic-session-key", "fallback": policy}, 201)
 	// err переносит результаты доменного чтения потока, дальнейших файловых операций и операций
@@ -415,7 +415,7 @@ func TestApplicationHTTPFlowPreparesThreeProfilesAndPreservesHistory(t *testing.
 	}
 	command("/sessions/"+current.ID+"/pause", "pause-full-flow")
 	applicationFlowSource(t, a, current.ID, "FALLBACK")
-	applicationFlowRequest[map[string]any](t, a, "POST", "/fallback-assets/"+asset.ID+"/rebuild", map[string]any{"expected_revision": fmt.Sprint(asset.Revision)}, 409)
+	applicationFlowRequest[map[string]any](t, a, "POST", "/fallback-assets/"+asset.ID+"/rebuild", map[string]any{"expected_revision": asset.Revision}, 409)
 	command("/sessions/"+current.ID+"/resume", "resume-full-flow")
 	applicationFlowSource(t, a, current.ID, "LIVE")
 	// healthy проверяет сохранность единственного соединения каждого исходного исправного

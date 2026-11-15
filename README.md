@@ -151,6 +151,7 @@ go test -count=1 ./tests/integration -run '^TestAcceptanceProfileConversionCPUAn
 - [Сессии, процессы и восстановление ресурсов](docs/session-manager-contracts.md).
 - [Оперативные измерения, события, NVML и журнал](docs/monitoring-contracts.md).
 - [Управляющий REST/SSE API](docs/api-contracts.md).
+- [Числовые поля REST/SSE, точность и диапазоны](docs/numeric-json-contracts.md).
 - [Приложение, конфигурация, запуск и остановка](docs/application-contracts.md).
 - [Версии, происхождение бинарников и сборки CI](docs/versioning.md).
 - [CI и окружение сборки](.github/CI.md).

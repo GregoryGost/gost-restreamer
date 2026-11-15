@@ -13,21 +13,20 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 )
 
-// Decimal передаёт uint64 десятичной JSON-строкой для сохранения точности счётчиков и ревизий.
+// Decimal передаёт точное беззнаковое целое JSON-числом без промежуточного float64.
 type Decimal uint64
 
-// MarshalJSON передаёт uint64 десятичной JSON-строкой без преобразования в неточное число JavaScript.
+// MarshalJSON записывает все разряды uint64 непосредственно в числовую лексему JSON.
 func (d Decimal) MarshalJSON() ([]byte, error) {
-	return json.Marshal(strconv.FormatUint(uint64(d), 10))
+	return []byte(strconv.FormatUint(uint64(d), 10)), nil
 }
 
-// UnmarshalJSON принимает только каноническую десятичную строку uint64 и изменяет Decimal после
-// успешной проверки.
+// UnmarshalJSON принимает только математически целое JSON-число без минуса в диапазоне
+// uint64 и изменяет Decimal после успешной проверки всех разрядов.
 func (d *Decimal) UnmarshalJSON(b []byte) error {
-	// s принимает строковое JSON-представление точного беззнакового числа.
-	var s string
-	// err содержит отказ чтения Decimal из JSON-строки.
-	if err := json.Unmarshal(b, &s); err != nil {
+	// s содержит точную целую запись; whole подтверждает целочисленность и машинный диапазон.
+	s, whole := exactIntegerToken(string(bytes.TrimSpace(b)))
+	if !whole || s[0] == '-' {
 		return core.ErrInvalid
 	}
 	// n содержит проверенное значение uint64; err содержит отказ канонической десятичной записи.
@@ -39,10 +38,10 @@ func (d *Decimal) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// Schema описывает Decimal как десятичную строку; фактическую границу uint64 дополнительно проверяет
-// UnmarshalJSON.
+// Schema описывает точный полный диапазон uint64 через числовые ограничения Extensions,
+// поскольку стандартные поля Huma Minimum/Maximum имеют тип float64.
 func (Decimal) Schema(huma.Registry) *huma.Schema {
-	return &huma.Schema{Type: "string", Pattern: "^(0|[1-9][0-9]{0,19})$", Description: "Точное беззнаковое целое в десятичной записи."}
+	return &huma.Schema{Type: huma.TypeInteger, Format: "uint64", Extensions: map[string]any{"minimum": json.Number("0"), "maximum": json.Number("18446744073709551615")}, Description: "Точное беззнаковое целое."}
 }
 
 // parseDecimal разбирает uint64 из ASCII-цифр без знака и ведущих нулей; пустота и переполнение
@@ -214,13 +213,13 @@ func failure(code string) *FailureDTO {
 // WatchdogDTO передаёт сроки контроля источника точными десятичными наносекундами.
 type WatchdogDTO struct {
 	// VideoTimeoutNS задаёт допустимое отсутствие продвижения видео в наносекундах.
-	VideoTimeoutNS Decimal `json:"video_timeout_ns"`
+	VideoTimeoutNS Decimal `json:"video_timeout_ns" minimum:"1" maximum:"9223372036854775807"`
 	// AudioTimeoutNS задаёт допустимое отсутствие продвижения аудио в наносекундах.
-	AudioTimeoutNS Decimal `json:"audio_timeout_ns"`
+	AudioTimeoutNS Decimal `json:"audio_timeout_ns" minimum:"1" maximum:"9223372036854775807"`
 	// RecoveryWindowNS задаёт окно подтверждения восстановления LIVE в наносекундах.
-	RecoveryWindowNS Decimal `json:"recovery_window_ns"`
+	RecoveryWindowNS Decimal `json:"recovery_window_ns" minimum:"1" maximum:"9223372036854775807"`
 	// KeyframeTimeoutNS задаёт ожидание подходящего ключевого кадра в наносекундах.
-	KeyframeTimeoutNS Decimal `json:"keyframe_timeout_ns"`
+	KeyframeTimeoutNS Decimal `json:"keyframe_timeout_ns" minimum:"1" maximum:"9223372036854775807"`
 }
 
 // domain проверяет положительные сроки контроля медиапотока и представимость каждого в time.Duration

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,15 +26,39 @@ type eventCursor struct {
 	Version int `json:"v"`
 	// Epoch содержит публичный идентификатор эпохи потока оперативных событий.
 	Epoch string `json:"epoch"`
-	// Sequence содержит точный номер события, представленный Decimal без потери разрядов JSON.
-	Sequence Decimal `json:"sequence"`
+	// Sequence сохраняет прежнее строковое представление номера внутри непрозрачного курсора v1.
+	Sequence cursorSequence `json:"sequence"`
+}
+
+// cursorSequence изолирует прежнее строковое кодирование позиции SSE от публичных JSON-чисел DTO.
+type cursorSequence uint64
+
+// MarshalJSON сохраняет каноническую строку sequence и прежние кодированные байты курсора v1.
+func (s cursorSequence) MarshalJSON() ([]byte, error) {
+	return json.Marshal(strconv.FormatUint(uint64(s), 10))
+}
+
+// UnmarshalJSON требует прежнюю каноническую строку uint64, включая допустимый ноль.
+func (s *cursorSequence) UnmarshalJSON(data []byte) error {
+	// text содержит строковое значение; err сообщает об отказе чтения JSON-строки.
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return core.ErrInvalid
+	}
+	// value содержит точный sequence; err сообщает о переполнении или неканонической записи.
+	value, err := parseDecimal(text)
+	if err != nil {
+		return err
+	}
+	*s = cursorSequence(value)
+	return nil
 }
 
 // encodeCursor кодирует публичный epoch и точную последовательность RAM-потока без раскрытия
 // внутреннего incarnation.
 func encodeCursor(c core.RuntimeCursor) string {
 	// b содержит JSON публичной позиции до кодирования base64url.
-	b, _ := json.Marshal(eventCursor{1, string(c.Epoch), Decimal(c.Sequence)})
+	b, _ := json.Marshal(eventCursor{1, string(c.Epoch), cursorSequence(c.Sequence)})
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
@@ -56,7 +82,7 @@ func decodeCursor(s string, current core.RuntimeCursor) (core.RuntimeCursor, err
 		Epoch string `json:"epoch"`
 		// Sequence отличает отсутствующую последовательность от допустимого нуля посредством
 		// указателя.
-		Sequence *Decimal `json:"sequence"`
+		Sequence *cursorSequence `json:"sequence"`
 	}
 	// dec разбирает ровно один JSON-объект курсора с запрещёнными неизвестными полями.
 	dec := json.NewDecoder(bytes.NewReader(b))
@@ -267,6 +293,17 @@ func (a *API) registerRuntime() {
 	// op описывает SSE-маршрут с потоковым типом text/event-stream вместо обычного JSON-ответа.
 	op := operation("GET", "/events", "subscribe-events", "Ограниченный поток текущих событий RAM.")
 	op.Responses = map[string]*huma.Response{"200": {Description: "Поток событий; при пропуске требуется новый снимок.", Content: map[string]*huma.MediaType{"text/event-stream": {Schema: &huma.Schema{Type: "string"}}}}}
+	// registry публикует схемы JSON-данных независимо от строкового транспорта SSE.
+	registry := a.huma.OpenAPI().Components.Schemas
+	// eventSchema описывает данные текущих событий; resyncSchema — управляющее уведомление.
+	eventSchema := registry.Schema(reflect.TypeFor[RuntimeEventDTO](), true, "")
+	resyncSchema := registry.Schema(reflect.TypeFor[ResyncRequiredDTO](), true, "")
+	op.Extensions = map[string]any{"x-sse-events": map[string]any{
+		string(core.RuntimeStateEvent): eventSchema, string(core.RuntimeMetricsEvent): eventSchema,
+		string(core.RuntimeInputEvent): eventSchema, string(core.RuntimeGPUEvent): eventSchema,
+		string(core.RuntimeRemovedEvent): eventSchema, string(core.RuntimeAttemptEvent): eventSchema,
+		"resync_required": resyncSchema,
+	}}
 	huma.Register(a.huma, op, func(_ context.Context, i *EventsInput) (*huma.StreamResponse, error) {
 		// Создаёт потоковый ответ из страницы событий, подготовленной до отправки заголовков.
 
@@ -319,13 +356,7 @@ func (a *API) streamEvents(ctx huma.Context, page core.RuntimeEventPage) {
 
 		// frame содержит кадр обязательной повторной синхронизации; e содержит отказ его
 		// формирования в пределах бюджета.
-		frame, e := makeFrame("resync_required", "", struct {
-			// Reason сообщает причину обязательного повторного получения снимка.
-			Reason string `json:"reason"`
-			// SnapshotURL указывает публичный маршрут атомарного снимка для восстановления
-			// позиции.
-			SnapshotURL string `json:"snapshot_url"`
-		}{reason, Prefix + "/events/snapshot"}, a.config.Limits.SSEFrameBytes)
+		frame, e := makeFrame("resync_required", "", ResyncRequiredDTO{reason, Prefix + "/events/snapshot"}, a.config.Limits.SSEFrameBytes)
 		if e == nil {
 			_ = write(frame)
 		}

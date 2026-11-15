@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,10 +23,13 @@ import (
 func TestDecimalAndProfileTextPreserveExactValues(t *testing.T) {
 	// v задаёт очередное точное uint64, включая значения за пределами точности JavaScript.
 	for _, v := range []uint64{0, 9007199254740993, math.MaxUint64} {
-		// b содержит JSON-строку Decimal; e содержит отказ её сериализации.
+		// b содержит числовой JSON-токен Decimal; e содержит отказ её сериализации.
 		b, e := json.Marshal(Decimal(v))
 		if e != nil {
 			t.Fatal(e)
+		}
+		if string(b) != strconv.FormatUint(v, 10) {
+			t.Fatalf("Decimal должен передаваться точным JSON-числом: %s", b)
 		}
 		// decoded принимает Decimal после обратного JSON-чтения для сравнения точного uint64.
 		var decoded Decimal

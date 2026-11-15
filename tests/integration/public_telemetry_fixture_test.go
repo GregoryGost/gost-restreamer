@@ -3,7 +3,6 @@ package integration
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
@@ -137,7 +136,7 @@ func publicTelemetrySubscribe(t *testing.T, server *httptest.Server, path, lastI
 			case strings.HasPrefix(line, "id: "):
 				frame.id = strings.TrimPrefix(line, "id: ")
 			case strings.HasPrefix(line, "data: "):
-				frame.err = json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &frame.data)
+				frame.err = integrationDecodeJSON([]byte(strings.TrimPrefix(line, "data: ")), &frame.data)
 			}
 		}
 		// err сообщает об ошибке сканирования SSE, возникшей до отмены подписки.
