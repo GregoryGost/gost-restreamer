@@ -72,7 +72,7 @@ func (f acceptanceRunFunc) Run(ctx context.Context, c Command, input *os.File, o
 
 // Возвращает конечные бюджеты менеджера и управляемые имена инструментов для приёмочных тестов.
 func acceptanceManagerConfig() Config {
-	return Config{ReconcileLimit: 10, GeneratorVersion: "acceptance-generator", FFmpeg: "controlled-ffmpeg", FFprobe: "controlled-ffprobe", MaxUploadBytes: 1 << 16, MaxOutputBytes: 1 << 16, PrepareTimeout: 5 * time.Second, ShutdownTimeout: time.Second, QueueInterval: time.Millisecond, Runner: RunnerLimits{Timeout: time.Second, MaxArgs: 256, MaxCommandBytes: 1 << 16, MaxDiagnosticBytes: 1 << 16}, Probe: ProbeLimits{MaxJSONBytes: 1 << 16, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 4096 * 4096, MaxDuration: time.Minute, ImageDuration: time.Second, MaxPackets: 1000, Container: fmp4.Limits{MaxBoxBytes: 1 << 20, MaxInitBytes: 1 << 20, MaxMoofBytes: 1 << 16, MaxMdatBytes: 1 << 20, MaxSampleBytes: 1 << 18, MaxExtradataBytes: 1 << 12, MaxSamples: 100}}}
+	return Config{ReconcileLimit: 10, GeneratorVersion: core.CurrentFallbackGeneratorVersion, FFmpeg: "controlled-ffmpeg", FFprobe: "controlled-ffprobe", MaxUploadBytes: 1 << 16, MaxOutputBytes: 1 << 16, PrepareTimeout: 5 * time.Second, ShutdownTimeout: time.Second, QueueInterval: time.Millisecond, Runner: RunnerLimits{Timeout: time.Second, MaxArgs: 256, MaxCommandBytes: 1 << 16, MaxDiagnosticBytes: 1 << 16}, Probe: ProbeLimits{MaxJSONBytes: 1 << 16, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 4096 * 4096, MaxDuration: time.Minute, ImageDuration: time.Second, MaxPackets: 1000, Container: fmp4.Limits{MaxBoxBytes: 1 << 20, MaxInitBytes: 1 << 20, MaxMoofBytes: 1 << 16, MaxMdatBytes: 1 << 20, MaxSampleBytes: 1 << 18, MaxExtradataBytes: 1 << 12, MaxSamples: 100}}}
 }
 
 // Открывает временную SQLite, создаёт Service, Asset и Stream с тремя группами на двух различных
@@ -492,7 +492,7 @@ func TestManagersShareExecutionSlotAndCancellationWaitsForPhysicalRunner(t *test
 }
 
 // Проверяет независимые позиции открытых дескрипторов и отказ чтения и очистки при изменении
-// содержимого без изменения размера.
+// содержимого без изменения размера. t регистрирует изолированные файлы и проверки их содержимого.
 func TestVerifiedReadersHaveIndependentPositionsAndRejectCorruption(t *testing.T) {
 	// s содержит файловое хранилище. dir содержит его корень для изменения тестового файла.
 	s, dir := acceptanceFileStore(t)
@@ -504,8 +504,15 @@ func TestVerifiedReadersHaveIndependentPositionsAndRejectCorruption(t *testing.T
 	if err := os.WriteFile(filepath.Join(dir, "media.mp4"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	// m содержит ожидаемые путь, размер и SHA256 проверяемого файла.
-	m := core.ArtifactManifest{ManagedPath: "media.mp4", SizeBytes: uint64(len(data)), ContentHash: acceptanceDigest(data)}
+	// profile задаёт поддержанный формат синтетического манифеста; разбор медиаданных здесь не проверяется.
+	profile := selfProfile(core.CodecH264)
+	// key и canonical связывают манифест с точным профилем; err сообщает об отказе вычисления.
+	key, canonical, err := core.ProfileIdentity(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// m содержит полное пригодное доказательство файла с ожидаемыми путём, размером и SHA256.
+	m := core.ArtifactManifest{AssetID: "asset", GenerationID: "generation", VariantID: "variant", SourceHash: acceptanceDigest(data), Profile: profile, ProfileKey: key, CanonicalProfile: canonical, VerifiedFormat: profile.Format, GeneratorVersion: core.CurrentFallbackGeneratorVersion, ManagedPath: "media.mp4", SizeBytes: uint64(len(data)), ContentHash: acceptanceDigest(data)}
 	// a содержит первый независимо открытый дескриптор. err сообщает об отказе проверки файла.
 	a, err := s.OpenVerified(ctx, m)
 	if err != nil {

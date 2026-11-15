@@ -132,6 +132,10 @@ func TestLiveAudioServiceCreateOnlyDefaultAndStrictCASReplacement(t *testing.T) 
 		// p содержит полный профиль, проверяемый на сохранение LIVE-аудиорежима.
 		p := storageProfile()
 		p.Mode = mode
+		if mode == core.ModeTranscode {
+			p.Format.Video.Codec = core.CodecH264
+			p.Format.Video.CodecProfile = "high"
+		}
 		// created содержит новый профиль с назначенным при создании LiveAudioCopy. err сообщает
 		// об ошибке сохранения полного именованного профиля.
 		created, err := svc.CreateProfile(ctx, core.TranscodeProfile{Name: "Новый профиль", Profile: p})

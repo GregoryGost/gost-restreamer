@@ -407,7 +407,7 @@ func newRuntimeAcceptanceFixture(t *testing.T) acceptanceRuntimeFixture {
 		}
 	}
 	// g содержит поколение подготовки всех требуемых профилей контрольного Stream.
-	g, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: "runtime-generator"})
+	g, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: core.CurrentFallbackGeneratorVersion})
 	if err != nil {
 		t.Fatal(err)
 	}

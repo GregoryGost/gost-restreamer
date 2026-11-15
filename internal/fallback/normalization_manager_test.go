@@ -106,6 +106,7 @@ func TestManagerPublishesOnlyCompleteNormalizedBundle(t *testing.T) {
 			normalized, verified, loops := 0, 0, 0
 			// config содержит конечные бюджеты проверяемого менеджера.
 			config := acceptanceManagerConfig()
+			config.GeneratorVersion = core.CurrentFallbackGeneratorVersion
 			// Контролируемые порты проверяют файловый протокол Manager, а не декодирование кодеков.
 			// pending проверяет сохранение прежнего current и возвращает ещё не
 			// опубликованное поколение.

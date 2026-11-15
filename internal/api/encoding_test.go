@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"math"
 	"net/http/httptest"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,9 +17,8 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
-// Проверяет точную сериализацию Decimal и произвольных байтов ProfileText, отклоняя недопустимые числа
-// и представления base64.
-func TestDecimalAndProfileTextPreserveExactValues(t *testing.T) {
+// Проверяет точную сериализацию Decimal и отклонение недопустимых чисел.
+func TestDecimalPreservesExactValues(t *testing.T) {
 	// v задаёт очередное точное uint64, включая значения за пределами точности JavaScript.
 	for _, v := range []uint64{0, 9007199254740993, math.MaxUint64} {
 		// b содержит числовой JSON-токен Decimal; e содержит отказ её сериализации.
@@ -35,27 +33,6 @@ func TestDecimalAndProfileTextPreserveExactValues(t *testing.T) {
 		var decoded Decimal
 		if e = json.Unmarshal(b, &decoded); e != nil || uint64(decoded) != v {
 			t.Fatal(string(b), decoded, e)
-		}
-	}
-	// s задаёт обычную UTF-8-строку, пустоту или произвольные невалидные UTF-8 байты профиля.
-	for _, s := range []string{"", "Обычная строка", string([]byte{0xff, 0xfe, 'a'})} {
-		// b содержит выбранное JSON-представление ProfileText; e содержит отказ сериализации.
-		b, e := json.Marshal(ProfileText(s))
-		if e != nil {
-			t.Fatal(e)
-		}
-		// decoded принимает ProfileText после обратного чтения для проверки неизменных байтов.
-		var decoded ProfileText
-		if e = json.Unmarshal(b, &decoded); e != nil || string(decoded) != s {
-			t.Fatal(string(b), e)
-		}
-	}
-	// b задаёт очередное недопустимое JSON-представление ProfileText.
-	for _, b := range []string{`null`, `1`, `{"encoding":"hex","value":"ff"}`, `{"encoding":"base64","value":"_bad"}`, `{"encoding":"base64","value":"YQ==","extra":true}`} {
-		// decoded принимает возможное ошибочно допущенное значение неверного ProfileText.
-		var decoded ProfileText
-		if json.Unmarshal([]byte(b), &decoded) == nil {
-			t.Fatalf("Недопустимое представление принято: %s", b)
 		}
 	}
 	// s задаёт недопустимую десятичную запись: пустую, с ведущим нулём, знаком или переполнением.
@@ -121,7 +98,7 @@ func TestFramesAreBoundedAndEncodeDataWithoutFrameInjection(t *testing.T) {
 	}
 }
 
-// Проверяет различие измеренного нуля и недоступности в DTO и сохранение точных байтов медиаформата.
+// Проверяет различие измеренного нуля и недоступности и проекцию неизвестных измерений.
 func TestMetricProjectionSeparatesUnavailableAndMeasuredZero(t *testing.T) {
 	// zero содержит публичную измеренную нулевую скорость с доступным значением.
 	zero := rateDTO(core.Rate{Status: core.MetricAvailable, Value: 0, Duration: time.Nanosecond})
@@ -137,10 +114,10 @@ func TestMetricProjectionSeparatesUnavailableAndMeasuredZero(t *testing.T) {
 	}
 	// before задаёт доменный медиаформат с невалидными UTF-8 байтами строковых полей.
 	before := core.MediaFormat{Video: core.VideoFormat{CodecProfile: string([]byte{0xff}), Color: core.ColorInfo{Range: string([]byte{0x80})}}, Audio: core.AudioFormat{ChannelLayout: string([]byte{0xfe})}}
-	// after содержит медиаформат после полного преобразования в DTO и обратно.
-	after := formatDTO(before).domain()
-	if !reflect.DeepEqual(before, after) {
-		t.Fatal("Преобразование изменило байты профиля")
+	// after содержит безопасную проекцию неизвестных строк исходного измерения.
+	after := measuredFormatDTO(before)
+	if after.Video.CodecProfile != "UNKNOWN" || after.Video.Color.Range != "UNKNOWN" || after.Audio.ChannelLayout != "UNKNOWN" {
+		t.Fatal("Неизвестные измерения не закрыты", after)
 	}
 }
 
@@ -184,7 +161,7 @@ type invalidTimestampCapabilities struct{}
 func (invalidTimestampCapabilities) Snapshot(context.Context) (CapabilitiesDTO, error) {
 	// at задаёт год 10000, который нельзя сериализовать стандартным time.Time JSON.
 	at := time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
-	return CapabilitiesDTO{FFmpeg: CapabilityDTO{Status: "unavailable", Reason: "executable_unavailable", CheckedAt: &at}}, nil
+	return CapabilitiesDTO{FFmpeg: CapabilityDTO{Status: "unavailable", Reason: "executable_unavailable", CheckedAt: &at}, FFprobe: CapabilityDTO{Status: "unavailable", Reason: "not_configured"}, Helper: CapabilityDTO{Status: "unavailable", Reason: "not_configured"}, NVIDIA: CapabilityDTO{Status: "unverified", Reason: "hardware_not_verified"}}, nil
 }
 
 // Проверяет безопасный статус 500 для непредставимого ответа до публикации заголовков и без исходного

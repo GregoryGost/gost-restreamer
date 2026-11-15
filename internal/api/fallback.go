@@ -19,7 +19,7 @@ type AssetListInput struct {
 	// PageParams содержит параметры ограниченной страницы и курсора списка заглушек.
 	PageParams
 	// State ограничивает список заглушек выбранным состоянием PREPARING, READY или FAILED.
-	State string `query:"state" enum:"PREPARING,READY,FAILED"`
+	State string `query:"state" enum:",PREPARING,READY,FAILED"`
 }
 
 // AssetCreate задаёт тело запроса создания именованной заглушки без загрузки содержимого.
@@ -48,7 +48,7 @@ type VariantListInput struct {
 	// GenerationID выбирает точное поколение; пустое значение оставляет текущее поколение заглушки.
 	GenerationID string `query:"generation_id"`
 	// State ограничивает варианты выбранным состоянием подготовки.
-	State string `query:"state" enum:"PREPARING,READY,FAILED"`
+	State string `query:"state" enum:",PREPARING,READY,FAILED"`
 }
 
 // RebuildInput задаёт заглушку и ожидаемую ревизию для повторной подготовки сохранённого оригинала.

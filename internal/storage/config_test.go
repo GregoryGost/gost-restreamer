@@ -206,7 +206,7 @@ func TestConfigurationConstraintsAndRollbackAreRealSQLite(t *testing.T) {
 	}
 }
 
-// Проверяет точное сохранение прежнего профиля в SQLite, включая исходную дробь FPS, строковые байты и
+// Проверяет точное сохранение прежнего профиля в SQLite, включая исходную дробь FPS, строгие строковые настройки и
 // MaxUint64.
 func TestStoredProfilePreservesBytesRationalAndMaxUint64(t *testing.T) {
 	// f объединяет временный Store, Service, поток и опубликованную заглушку проверяемого сценария.
@@ -216,7 +216,7 @@ func TestStoredProfilePreservesBytesRationalAndMaxUint64(t *testing.T) {
 	p.Profile.Format.Video.FrameRate = core.FrameRate{Numerator: 60000, Denominator: 2002}
 	p.Profile.VideoEncoding.TargetBitrateBPS, p.Profile.VideoEncoding.MaxBitrateBPS = math.MaxUint64, math.MaxUint64
 	p.Profile.VideoEncoding.BufferBits, p.Profile.AudioEncoding.BitrateBPS = math.MaxUint64, math.MaxUint64
-	p.Profile.Format.Video.CodecProfile = string([]byte{0xff, 0, 'x'})
+	p.Profile.Format.Video.Level = "4.1"
 	// updated содержит результат условного сохранения изменённой конфигурации. err сообщает об
 	// ошибке условного изменения полного профиля.
 	updated, err := f.service.UpdateProfile(context.Background(), p, p.Revision)
@@ -225,7 +225,7 @@ func TestStoredProfilePreservesBytesRationalAndMaxUint64(t *testing.T) {
 	}
 	// err сообщает об ошибке чтения сохранённого полного профиля.
 	if err := f.store.View(context.Background(), func(r core.Repositories) error {
-		// Сверяет прочитанный профиль с сохранённым, включая точные строковые байты, несокращённый FPS и
+		// Сверяет прочитанный профиль с сохранённым, включая строгие строки, несокращённый FPS и
 		// math.MaxUint64.
 
 		// got содержит прочитанное сохраняемое значение для проверки результата операции. err
@@ -287,7 +287,7 @@ func publishFixtureGeneration(t *testing.T, svc *core.Service, a core.FallbackAs
 	ctx := context.Background()
 	// g содержит новое поколение с зарезервированным полным набором профилей и путей. err сообщает
 	// об ошибке резервирования полного поколения подготовки.
-	g, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: a.ID, ExpectedRevision: a.Revision, Kind: core.AssetImage, GeneratorVersion: "generator-v1"})
+	g, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: a.ID, ExpectedRevision: a.Revision, Kind: core.AssetImage, GeneratorVersion: core.CurrentFallbackGeneratorVersion})
 	if err != nil {
 		t.Fatalf("зарезервировать подготовку поколения: %v", err)
 	}

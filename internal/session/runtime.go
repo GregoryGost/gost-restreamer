@@ -412,7 +412,13 @@ func (n *sessionNode) initialize(ctx context.Context) error {
 // acquire регистрирует операцию членства до запуска его работника и возвращает прежнее членство только
 // для того же поколения выхода. Закрытие, исключённое поколение и исчерпание бюджета запрещают новую
 // регистрацию.
+// ctx ограничивает регистрацию, output фиксирует поколение и снимок. Пригодность снимка проверяется
+// до возврата существующего членства, чтобы прежний допуск не обходил аннулирование файла.
 func (n *sessionNode) acquire(ctx context.Context, output core.SessionOutput) (*membership, error) {
+	// err содержит отказ использования сохранённого снимка до регистрации членства.
+	if err := output.Snapshot.ValidateUsable(); err != nil {
+		return nil, err
+	}
 	if output.Snapshot.Artifact.GeneratorVersion != n.manager.config.GeneratorVersion {
 		return nil, core.ErrNotReady
 	}
@@ -447,7 +453,13 @@ func (n *sessionNode) acquire(ctx context.Context, output core.SessionOutput) (*
 
 // openPreparedFile отклоняет манифест другой версии генератора и открывает закреплённый файл через
 // проверку FileStore.
+// ctx ограничивает чтение, manifest сохраняет точную привязку; пригодность проверяется при каждом
+// открытии, включая повторную попытку проигрывателя.
 func (m *Manager) openPreparedFile(ctx context.Context, manifest core.ArtifactManifest) (*os.File, error) {
+	// err содержит отказ пригодности перед обращением к файловому хранилищу.
+	if err := manifest.ValidateUsable(); err != nil {
+		return nil, err
+	}
 	if manifest.GeneratorVersion != m.config.GeneratorVersion {
 		return nil, core.ErrNotReady
 	}

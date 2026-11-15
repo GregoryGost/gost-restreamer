@@ -13,8 +13,7 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
-// Проверяет сохранение точных строковых байтов, полного uint64, исходной дроби FPS и вложенного снимка
-// после кодирования и чтения.
+// Проверяет сохранение допустимых строк, полного uint64, исходной дроби FPS и вложенного снимка.
 func TestProfileMetadataPreservesExactAcceptedValues(t *testing.T) {
 	// p содержит отдельный полный профиль текущего сценария проверки.
 	p := validProfile()
@@ -23,12 +22,7 @@ func TestProfileMetadataPreservesExactAcceptedValues(t *testing.T) {
 	p.VideoEncoding.MaxBitrateBPS = math.MaxUint64
 	p.VideoEncoding.BufferBits = math.MaxUint64
 	p.AudioEncoding.BitrateBPS = math.MaxUint64
-	// raw содержит пробелы, некорректный UTF-8 и нулевой байт для проверки точного хранения строк.
-	raw := string([]byte{' ', 0xff, 0, 'x', ' '})
-	p.Format.Video.CodecProfile, p.Format.Video.Level, p.Format.Video.Tier = raw, raw, raw
-	p.Format.Video.PixelFormat = raw
-	p.Format.Video.Color = core.ColorInfo{Range: raw, Primaries: raw, Transfer: raw, Matrix: raw}
-	p.Format.Audio.CodecProfile, p.Format.Audio.ChannelLayout = raw, raw
+	p.Format.Video.Color.Range = "tv"
 	// err сообщает об ошибке проверки допустимости профиля.
 	if err := p.Validate(); err != nil {
 		t.Fatalf("исходный принятый профиль недопустим: %v", err)
@@ -80,6 +74,24 @@ func TestProfileMetadataPreservesExactAcceptedValues(t *testing.T) {
 	restored, err := core.DecodeSessionSnapshot(snapshotData)
 	if err != nil || !reflect.DeepEqual(snapshot, restored) {
 		t.Fatalf("снимок изменён после хранения: ошибка %v", err)
+	}
+	// observed содержит самостоятельное измерение, чьи строки внутренний байтовый кодек не нормализует.
+	observed := p.Format
+	// raw содержит непустую последовательность с некорректным UTF-8 и нулевым байтом для проверки измерений.
+	raw := string([]byte{' ', 0xff, 0, 'x', ' '})
+	observed.Video.CodecProfile, observed.Video.Level, observed.Video.Tier = raw, raw, raw
+	observed.Video.PixelFormat = raw
+	observed.Video.Color = core.ColorInfo{Range: raw, Primaries: raw, Transfer: raw, Matrix: raw}
+	observed.Audio.CodecProfile, observed.Audio.ChannelLayout = raw, raw
+	// observedData содержит внутреннее byte-представление измеренного формата.
+	observedData, err := core.EncodeMediaFormat(observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// decodedObserved содержит восстановленные raw-измерения без подмены UNKNOWN.
+	decodedObserved, err := core.DecodeMediaFormat(observedData)
+	if err != nil || decodedObserved != observed {
+		t.Fatalf("внутренние байты измерения изменены: %v", err)
 	}
 }
 
@@ -227,6 +239,12 @@ func TestProfileIdentityUsesRationalFPSAndEveryProfileField(t *testing.T) {
 			// канонические байты изменённого полного профиля. err сообщает об ошибке
 			// вычисления канонической идентичности профиля.
 			otherKey, otherContent, err := core.ProfileIdentity(other)
+			if other.Validate() != nil {
+				if !errors.Is(err, core.ErrInvalidProfile) || otherKey != "" || len(otherContent) != 0 {
+					t.Fatalf("недопустимое изменение получило идентичность: %v", err)
+				}
+				return
+			}
 			if err != nil || otherKey == key || bytes.Equal(otherContent, content) {
 				t.Fatalf("изменение поля не различено: ключ %q, ошибка %v", otherKey, err)
 			}

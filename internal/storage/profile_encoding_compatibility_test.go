@@ -158,7 +158,9 @@ func assertFrozenEncodingRows(t *testing.T, s *Store, state frozenEncodingState)
 			if err := s.sqlDB.QueryRow("SELECT payload FROM "+table+" WHERE id = ?", id).Scan(&got); err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(got, want) {
+			if table == "profiles" && id == "63401ed7d9e9c781e3a13b745736e615" {
+				assertFrozenSanitizedProfile(t, got, want)
+			} else if !bytes.Equal(got, want) {
 				t.Fatalf("Открытие переписало прежние байты %s/%s", table, id)
 			}
 		}
@@ -305,7 +307,7 @@ func TestFrozenLegacyDatabaseOpenRecoveryReplayAndCursor(t *testing.T) {
 	// diagnostics содержит фактически прочитанные версии SQLite и схемы Goose. err сообщает об
 	// ошибке чтения версий SQLite и схемы Goose.
 	diagnostics, err := s.Diagnostics(ctx)
-	if err != nil || diagnostics.SchemaVersion != 1 || diagnostics.SQLiteVersion == "" {
+	if err != nil || diagnostics.SchemaVersion != 2 || diagnostics.SQLiteVersion == "" {
 		t.Fatalf("Goose/schema: %+v, %v", diagnostics, err)
 	}
 	t.Logf("SQLite %s, Goose schema %d", diagnostics.SQLiteVersion, diagnostics.SchemaVersion)
@@ -358,8 +360,8 @@ func TestFrozenLegacyNameChangesPreserveIdentityAndHistory(t *testing.T) {
 	assertFrozenEncodingSnapshots(t, svc, state)
 }
 
-// Проверяет точные старые подтверждения очистки и сохранение нового ручного запуска и его удержаний
-// варианта после восстановления прежней БД.
+// Проверяет повтор старых подтверждений очистки после ручной пересборки и нового запуска.
+// Поздние подтверждения не снимают удержания нового варианта.
 func TestFrozenLegacyCleanupFencesRetainNewExecution(t *testing.T) {
 	// s содержит открытый Store рабочей копии эталонной базы. svc предоставляет доменные операции
 	// текущего владельца временного Store. state содержит эталонные идентификаторы, снимки,
@@ -370,6 +372,39 @@ func TestFrozenLegacyCleanupFencesRetainNewExecution(t *testing.T) {
 	// request содержит прежний точный запрос с новым RequestID для ручного запуска.
 	request := state.StartRequest
 	request.RequestID = "manual-after-legacy-recovery"
+	// err должен сохранить отказ старого генератора до принятия нового запуска.
+	if _, err := svc.StartSession(ctx, request); !errors.Is(err, core.ErrNotReady) {
+		t.Fatalf("Прежний генератор допущен к новому запуску: %v", err)
+	}
+	// sessionID выбирает старое выполнение, которое завершается до ручной пересборки.
+	for _, sessionID := range []core.ID{state.TerminalSessionID, state.ActiveSessionID} {
+		// page содержит прежние обязательства очистки, err сообщает отказ их чтения.
+		page, err := svc.ListCleanups(ctx, core.PageRequest{Query: core.ListQuery{Limit: 100, SessionID: sessionID, PendingOnly: true}})
+		if err != nil || len(page.Items) != 2 {
+			t.Fatalf("Потеряны прежние обязательства очистки: %v", err)
+		}
+		// intent подтверждает физическое завершение прежней попытки перед пересборкой.
+		for _, intent := range page.Items {
+			// err сообщает об ошибке подтверждения точного прежнего обязательства очистки.
+			if err := svc.AcknowledgeCleanup(ctx, core.CleanupFenceFor(intent)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// asset сохраняет исходник текущего поколения для ручного формирования нового комплекта;
+	// err сообщает об ошибке чтения этой заглушки.
+	asset, err := svc.GetAsset(ctx, state.AssetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// variant содержит новый пригодный вариант; прежние снимки и обязательства очистки сохраняются.
+	_, variant := publishFixtureGeneration(t, svc, asset, "current-source", "current-content")
+	// index выбирает точную привязку группы, переключаемую только явным новым запросом.
+	for index := range request.Bindings {
+		request.Bindings[index].GenerationID = variant.GenerationID
+		request.Bindings[index].VariantID = variant.ID
+		request.Bindings[index].GeneratorVersion = variant.GeneratorVersion
+	}
 	// started содержит квитанцию нового запуска при остатках прежних выполнений. err сообщает об
 	// ошибке принятия ручного запуска потока.
 	started, err := svc.StartSession(ctx, request)
@@ -380,7 +415,7 @@ func TestFrozenLegacyCleanupFencesRetainNewExecution(t *testing.T) {
 	for _, sessionID := range []core.ID{state.TerminalSessionID, state.ActiveSessionID} {
 		// page содержит страницу профилей либо очистки для проверки прежнего контракта. err
 		// сообщает об ошибке чтения страницы намерений очистки.
-		page, err := svc.ListCleanups(ctx, core.PageRequest{Query: core.ListQuery{Limit: 100, SessionID: sessionID, PendingOnly: true}})
+		page, err := svc.ListCleanups(ctx, core.PageRequest{Query: core.ListQuery{Limit: 100, SessionID: sessionID}})
 		if err != nil || len(page.Items) != 2 {
 			t.Fatalf("Потеряны независимые cleanup intents: %+v, %v", page, err)
 		}
@@ -403,9 +438,9 @@ func TestFrozenLegacyCleanupFencesRetainNewExecution(t *testing.T) {
 	if err != nil || current.State != core.SessionStarting {
 		t.Fatalf("Прежний cleanup затронул новый запуск: %+v, %v", current, err)
 	}
-	requireOutputVariantHolds(t, s, state.VariantID, true)
+	requireOutputVariantHolds(t, s, variant.ID, true)
 	// variant содержит точный опубликованный вариант тестового поколения.
-	variant, err := svc.GetVariant(ctx, state.VariantID)
+	variant, err = svc.GetVariant(ctx, variant.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,5 +597,71 @@ func TestExplicitEncodingPreparationUsesNewIdentityAndPreservesCurrentOnConflict
 	outputs := readOutputs(t, f.store, start.SessionID)
 	if len(outputs) != 1 || outputs[0].Snapshot.Profile.Profile.Encoding != variant.Profile.Encoding || outputs[0].Snapshot.Artifact.ProfileKey != variant.ProfileKey || !bytes.Equal(outputs[0].Snapshot.Artifact.CanonicalProfile, variant.CanonicalProfile) {
 		t.Fatalf("Output snapshot/manifest потерял полную идентичность: %+v", outputs)
+	}
+}
+
+// assertFrozenSanitizedProfile сверяет единственный прежний профиль с произвольными байтами в want.
+// got должен отличаться только закрытыми строками Format; исходные числа, версия и Record сохраняются.
+func assertFrozenSanitizedProfile(t *testing.T, got, want []byte) {
+	t.Helper()
+	// original читает прежний Format структурно, обходя только старую открытую desired-валидацию.
+	var original struct { /* Version хранит версию метаданных; Payload отделяет профиль от Record. */
+		Version int
+		Payload struct { /* Profile выделяет формат без изменения остальных исходных полей. */
+			Profile struct { /* Format содержит прежние структурно допустимые байты. */
+				Format core.MediaFormat
+			}
+		}
+	}
+	// err сообщает об ошибке чтения прежнего структурного формата эталона.
+	if err := json.Unmarshal(want, &original); err != nil {
+		t.Fatal(err)
+	}
+	// expectedFormat сохраняет прежние числа и заменяет ровно неподдержанные строки этой фикстуры.
+	expectedFormat := original.Payload.Profile.Format
+	expectedFormat.Video.CodecProfile = "main"
+	expectedFormat.Video.Level = ""
+	expectedFormat.Video.Tier = ""
+	expectedFormat.Video.PixelFormat = "yuv420p"
+	expectedFormat.Video.Color = core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}
+	expectedFormat.Audio.CodecProfile = "LC"
+	expectedFormat.Audio.ChannelLayout = "stereo"
+	// expected читает исходное представление без преобразования целых чисел во float64.
+	var expected map[string]json.RawMessage
+	// err сообщает об ошибке разбора внешней оболочки исходного эталона.
+	if err := json.Unmarshal(want, &expected); err != nil {
+		t.Fatal(err)
+	}
+	// payload и profile дают доступ только к заменяемому Format исходного JSON.
+	var payload, profile map[string]json.RawMessage
+	// err сообщает об ошибке чтения содержимого прежней записи профиля.
+	if err := json.Unmarshal(expected["Payload"], &payload); err != nil {
+		t.Fatal(err)
+	}
+	// err сообщает об ошибке чтения самостоятельного прежнего профиля из его оболочки.
+	if err := json.Unmarshal(payload["Profile"], &profile); err != nil {
+		t.Fatal(err)
+	}
+	// formatBytes содержат независимый ожидаемый структурный формат, err сообщает отказ кодирования.
+	formatBytes, err := core.EncodeMediaFormat(expectedFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile["Format"] = formatBytes
+	payload["Profile"], err = json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected["Payload"], err = json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// expectedBytes содержат точное ожидаемое преобразование при прежних всех остальных RawMessage.
+	expectedBytes, err := json.Marshal(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(expectedBytes, got) {
+		t.Fatal("Миграция изменила числа, Record или поля за пределами прежних открытых строк")
 	}
 }

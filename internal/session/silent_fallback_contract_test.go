@@ -4,16 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net"
 	"os"
 	"reflect"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +23,92 @@ import (
 // silentContractGenerator задаёт версию беззвучной заглушки, требуемую менеджером в контрактных
 // проверках.
 const silentContractGenerator = "fallback-fmp4-silent-v2"
+
+// silentContractLegacyVariant воспроизводит историю прежнего генератора в изолированной SQLite f.
+// Обычные репозитории не предоставляют изменения происхождения готового файла, поэтому тест пишет
+// согласованные payload и SQL-проекцию напрямую; работающий Manager ещё не получил команд.
+func silentContractLegacyVariant(t *testing.T, f *managerFixture) {
+	t.Helper()
+	// ctx ограничивает чтение исходных записей временем жизни теста.
+	ctx := context.Background()
+	// generation содержит историческое поколение; err сообщает отказ чтения и сохранения тестовой истории.
+	generation, err := f.service.GetGeneration(ctx, f.binding.GenerationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// variant содержит точный вариант сохраняемого поколения.
+	variant, err := f.service.GetVariant(ctx, f.binding.VariantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation.GeneratorVersion, variant.GeneratorVersion = "legacy-generator", "legacy-generator"
+	f.binding.GeneratorVersion = variant.GeneratorVersion
+	// db открывает только файл временной базы f для построения прежнего состояния.
+	db, err := sql.Open("sqlite3", f.databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		// err сообщает отказ закрытия вспомогательного подключения теста.
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	// generationData содержит строгие исторические метаданные поколения.
+	generationData, err := core.EncodeMetadata(generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// variantData содержит строгие исторические метаданные варианта.
+	variantData, err := core.EncodeMetadata(variant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.ExecContext(ctx, "UPDATE fallback_generations SET payload=? WHERE id=?", generationData, generation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.ExecContext(ctx, "UPDATE fallback_variants SET generator_version=?, payload=? WHERE id=?", variant.GeneratorVersion, variantData, variant.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// silentContractLegacyOutputs воспроизводит принятые прежним бинарником снимки выходов Session.
+// f владеет временной SQLite; session выбирает записи. Вызывающий удерживает manager.mu до завершения,
+// чтобы диспетчер не начал команду между созданием снимка и записью исторического payload.
+func silentContractLegacyOutputs(t *testing.T, f managerFixture, session core.ID) {
+	t.Helper()
+	// ctx задаёт контекст создания контролируемой истории.
+	ctx := context.Background()
+	// outputs содержит ещё не исполняемые выходы выбранного запуска; err сообщает отказ операций.
+	outputs, err := f.service.ListOutputs(ctx, core.PageRequest{Query: core.ListQuery{Limit: 8, SessionID: session}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// db открывает только изолированный файл тестовой базы для записи исторического снимка.
+	db, err := sql.Open("sqlite3", f.databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		// err сообщает отказ закрытия дополнительного подключения теста.
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	// output содержит очередной неизменяемый снимок, созданный до обновления генератора.
+	for _, output := range outputs.Items {
+		output.Snapshot.Artifact.GeneratorVersion = "legacy-generator"
+		// payload содержит полную историческую запись с неизменными командами, ID и остальными полями;
+		// err сообщает об ошибке кодирования этой самостоятельной записи.
+		payload, err := core.EncodeMetadata(output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = db.ExecContext(ctx, "UPDATE outputs SET payload=? WHERE id=?", payload, output.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 // silentContractNoNetwork заменяет сетевое подключение счётчиком попыток и отказом, чтобы тест
 // обнаруживал любой выход к сети.
@@ -57,6 +141,7 @@ func TestSilentFallbackRejectsLegacyBindingsWithoutAdmission(t *testing.T) {
 			return ffmpeg.Command{}, core.ErrInvalid
 		}
 	})
+	silentContractLegacyVariant(t, &f)
 	// ctx задаёт контекст проверки допуска старых привязок.
 	ctx := context.Background()
 	// variant содержит исходный исторический вариант; err сообщает отказ его чтения до отклонения
@@ -158,7 +243,12 @@ func TestSilentFallbackAcceptedLegacySessionFailsBeforeFeed(t *testing.T) {
 	// request изображает запуск, принятый сервисом до проверки новой версии генератора менеджером.
 	request := core.StartSessionRequest{RequestID: "accepted-legacy-session", StreamID: f.stream.ID, Bindings: []core.PreparedBinding{f.binding}}
 	// accepted содержит сохранённую команду старого запуска; err сообщает отказ её приёма сервисом.
+	f.manager.mu.Lock()
 	accepted, err := f.service.StartSession(ctx, request)
+	if err == nil {
+		silentContractLegacyOutputs(t, f, accepted.SessionID)
+	}
+	f.manager.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +302,12 @@ func TestSilentFallbackAcceptedLegacyOutputCannotStartOrRestart(t *testing.T) {
 	// Сохранённая команда могла быть принята до смены серверной версии генератора.
 	// accepted содержит сохранённую команду добавления старого назначения; err сообщает отказ её
 	// приёма сервисом.
+	f.manager.mu.Lock()
 	accepted, err := f.service.AddOutput(ctx, request)
+	if err == nil {
+		silentContractLegacyOutputs(t, f, accepted.SessionID)
+	}
+	f.manager.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,23 +351,24 @@ func TestSilentFallbackAcceptedLegacyOutputCannotStartOrRestart(t *testing.T) {
 		case <-ticker.C:
 		}
 	}
-	// restart содержит команду повторного запуска назначения с сохранённым старым снимком.
-	restart, err := f.manager.StartOutput(ctx, core.OutputCommand{RequestID: "restart-legacy-output", OutputID: accepted.OutputID})
+	// beforeRestart фиксирует поколение после штатной компенсации отказа до отклоняемого перезапуска.
+	beforeRestart, err := f.service.GetOutput(ctx, accepted.OutputID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// result содержит отказ повторного запуска по версии генератора.
-	if result := waitReceipt(t, f, restart); result.Status != core.CommandFailed || !strings.Contains(result.Failure, core.ErrNotReady.Error()) {
-		t.Fatal("перезапуск использовал старую заглушку", result)
+	// restart содержит ответ отказа до приёма новой команды по старому снимку.
+	restart, err := f.manager.StartOutput(ctx, core.OutputCommand{RequestID: "restart-legacy-output", OutputID: accepted.OutputID})
+	if !errors.Is(err, core.ErrNotReady) || restart.ID != "" {
+		t.Fatal("перезапуск принял старую заглушку", restart, err)
 	}
 	// after содержит снимок и новое поколение назначения после отказавшего повторного запуска.
 	after, err := f.service.GetOutput(ctx, accepted.OutputID)
-	if err != nil || !bytes.Equal(original, silentContractSnapshotBytes(t, after.Snapshot)) || after.Generation <= before.Generation {
+	if err != nil || !bytes.Equal(original, silentContractSnapshotBytes(t, after.Snapshot)) || after.Generation != beforeRestart.Generation {
 		t.Fatal("перезапуск подменил закреплённый снимок", after, err)
 	}
 	// file предоставляет чтение исторического файла по сохранённому манифесту после отказа
 	// перезапуска.
-	file, err := f.files.OpenVerified(ctx, after.Snapshot.Artifact)
+	file, err := f.files.OpenExact(ctx, after.Snapshot.Artifact.ManagedPath, after.Snapshot.Artifact.SizeBytes, after.Snapshot.Artifact.ContentHash)
 	if err != nil {
 		t.Fatal("исторический файл перестал читаться", err)
 	}
@@ -353,6 +449,7 @@ func TestSilentFallbackChecksGeneratorBeforeMembershipReuse(t *testing.T) {
 		silentContractPublishCurrent(t, c)
 		c.GeneratorVersion = silentContractGenerator
 	})
+	silentContractLegacyVariant(t, &f)
 	// ctx задаёт контекст проверки повторного использования членства и открытия файлов.
 	ctx := context.Background()
 	// parent содержит успешный запуск с текущей версией заглушки.
@@ -429,158 +526,73 @@ func TestSilentFallbackChecksGeneratorBeforeMembershipReuse(t *testing.T) {
 	}
 }
 
-// silentContractLog сериализует накопление и копирование JSON-журнала проверяемых попыток.
-type silentContractLog struct {
-	// mu защищает общий буфер журнала при записи и получении копии.
-	mu sync.Mutex
-	// Buffer хранит байты синтетического журнала попыток открытия заглушки.
-	bytes.Buffer
-}
-
-// Write сериализует запись проверочных сообщений журнала в общий буфер.
-func (l *silentContractLog) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.Buffer.Write(p)
-}
-
-// records возвращает независимую копию накопленного журнала под блокировкой.
-func (l *silentContractLog) records() []byte {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return bytes.Clone(l.Bytes())
-}
-
-// TestSilentFallbackSessionOpenerRejectsEveryLegacyPlayerAttempt проверяет отказ версии при каждом
-// открытии старого манифеста, включая повтор проигрывателя в обход раннего допуска членства.
+// TestSilentFallbackSessionOpenerRejectsEveryLegacyPlayerAttempt проверяет отказ старому манифесту
+// на прямом входе реестра и при каждом повторном открытии до обращения к диску и построения процесса.
 func TestSilentFallbackSessionOpenerRejectsEveryLegacyPlayerAttempt(t *testing.T) {
-	// templateOpens считает вызовы шаблонного открытия; players считает построения проигрывателя;
-	// network считает сетевые подключения при проверке старого манифеста.
-	var templateOpens, players, network atomic.Uint64
-	// logs накапливает журнал результатов попыток для проверки повторного отказа версии.
-	logs := &silentContractLog{}
-	// f предоставляет старый вариант и текущий генератор с одним разрешённым повтором проигрывателя.
+	// players считает построения проигрывателя; network считает сетевые подключения.
+	var players, network atomic.Uint64
+	// f предоставляет текущую заглушку и порты, обнаруживающие внешнее выполнение.
 	f := newManagerFixture(t, false, func(c *Config) {
-		// Настраивает текущую версию генератора, журнал, один повтор проигрывателя и счётчики всех внешних
-		// границ.
-
-		c.GeneratorVersion = silentContractGenerator
-		c.Logger = slog.New(slog.NewJSONHandler(logs, nil))
-		c.Group.FFmpeg.MaxRestarts = 1
-		c.Group.OpenFile = func(ctx context.Context, manifest core.ArtifactManifest) (*os.File, error) {
-			// Учитывает обращение к открытию файла из шаблона группы и выполняет проверку FileStore, если оно
-			// достижимо.
-
-			templateOpens.Add(1)
-			return c.Files.OpenVerified(ctx, manifest)
-		}
-		// original сохраняет исходный построитель команды под счётчиком вызовов.
-		original := c.Group.Player
-		c.Group.Player = func(ctx context.Context, binary string, file *os.File, attempt ffmpeg.Attempt) (ffmpeg.Command, error) {
-			// Учитывает построение проигрывателя и передаёт аргументы исходному построителю, если проверка версии
-			// пропустила попытку.
-
+		// Подменяет запуск проигрывателя и сеть счётчиками для проверки раннего отказа.
+		c.Group.Player = func(context.Context, string, *os.File, ffmpeg.Attempt) (ffmpeg.Command, error) {
+			// Учитывает недопустимое построение процесса без запуска программы.
 			players.Add(1)
-			return original(ctx, binary, file, attempt)
+			return ffmpeg.Command{}, core.ErrInvalid
 		}
 		silentContractNoNetwork(c, &network)
 	})
-	// ctx ограничивает проверку попыток открытия десятью секундами; cancel освобождает этот срок.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	// parent содержит успешный запуск сессии без начальных назначений.
+	// ctx задаёт контекст проверки синтетической истории.
+	ctx := context.Background()
+	// parent содержит работающего родителя без начального назначения.
 	parent := startAdmissionParent(t, f)
 	f.manager.mu.Lock()
-	// accepted содержит сохранённое добавление старого назначения, скрытое от диспетчера; err
-	// сообщает отказ приёма сервисом.
+	// accepted сохраняет добавление до преобразования снимка в исторический; err сообщает отказ.
 	accepted, err := f.service.AddOutput(ctx, core.AddOutputRequest{RequestID: "legacy-player-attempts", SessionID: parent.SessionID, DestinationID: f.destination.ID, Binding: f.binding})
 	if err == nil {
 		f.manager.commands[accepted.ID] = true
+		silentContractLegacyOutputs(t, f, parent.SessionID)
 	}
-	// node указывает локальные ресурсы родителя для прямого получения группы в обход раннего допуска
-	// членства.
+	// node предоставляет реестр родителя для обхода более ранней проверки членства.
 	node := f.manager.sessions[parent.SessionID]
 	f.manager.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// output содержит настоящий сохранённый снимок старого назначения.
+	// output содержит настоящий сохранённый снимок с прежним генератором.
 	output, err := f.service.GetOutput(ctx, accepted.OutputID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// manifest содержит исторический манифест для проверки каждого открытия проигрывателя.
+	// manifest сохраняет историческую привязку для повторных проверок открытия.
 	manifest := output.Snapshot.Artifact
-	// file предоставляет проверенное чтение физически исправного старого файла до проверки версии
-	// менеджером.
-	file, err := f.files.OpenVerified(ctx, manifest)
-	if err != nil {
-		t.Fatal("контрпример требует физически исправный старый файл", err)
+	if err = manifest.Validate(); err != nil {
+		t.Fatal("исторический контракт повреждён", err)
 	}
-	if err = file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	// Registry получает настоящий сохранённый снимок в обход более раннего допуска членства в группе.
-	// ref содержит прямую ссылку реестра на группу со старым манифестом.
-	ref, err := node.registry.Acquire(ctx, output.Snapshot, node.router)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		// Освобождает прямую ссылку реестра на группу после проверки отказов открытия старого манифеста.
-
-		// err сообщает отказ освобождения прямой ссылки группы при очистке теста.
-		if err := ref.CloseContext(context.Background()); err != nil {
-			t.Error(err)
-		}
-	})
-	if err = ref.Group().WaitReady(ctx); !errors.Is(err, core.ErrNotReady) {
-		t.Fatal("принадлежащая Session функция открытия допустила старый файл", err)
-	}
-	// results связывает номер попытки с наличием отказа версии генератора в её результате.
-	results := map[uint64]bool{}
-	// decoder разбирает накопленные JSON-события результатов попыток.
-	decoder := json.NewDecoder(bytes.NewReader(logs.records()))
-	for {
-		// record содержит очередное событие журнала для извлечения результата попытки.
-		var record struct {
-			// Operation выбирает события attempt_result среди записей журнала.
-			Operation string `json:"operation"`
-			// Attempt задаёт номер попытки, к которой относится результат открытия.
-			Attempt uint64 `json:"attempt"`
-			// Error содержит сообщение результата попытки для поиска ErrNotReady.
-			Error string `json:"error"`
-		}
-		// err сообщает конец либо отказ разбора очередного JSON-события журнала.
-		if err := decoder.Decode(&record); errors.Is(err, io.EOF) {
-			break
-		} else if err != nil {
-			t.Fatal(err)
-		}
-		if record.Operation == "attempt_result" {
-			results[record.Attempt] = strings.Contains(record.Error, core.ErrNotReady.Error())
-		}
-	}
-	if len(results) != 2 || !results[1] || !results[2] {
-		t.Fatalf("повтор player не подтвердил тот же отказ версии: %v; %s", results, logs.records())
-	}
-	if templateOpens.Load() != 0 || players.Load() != 0 || network.Load() != 0 {
-		t.Fatal("проверка версии пропустила открытие или внешнее выполнение", templateOpens.Load(), players.Load(), network.Load())
+	// ref обязан отсутствовать: старый файл отвергается до регистрации группы;
+	// err должен обозначать неготовность исторической версии генератора.
+	if ref, err := node.registry.Acquire(ctx, output.Snapshot, node.router); !errors.Is(err, core.ErrNotReady) || ref != nil {
+		t.Fatal("реестр принял старую заглушку", ref, err)
 	}
 	for range 2 {
-		// file содержит ответ повторного открытия старого манифеста; err проверяется на отказ
-		// версии до доступа к файлу.
+		// file обязан отсутствовать при каждом повторном открытии старого manifest;
+		// err должен сообщить о неготовности до работы с файловой системой.
 		if file, err := f.manager.openPreparedFile(ctx, manifest); !errors.Is(err, core.ErrNotReady) || file != nil {
 			t.Fatal("повтор открытия разрешил исторический manifest", file, err)
 		}
+		// file обязан отсутствовать и при прямом обращении к FileStore без менеджера;
+		// err должен сохранить отказ версии генератора на этой самостоятельной границе.
+		if file, err := f.files.OpenVerified(ctx, manifest); !errors.Is(err, core.ErrNotReady) || file != nil {
+			t.Fatal("FileStore открыл старый manifest", file, err)
+		}
 	}
-	// missing содержит старый манифест с несуществующим путём для проверки порядка валидации.
+	// missing содержит старый manifest с отсутствующим путём: версия проверяется до файловой системы.
 	missing := manifest
 	missing.ManagedPath += ".missing"
-	// err содержит отказ открытия старой версии с отсутствующим файлом, который должен оставаться
-	// ErrNotReady.
-	if _, err := f.manager.openPreparedFile(ctx, missing); !errors.Is(err, core.ErrNotReady) {
+	if _, err = f.manager.openPreparedFile(ctx, missing); !errors.Is(err, core.ErrNotReady) {
 		t.Fatal("файловая проверка опередила проверку версии", err)
+	}
+	if players.Load() != 0 || network.Load() != 0 {
+		t.Fatal("старый manifest начал внешнее выполнение", players.Load(), network.Load())
 	}
 }
 

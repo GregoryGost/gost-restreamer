@@ -701,6 +701,8 @@ func (s *Service) outputCommand(ctx context.Context, request OutputCommand, kind
 // outputCommandFenced проверяет повтор RequestID и применимость управления; компенсация допускается
 // только для точного актуального запуска. Изменение поколения и намерения, очистка и квитанция
 // сохраняются в одной транзакции.
+// ctx ограничивает транзакцию; request задаёт выход и идентичность запроса, kind выбирает действие,
+// а необязательный fence ограничивает компенсацию точной попыткой. Новый запуск требует пригодного снимка.
 func (s *Service) outputCommandFenced(ctx context.Context, request OutputCommand, kind CommandKind, fence *ExecutionFence) (CommandReceipt, bool, error) {
 	// content содержит канонические байты запроса для проверки повторов. err сообщает об ошибке
 	// проверки целей и канонизации запроса.
@@ -764,6 +766,9 @@ func (s *Service) outputCommandFenced(ctx context.Context, request OutputCommand
 		// old сохраняет ожидаемую ревизию изменяемой записи управления.
 		old := o.Revision
 		if kind == CommandStartOutput {
+			if err = o.Snapshot.ValidateUsable(); err != nil {
+				return err
+			}
 			if session.State != SessionRunning || !o.Attached || o.DesiredRunning || o.CleanupPending {
 				return ErrConflict
 			}

@@ -177,9 +177,15 @@ func (r *Reference) CloseContext(ctx context.Context) error {
 // Acquire сверяет снимок с текущей Session и её выходами, разделяет точную группу по профилю,
 // артефакту и политике и выдаёт учитываемую ссылку. Новые группы наследуют последнюю ревизию паузы;
 // закрывающаяся группа не переиспользуется до подтверждённого завершения.
+// ctx ограничивает проверку snapshot; live предоставляет входной Router. Непригодный snapshot
+// отклоняется до чтения репозиториев, регистрации наблюдений и повторного использования группы.
 func (r *Registry) Acquire(ctx context.Context, snapshot core.OutputSnapshot, live *media.Router) (*Reference, error) {
-	if live == nil || snapshot.Validate() != nil {
+	if live == nil {
 		return nil, core.ErrInvalid
+	}
+	// err содержит отказ пригодности снимка до обращения к репозиторию и регистрации группы.
+	if err := snapshot.ValidateUsable(); err != nil {
+		return nil, err
 	}
 	// session содержит текущую сохранённую Session; err сохраняет результаты её чтения, канонизации
 	// и сериализации ключа группы.
@@ -444,7 +450,14 @@ type Group struct {
 
 // Создаёт переключатель и наблюдения группы для поддержанной пары режима и видеокодека, применяет
 // паузу и запускает работников с отдельным контекстом жизни, ограниченным владельцем Session.
+// c задаёт порты и бюджеты; service и parent связывают работу с исполнением, owner отзывает её,
+// observer принимает измерения, id идентифицирует группу. manifest закрепляет пригодный файл,
+// live предоставляет вход, paused и revision задают исходную ревизию управления.
 func newGroup(c RuntimeConfig, service *core.Service, parent core.ExecutionFence, owner *core.RuntimeLease, observer *core.GroupObserver, id core.ID, manifest core.ArtifactManifest, live *media.Router, paused bool, revision uint64) (*Group, error) {
+	// err содержит отказ пригодности точного файла до создания переключателя и запуска работников.
+	if err := manifest.ValidateUsable(); err != nil {
+		return nil, err
+	}
 	// err сообщает об отказе проверки конфигурации выбранной группы.
 	if err := c.Validate(); err != nil {
 		return nil, err

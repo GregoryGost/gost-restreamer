@@ -502,6 +502,8 @@ type SessionSnapshot struct {
 
 // ArtifactManifest фиксирует точный подготовленный файл и его профиль для использования выходом.
 type ArtifactManifest struct {
+	// RequiresRebuild сохраняет аннулирование доказательства пригодности после замены собственного профиля.
+	RequiresRebuild bool `json:",omitempty"`
 	// GenerationID идентифицирует точное поколение заглушки.
 	GenerationID ID
 	// VerifiedFormat сохраняет фактически проверенный формат подготовленного файла.

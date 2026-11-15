@@ -25,8 +25,8 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/storage"
 )
 
-// GeneratorVersion обозначает формат существующего генератора файлов заглушки.
-const GeneratorVersion = "fallback-fmp4-silent-v2"
+// GeneratorVersion использует общую версию генератора, проверяемую на границах использования файлов.
+const GeneratorVersion = core.CurrentFallbackGeneratorVersion
 
 // StorageOptions передаёт настройки SQLite и общих владельцев хранилищу без назначения новых значений
 // по умолчанию.

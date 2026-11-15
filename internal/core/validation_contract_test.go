@@ -40,7 +40,7 @@ func contractSnapshots(t *testing.T) (core.SessionSnapshot, core.OutputSnapshot)
 	// profile задаёт именованный полный профиль тестовой группы.
 	profile := core.TranscodeProfile{Record: contractRecord(group.ProfileID), Name: "Профиль", Profile: p}
 	// manifest задаёт точный готовый файл заглушки с согласованным профилем.
-	manifest := core.ArtifactManifest{GenerationID: "generation", VerifiedFormat: p.Format, VariantID: "variant", AssetID: policy.AssetID, SourceHash: "synthetic-source-hash", Profile: p, ProfileKey: key, CanonicalProfile: canonical, GeneratorVersion: "generator-1", ManagedPath: "variants/generation.mp4", SizeBytes: 512, ContentHash: "synthetic-content-hash"}
+	manifest := core.ArtifactManifest{GenerationID: "generation", VerifiedFormat: p.Format, VariantID: "variant", AssetID: policy.AssetID, SourceHash: "synthetic-source-hash", Profile: p, ProfileKey: key, CanonicalProfile: canonical, GeneratorVersion: core.CurrentFallbackGeneratorVersion, ManagedPath: "variants/generation.mp4", SizeBytes: 512, ContentHash: "synthetic-content-hash"}
 	// output задаёт согласованный самостоятельный снимок выхода.
 	output := core.OutputSnapshot{
 		Destination: core.Destination{Record: contractRecord("destination"), StreamID: stream.ID, GroupID: group.ID, Name: "Назначение", Platform: "custom", Endpoint: "rtmps://example.invalid/live", StreamKey: "synthetic-output-key", Enabled: true},

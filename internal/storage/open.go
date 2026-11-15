@@ -164,7 +164,7 @@ func Open(ctx context.Context, path string, options Options) (_ *Store, retErr e
 	if err != nil {
 		return nil, fmt.Errorf("создать отображение SQLite: %w", err)
 	}
-	s.provider, err = goose.NewProvider(goose.DialectSQLite3, s.sqlDB, sqlitemigrations.Files, goose.WithDisableGlobalRegistry(true))
+	s.provider, err = goose.NewProvider(goose.DialectSQLite3, s.sqlDB, sqlitemigrations.Files, goose.WithDisableGlobalRegistry(true), goose.WithGoMigrations(desiredProfilesMigration()))
 	if err != nil {
 		return nil, fmt.Errorf("создать исполнитель миграций: %w", err)
 	}
@@ -366,7 +366,7 @@ func (s *Store) Diagnostics(ctx context.Context) (_ Diagnostics, retErr error) {
 // ErrIncompatibleFormat обозначает БД с неподдерживаемым форматом управления.
 var ErrIncompatibleFormat = errors.New("несовместимый формат хранилища")
 
-// checkStorageFormat требует единственную запись storage_format с singleton=1 и version=2; отсутствие
+// checkStorageFormat требует единственную запись storage_format с singleton=1 и version=3; отсутствие
 // таблицы и иной маркер дают ErrIncompatibleFormat.
 func (s *Store) checkStorageFormat(ctx context.Context) error {
 	// count содержит число строк маркера формата, singleton — минимальный ключ единственной строки,
@@ -376,7 +376,7 @@ func (s *Store) checkStorageFormat(ctx context.Context) error {
 	if err := s.sqlDB.QueryRowContext(ctx, "SELECT count(*), coalesce(min(singleton),0), coalesce(min(version),0) FROM storage_format").Scan(&count, &singleton, &version); err != nil {
 		return fmt.Errorf("%w: требуется первичная инициализация поддерживаемого формата: %w", ErrIncompatibleFormat, err)
 	}
-	if count != 1 || singleton != 1 || version != 2 {
+	if count != 1 || singleton != 1 || version != 3 {
 		return fmt.Errorf("%w: неизвестный маркер формата", ErrIncompatibleFormat)
 	}
 	return nil

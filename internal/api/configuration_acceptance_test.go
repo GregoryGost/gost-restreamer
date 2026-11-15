@@ -3,7 +3,6 @@ package api_test
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -379,16 +378,15 @@ func TestAcceptanceFallbackPolicyCASPreservesStreamAndSupportsExplicitClear(t *t
 	apiAcceptanceRequest(t, f.api, "PATCH", "/streams/"+string(s.ID), `{"expected_revision":4,"fallback":null}`, 200)
 }
 
-// Проверяет сохранение полных uint64, исходной дроби FPS и произвольных байтов профиля через GET, POST
+// Проверяет сохранение полных uint64, исходной дроби FPS и допустимых строк профиля через GET, POST
 // и полную замену PATCH.
-func TestAcceptanceProfileRoundTripPreservesFullIntegersFPSAndBytes(t *testing.T) {
+func TestAcceptanceProfileRoundTripPreservesFullIntegersFPSAndStrings(t *testing.T) {
 	// f содержит API сценария точного полного цикла профиля.
 	f := newAPIAcceptanceFixture(t, nil)
-	// p содержит полный профиль с большими uint64, исходной дробью FPS и затем невалидными UTF-8
-	// байтами.
+	// p содержит полный профиль с большими uint64, исходной дробью FPS и допустимыми строками.
 	p := apiAcceptanceProfile()
-	p.Format.Video.Level = string([]byte{0xff, 'x', 0xfe})
-	p.Format.Audio.ChannelLayout = string([]byte{'s', 0x80, 't'})
+	p.Format.Video.Level = "2.0"
+	p.Format.Audio.ChannelLayout = "stereo"
 	// stored содержит сохранённый точный профиль; err содержит отказ создания.
 	stored, err := f.service.CreateProfile(context.Background(), core.TranscodeProfile{Name: "Точный профиль", Profile: p})
 	if err != nil {
@@ -408,25 +406,15 @@ func TestAcceptanceProfileRoundTripPreservesFullIntegersFPSAndBytes(t *testing.T
 	}
 	// format содержит полное публичное описание обеих дорожек.
 	format := profile["format"].(map[string]any)
-	// vf содержит видеоформат с несокращённым FPS и байтовым level.
+	// vf содержит видеоформат с несокращённым FPS и строковым level.
 	vf := format["video"].(map[string]any)
 	if !reflect.DeepEqual(vf["frame_rate"], map[string]any{"numerator": json.Number("60000"), "denominator": json.Number("2002")}) {
 		t.Fatal("исходная дробь FPS нормализована")
 	}
-	// tc связывает возвращённое байтовое поле с его точным исходным содержимым.
-	for _, tc := range []struct {
-		// value содержит публичное представление невалидных UTF-8 байтов.
-		value any
-		// bytes содержит исходные точные байты для проверки base64.
-		bytes string
-	}{{vf["level"], p.Format.Video.Level}, {format["audio"].(map[string]any)["channel_layout"], p.Format.Audio.ChannelLayout}} {
-		// encoded содержит объектное представление поля; ok подтверждает объект вместо потери
-		// исходных байтов.
-		encoded, ok := tc.value.(map[string]any)
-		if !ok || encoded["encoding"] != "base64" || encoded["value"] != base64.StdEncoding.EncodeToString([]byte(tc.bytes)) {
-			t.Fatalf("байтовое поле заменено: %#v", tc.value)
-		}
+	if vf["level"] != p.Format.Video.Level || format["audio"].(map[string]any)["channel_layout"] != p.Format.Audio.ChannelLayout {
+		t.Fatal("Строки профиля изменены", format)
 	}
+
 	// body содержит JSON создания копии полного возвращённого профиля.
 	body, err := json.Marshal(map[string]any{"name": "Копия", "profile": profile})
 	if err != nil {

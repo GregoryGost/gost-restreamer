@@ -77,7 +77,7 @@ func newExecutionAcceptanceFixture(t *testing.T, count, budget int) executionAcc
 	})
 	// d содержит фактически прочитанные свойства SQLite и версию применённой схемы.
 	d, err := store.Diagnostics(ctx)
-	if err != nil || d.SchemaVersion != 1 || d.SQLiteVersion == "" {
+	if err != nil || d.SchemaVersion != 2 || d.SQLiteVersion == "" {
 		t.Fatalf("Проверка рабочего runner Goose/SQLite: %+v, %v", d, err)
 	}
 	// f объединяет настоящий временный Store, два Service и точные попытки тестовых выходов.

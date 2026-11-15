@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
 // exactIntegerToken возвращает точную целую запись JSON-числа в объединении диапазонов
@@ -161,6 +164,9 @@ func unmarshalJSON(data []byte, target any) error {
 		}
 		*generic = projectNumericTokens(*generic)
 		return nil
+	}
+	if !utf8.Valid(data) {
+		return core.ErrInvalid
 	}
 	return json.Unmarshal(normalizeIntegerTokens(data), target)
 }

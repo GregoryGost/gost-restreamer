@@ -19,7 +19,7 @@ func TestPreparationRequiresExactAttemptAndPreservesCurrentOnFailure(t *testing.
 	ctx := context.Background()
 	// g содержит новое зарезервированное поколение для проверки точной попытки. err сообщает об
 	// ошибке резервирования полного поколения подготовки.
-	g, err := f.service.ReservePreparation(ctx, core.PreparationRequest{AssetID: f.asset.ID, ExpectedRevision: f.asset.Revision, Kind: core.AssetImage, GeneratorVersion: "generator-v2"})
+	g, err := f.service.ReservePreparation(ctx, core.PreparationRequest{AssetID: f.asset.ID, ExpectedRevision: f.asset.Revision, Kind: core.AssetImage, GeneratorVersion: core.CurrentFallbackGeneratorVersion})
 	if err != nil {
 		t.Fatal(err)
 	}

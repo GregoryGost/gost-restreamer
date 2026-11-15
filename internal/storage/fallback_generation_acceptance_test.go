@@ -94,7 +94,7 @@ func reserveGenerationAcceptance(t *testing.T, svc *core.Service, assetID core.I
 		t.Fatal(err)
 	}
 	// g содержит зарезервированное или прочитанное поколение подготовки.
-	g, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: a.ID, ExpectedRevision: a.Revision, Kind: core.AssetImage, GeneratorVersion: "acceptance-generator"})
+	g, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: a.ID, ExpectedRevision: a.Revision, Kind: core.AssetImage, GeneratorVersion: core.CurrentFallbackGeneratorVersion})
 	if err != nil {
 		t.Fatal(err)
 	}

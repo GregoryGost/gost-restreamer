@@ -529,7 +529,7 @@ func safeProblem(status int) *huma.ErrorModel {
 type ProfileProblemDTO struct {
 	// ErrorModel содержит стандартные поля Problem Details с безопасными описаниями ошибки профиля.
 	huma.ErrorModel
-	Code  string `json:"code,omitempty" doc:"Стабильный код проверенной ошибки профиля."`
+	Code  string `json:"code,omitempty" doc:"Стабильный код проверенной ошибки профиля." enum:"invalid_profile,invalid_custom,duplicate_custom,custom_conflict,unknown_custom"`
 	Field string `json:"field,omitempty" doc:"Публичный путь к недопустимому полю профиля."`
 }
 

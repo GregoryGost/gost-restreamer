@@ -54,7 +54,7 @@ func TestProductionMigrationsRepeatWithoutClosingPool(t *testing.T) {
 	// before сохраняет измеренные свойства движка и схемы до повторного запуска миграций. err
 	// сообщает об ошибке чтения фактических свойств движка и схемы.
 	before, err := s.Diagnostics(ctx)
-	if err != nil || before.SchemaVersion != 1 || before.SQLiteVersion == "" || len(before.CompileOptions) == 0 {
+	if err != nil || before.SchemaVersion != 2 || before.SQLiteVersion == "" || len(before.CompileOptions) == 0 {
 		t.Fatalf("диагностика production-миграций: %+v, %v", before, err)
 	}
 	// err сообщает об ошибке применения встроенной истории схемы.
@@ -180,7 +180,7 @@ func TestFailedMigrationRollsBackSchemaAndVersionThroughProductionRunner(t *test
 	// files объединяет рабочую первичную миграцию с намеренно ошибочной добавочной миграцией.
 	files := fstest.MapFS{
 		"00001_initial.sql": &fstest.MapFile{Data: initial},
-		"00002_failure.sql": &fstest.MapFile{Data: []byte("-- +goose Up\nCREATE TABLE migration_partial (id INTEGER PRIMARY KEY);\nINSERT INTO missing_migration_target(id) VALUES (1);\n")},
+		"00003_failure.sql": &fstest.MapFile{Data: []byte("-- +goose Up\nCREATE TABLE migration_partial (id INTEGER PRIMARY KEY);\nINSERT INTO missing_migration_target(id) VALUES (1);\n")},
 	}
 	// provider содержит тестовый исполнитель миграций Goose с ошибочной добавочной миграцией.
 	provider, err := goose.NewProvider(goose.DialectSQLite3, s.sqlDB, files, goose.WithDisableGlobalRegistry(true))
@@ -204,7 +204,7 @@ func TestFailedMigrationRollsBackSchemaAndVersionThroughProductionRunner(t *test
 	}
 	// diagnostics содержит свойства того же SQLite-движка и текущую версию схемы.
 	diagnostics, err := s.Diagnostics(ctx)
-	if err != nil || diagnostics.SchemaVersion != 1 {
+	if err != nil || diagnostics.SchemaVersion != 2 {
 		t.Fatalf("неудачная миграция изменила version history: %+v, %v", diagnostics, err)
 	}
 	// err сообщает об ошибке применения встроенной истории схемы.

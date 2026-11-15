@@ -175,6 +175,8 @@ func (s *Service) DeleteAsset(ctx context.Context, id ID, expected uint64) error
 
 // exactManifest принимает только готовый вариант текущего опубликованного поколения, точно совпадающий
 // с привязкой, источником, генератором и полным профилем; канонические байты копируются.
+// ctx ограничивает чтение r; policy выбирает Asset, profile задаёт желаемый профиль, binding фиксирует
+// конкретные поколение и вариант без разрешения подменить их пригодным соседом.
 func exactManifest(ctx context.Context, r Repositories, policy FallbackPolicy, profile GroupProfile, binding PreparedBinding) (ArtifactManifest, error) {
 	// err сообщает об ошибке проверки политики выбранной заглушки.
 	if err := policy.Validate(); err != nil {
@@ -196,6 +198,12 @@ func exactManifest(ctx context.Context, r Repositories, policy FallbackPolicy, p
 	if g.AssetID != a.ID || g.State != PreparationPublished {
 		return ArtifactManifest{}, ErrNotReady
 	}
+	// required связывает точный VariantID с историческим требованием; аннулированная запись не выдаёт файл.
+	for _, required := range g.RequiredProfiles {
+		if required.VariantID == binding.VariantID && required.RequiresRebuild {
+			return ArtifactManifest{}, ErrNotReady
+		}
+	}
 	// v содержит конкретный вариант, который сверяется с поколением и полным профилем.
 	v, err := r.Artifacts.Variant(ctx, binding.VariantID)
 	if err != nil {
@@ -210,5 +218,10 @@ func exactManifest(ctx context.Context, r Repositories, policy FallbackPolicy, p
 	if v.State != VariantReady || v.AssetID != a.ID || v.GenerationID != g.ID || v.SourceHash != g.SourceHash || v.GeneratorVersion != binding.GeneratorVersion || v.GeneratorVersion != g.GeneratorVersion || v.ProfileKey != key || !bytes.Equal(v.CanonicalProfile, b) || !v.Profile.Equal(profile) {
 		return ArtifactManifest{}, fmt.Errorf("%w: вариант не соответствует точному поколению и профилю", ErrNotReady)
 	}
-	return ArtifactManifest{GenerationID: g.ID, VerifiedFormat: v.VerifiedFormat, VariantID: v.ID, AssetID: a.ID, SourceHash: v.SourceHash, Profile: v.Profile, ProfileKey: v.ProfileKey, CanonicalProfile: bytes.Clone(v.CanonicalProfile), GeneratorVersion: v.GeneratorVersion, ManagedPath: v.ManagedPath, SizeBytes: v.SizeBytes, ContentHash: v.ContentHash}, nil
+	// manifest содержит точную независимую копию доказательства файла для проверки перед выдачей.
+	manifest := ArtifactManifest{GenerationID: g.ID, VerifiedFormat: v.VerifiedFormat, VariantID: v.ID, AssetID: a.ID, SourceHash: v.SourceHash, Profile: v.Profile, ProfileKey: v.ProfileKey, CanonicalProfile: bytes.Clone(v.CanonicalProfile), GeneratorVersion: v.GeneratorVersion, ManagedPath: v.ManagedPath, SizeBytes: v.SizeBytes, ContentHash: v.ContentHash}
+	if err = manifest.ValidateUsable(); err != nil {
+		return ArtifactManifest{}, err
+	}
+	return manifest, nil
 }

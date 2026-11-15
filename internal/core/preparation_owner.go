@@ -95,6 +95,7 @@ func (a *RuntimeAuthority) revokePreparation(o *PreparationOwner) {
 
 // BindPreparationOwner проверяет отсутствие активной сессии и точную выданную подготовку текущей
 // incarnation, затем возвращает существующего действующего владельца либо регистрирует нового.
+// ctx ограничивает ожидание и чтение; f задаёт точную попытку. Аннулированное требование не выдаёт допуск.
 func (s *Service) BindPreparationOwner(ctx context.Context, f PreparationFence) (*PreparationOwner, error) {
 	// a содержит общую RuntimeAuthority, а err — причину невозможности её получить.
 	a, err := s.runtimeAuthority()
@@ -118,6 +119,9 @@ func (s *Service) BindPreparationOwner(ctx context.Context, f PreparationFence) 
 		g, e := preparationFenced(ctx, r, f)
 		if e != nil {
 			return e
+		}
+		if g.RequiresProfileRebuild() {
+			return ErrNotReady
 		}
 		if f.Incarnation != s.incarnation || g.State != PreparationIssued || !g.Issued {
 			return ErrStale
@@ -143,6 +147,8 @@ func (s *Service) BindPreparationOwner(ctx context.Context, f PreparationFence) 
 
 // reconcilePreparations сверяет владельцев с БД под общей блокировкой RuntimeAuthority, отзывает
 // устаревших и удаляет завершённые записи без операций; ошибка чтения отзывает все оставшиеся допуски.
+// ctx ограничивает чтение uow; появление аннулированного требования также отзывает новые действия,
+// сохраняя учёт уже выданной работы и её очистки.
 func (a *RuntimeAuthority) reconcilePreparations(ctx context.Context, uow UnitOfWork) {
 	if len(a.preparations) == 0 {
 		return
@@ -158,7 +164,7 @@ func (a *RuntimeAuthority) reconcilePreparations(ctx context.Context, uow UnitOf
 			// g содержит точное сохранённое поколение, а e — результат проверки соответствия
 			// владельцу.
 			g, e := preparationFenced(ctx, r, o.fence)
-			if e != nil || g.State != PreparationIssued || !g.Issued {
+			if e != nil || g.RequiresProfileRebuild() || g.State != PreparationIssued || !g.Issued {
 				a.revokePreparation(o)
 			}
 			if e == nil && !g.Issued && !g.CleanupPending && g.State.Terminal() && o.operations == 0 {

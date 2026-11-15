@@ -2,16 +2,18 @@ package api
 
 import (
 	"context"
+	"errors"
 	"os/exec"
+	"slices"
 	"time"
 )
 
 // CapabilityDTO возвращает отдельно проверенную доступность компонента, причину и время проверки.
 type CapabilityDTO struct {
 	// Status содержит available, unavailable или unverified согласно фактической проверке.
-	Status string `json:"status"`
+	Status string `json:"status" enum:"available,unavailable,unverified"`
 	// Reason содержит ограниченную причину результата проверки возможности.
-	Reason string `json:"reason"`
+	Reason string `json:"reason" enum:"not_configured,executable_unavailable,executable_resolved,hardware_not_verified,unsupported_platform"`
 	// CheckedAt содержит UTC-время выполненной проверки либо null для непроверенного оборудования.
 	CheckedAt *time.Time `json:"checked_at"`
 }
@@ -72,7 +74,7 @@ func (p ExecutableCapabilities) Snapshot(ctx context.Context) (CapabilitiesDTO, 
 // HealthDTO возвращает состояние работоспособности или готовности управляющей части.
 type HealthDTO struct {
 	// Status содержит live или ready при успешной соответствующей проверке.
-	Status string `json:"status"`
+	Status string `json:"status" enum:"live,ready"`
 	// Reason содержит публичную причину состояния, пустую для успешных live и ready.
 	Reason string `json:"reason"`
 }
@@ -88,6 +90,9 @@ func (a *API) registerSystem() {
 		}
 		// v содержит снимок поставщика возможностей; e содержит отказ его получения.
 		v, e := a.config.Capabilities.Snapshot(ctx)
+		if e == nil && !validCapabilities(v) {
+			e = errors.New("недопустимые строки возможностей")
+		}
 		return &Result[CapabilitiesDTO]{v}, e
 	})
 	register(a, operation("GET", "/health/live", "get-liveness", "Работоспособность HTTP управления."), func(context.Context, *struct{}) (*Result[HealthDTO], error) {
@@ -105,4 +110,16 @@ func (a *API) registerSystem() {
 		}
 		return &Result[HealthDTO]{HealthDTO{"ready", ""}}, nil
 	})
+}
+
+// validCapabilities проверяет конечные строки снимка value от произвольного поставщика.
+// Недопустимый результат не должен попадать в публичный ответ даже при успешном Snapshot.
+func validCapabilities(value CapabilitiesDTO) bool {
+	// capability содержит очередной независимый результат проверки компонента.
+	for _, capability := range []CapabilityDTO{value.FFmpeg, value.FFprobe, value.Helper, value.NVIDIA} {
+		if !slices.Contains([]string{"available", "unavailable", "unverified"}, capability.Status) || !slices.Contains([]string{"not_configured", "executable_unavailable", "executable_resolved", "hardware_not_verified", "unsupported_platform"}, capability.Reason) {
+			return false
+		}
+	}
+	return true
 }

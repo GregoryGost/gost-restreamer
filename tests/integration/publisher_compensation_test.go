@@ -62,7 +62,7 @@ func newPublisherCompensationFixture(t *testing.T) publisherCompensationFixture 
 	// diagnostics содержит фактические версии SQLite и схемы Goose для проверки временного
 	// хранилища.
 	diagnostics, err := store.Diagnostics(ctx)
-	if err != nil || diagnostics.SchemaVersion != 1 {
+	if err != nil || diagnostics.SchemaVersion != 2 {
 		t.Fatalf("схема Goose: %+v, %v", diagnostics, err)
 	}
 	t.Logf("SQLite=%s Goose=%d", diagnostics.SQLiteVersion, diagnostics.SchemaVersion)
@@ -98,7 +98,7 @@ func newPublisherCompensationFixture(t *testing.T) publisherCompensationFixture 
 		}
 	}
 	// gen содержит резерв подготовки и точную обязательную привязку единственного профиля.
-	gen, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: "controlled-generator"})
+	gen, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: core.CurrentFallbackGeneratorVersion})
 	if err != nil {
 		t.Fatal(err)
 	}

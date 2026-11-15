@@ -275,8 +275,13 @@ func (s *FileStore) OpenRegular(name string) (*os.File, error) {
 	return f, nil
 }
 
-// OpenVerified возвращает точный проверенный файл с offset=0, принадлежащий вызывающему.
+// OpenVerified проверяет пригодность manifest до файлового ввода-вывода и возвращает точный файл
+// с offset=0; дескриптор закрывает вызывающий. ctx ограничивает чтение содержимого.
 func (s *FileStore) OpenVerified(ctx context.Context, manifest core.ArtifactManifest) (*os.File, error) {
+	// err содержит отказ использования аннулированного, повреждённого или устаревшего манифеста.
+	if err := manifest.ValidateUsable(); err != nil {
+		return nil, err
+	}
 	return s.OpenExact(ctx, manifest.ManagedPath, manifest.SizeBytes, manifest.ContentHash)
 }
 

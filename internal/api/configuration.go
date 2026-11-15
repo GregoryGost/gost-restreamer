@@ -105,7 +105,7 @@ type SessionListInput struct {
 	// StreamID ограничивает историю выбранным потоком.
 	StreamID string `query:"stream_id"`
 	// State ограничивает историю выбранным долговечным состоянием Session.
-	State string `query:"state" enum:"STARTING,RUNNING,STOPPING,STOPPED,FAILED,INTERRUPTED"`
+	State string `query:"state" enum:",STARTING,RUNNING,STOPPING,STOPPED,FAILED,INTERRUPTED"`
 }
 
 // StreamSessionListInput адресует историю конкретного потока с необязательным состоянием.
@@ -115,7 +115,7 @@ type StreamSessionListInput struct {
 	// PageParams содержит ограничение страницы, курсор и временные границы истории потока.
 	PageParams
 	// State ограничивает запуски потока выбранным состоянием Session.
-	State string `query:"state" enum:"STARTING,RUNNING,STOPPING,STOPPED,FAILED,INTERRUPTED"`
+	State string `query:"state" enum:",STARTING,RUNNING,STOPPING,STOPPED,FAILED,INTERRUPTED"`
 }
 
 // NestedListInput сочетает идентификатор родительского ресурса и параметры вложенного списка.

@@ -223,8 +223,8 @@ func TestFormatRequiredFields(t *testing.T) {
 	}
 }
 
-// Проверяет сохранение произвольных структурно допустимых описаний и полного диапазона прежних
-// параметров без ограничений конкретного адаптера.
+// Проверяет произвольные описания измерений отдельно от строгих настроек и сохраняет независимые
+// числовые границы прежнего профиля без переноса ограничений v2.
 func TestStructuralValidationPreservesDescriptions(t *testing.T) {
 	// codec выбирает поддерживаемый видеокодек для структурной проверки.
 	for _, codec := range []core.Codec{core.CodecAV1, core.CodecH264} {
@@ -239,8 +239,12 @@ func TestStructuralValidationPreservesDescriptions(t *testing.T) {
 		// before сохраняет исходный профиль для проверки отсутствия изменения.
 		before := p
 		// err сообщает об ошибке проверки допустимости профиля.
-		if err := p.Validate(); err != nil {
-			t.Fatalf("структурный профиль %s отклонён: %v", codec, err)
+		if err := p.Format.Validate(); err != nil {
+			t.Fatalf("структурное измерение %s отклонено: %v", codec, err)
+		}
+		// err подтверждает отказ использования произвольного измеренного текста как настройки.
+		if err := p.Validate(); !errors.Is(err, core.ErrInvalidProfile) {
+			t.Fatalf("неподдержанная настройка принята: %v", err)
 		}
 		if p != before {
 			t.Fatal("валидация изменила описание")
@@ -249,6 +253,7 @@ func TestStructuralValidationPreservesDescriptions(t *testing.T) {
 	// p содержит отдельный полный профиль текущего сценария проверки.
 	p := validProfile()
 	p.Mode = core.ModeTranscode
+	p.Format.Video.Codec = core.CodecH264
 	p.VideoEncoding.TargetBitrateBPS = 1
 	p.VideoEncoding.MaxBitrateBPS = 1
 	p.VideoEncoding.BufferBits = 1
@@ -262,15 +267,14 @@ func TestStructuralValidationPreservesDescriptions(t *testing.T) {
 	}
 	p.Format.Video.Width, p.Format.Video.Height = 1, 1
 	p.Format.Video.FrameRate = core.FrameRate{Numerator: 1, Denominator: 1}
-	p.Format.Video.BitDepth = 1
 	p.Format.Audio.SampleRateHz, p.Format.Audio.Channels = 1, 1
+	p.Format.Audio.ChannelLayout = "mono"
 	// err сообщает об ошибке проверки допустимости профиля.
 	if err := p.Validate(); err != nil {
 		t.Fatalf("минимальные положительные размеры формата отклонены: %v", err)
 	}
 	p.Format.Video.Width, p.Format.Video.Height = math.MaxUint32, math.MaxUint32
-	p.Format.Video.BitDepth = math.MaxUint8
-	p.Format.Audio.SampleRateHz, p.Format.Audio.Channels = math.MaxUint32, math.MaxUint16
+	p.Format.Audio.SampleRateHz = math.MaxUint32
 	p.VideoEncoding.TargetBitrateBPS, p.VideoEncoding.MaxBitrateBPS = math.MaxUint64, math.MaxUint64
 	p.VideoEncoding.BufferBits = math.MaxUint64
 	p.VideoEncoding.GOPFrames, p.VideoEncoding.MaxBFrames = math.MaxUint32, math.MaxUint32
@@ -352,8 +356,8 @@ func TestProfileValidationCategories(t *testing.T) {
 	}
 }
 
-// Проверяет участие всех прежних полей в равенстве профиля, математическое равенство FPS и сохранение
-// точных пробелов строк.
+// Проверяет различимость полей, исключение недопустимых настроек из равенства и математическое
+// равенство FPS; строки настроек не обрезаются автоматически.
 func TestProfileEqualityAccountsForEveryField(t *testing.T) {
 	// cases перечисляет сценарии проверки допустимости или различимости полей профиля.
 	cases := []struct {
@@ -479,7 +483,10 @@ func TestProfileEqualityAccountsForEveryField(t *testing.T) {
 			tc.mutate(&b)
 			// err сообщает об ошибке проверки допустимости профиля.
 			if err := b.Validate(); err != nil {
-				t.Fatalf("проверка равенства получила некорректный вход: %v", err)
+				if a.Equal(b) || b.Equal(a) || b.Equal(b) {
+					t.Fatalf("недопустимый профиль участвует в равенстве: %v", err)
+				}
+				return
 			}
 			if a.Equal(b) || b.Equal(a) {
 				t.Fatal("различие поля не учтено")

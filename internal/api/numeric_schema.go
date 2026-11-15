@@ -191,7 +191,7 @@ func repairPublicNumericSchemas(registry huma.Registry) {
 }
 
 // repairPublicNumericSchema сопоставляет schema с типом DTO и исходными тегами.
-// Общий FormatDTO сохраняет нулевые размеры до READY; условные ограничения прежних
+// Физические диапазоны DTO допускают нулевые измерения до READY; ограничения прежних
 // профилей и версии 2 остаются доменными и не сужают общий физический диапазон.
 func repairPublicNumericSchema(registry huma.Registry, schema *huma.Schema, typ reflect.Type, tags reflect.StructTag, seen map[*huma.Schema]bool) {
 	if schema == nil || typ == nil || seen[schema] {
@@ -220,7 +220,7 @@ func repairPublicNumericSchema(registry huma.Registry, schema *huma.Schema, typ 
 	}
 	// branches содержит ветви объединения схем, которым соответствует тот же Go-тип.
 	for _, branches := range [][]*huma.Schema{schema.AnyOf, schema.OneOf, schema.AllOf} {
-		// branch содержит очередную ветвь, включая явный null либо строку/объект ProfileText.
+		// branch содержит очередную ветвь, включая явный null для допускающих его полей.
 		for _, branch := range branches {
 			repairPublicNumericSchema(registry, branch, typ, tags, seen)
 		}

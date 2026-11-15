@@ -83,8 +83,8 @@ func (s SessionSnapshot) Validate() error {
 	return nil
 }
 
-// Validate сверяет идентификаторы, полный профиль и его канонические байты, совместимость проверенного
-// формата, ненулевой размер, хеши, версию генератора и управляемый путь.
+// Validate сверяет исторические идентичности, строгий профиль, структурный измеренный формат,
+// размер, хеши, версию генератора и путь m. RequiresRebuild отменяет только утверждение совместимости.
 func (m ArtifactManifest) Validate() error {
 	// err сообщает об ошибке проверки идентификатора поколения manifest.
 	if err := m.GenerationID.Validate(); err != nil {
@@ -94,7 +94,7 @@ func (m ArtifactManifest) Validate() error {
 	if err := m.VerifiedFormat.Validate(); err != nil {
 		return err
 	}
-	if CompatibleFormat(m.VerifiedFormat, m.Profile.Format) != nil {
+	if !m.RequiresRebuild && CompatibleFormat(m.VerifiedFormat, m.Profile.Format) != nil {
 		return ErrInvalid
 	}
 	// err сообщает об ошибке проверки идентификатора варианта manifest.

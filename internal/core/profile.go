@@ -98,6 +98,10 @@ type GroupProfile struct {
 
 // Validate проверяет режим, обе дорожки и настройки их подготовки.
 func (p GroupProfile) Validate() error {
+	// err содержит отказ общей проверки желаемых строк и их непосредственных зависимостей.
+	if err := p.validateDesiredStrings(); err != nil {
+		return err
+	}
 	if p.LiveAudioMode != "" && p.LiveAudioMode != LiveAudioCopy && p.LiveAudioMode != LiveAudioTranscode {
 		return invalidEncoding("live_audio_mode", "Допустимы только copy и transcode.")
 	}

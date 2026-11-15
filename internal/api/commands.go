@@ -306,9 +306,9 @@ type OutputDetailDTO struct {
 	// Runtime содержит наблюдение совпадающего активного исполнения либо null.
 	Runtime *RuntimeOutputDTO `json:"runtime"`
 	// RuntimeAvailability явно сообщает available или unavailable текущего наблюдения.
-	RuntimeAvailability string `json:"runtime_availability"`
+	RuntimeAvailability string `json:"runtime_availability" enum:"available,unavailable"`
 	// RuntimeReason объясняет отсутствие наблюдения или неактивное исполнение выхода.
-	RuntimeReason string `json:"runtime_reason"`
+	RuntimeReason string `json:"runtime_reason" enum:",not_observed,execution_inactive"`
 }
 
 // outputDetail соединяет сохранённый снимок выхода только с наблюдением его точного активного

@@ -356,6 +356,7 @@ func preparationFenced(ctx context.Context, r Repositories, f PreparationFence) 
 
 // ClaimPreparation захватывает самую раннюю по CreatedAt и ID QUEUED-подготовку текущей incarnation,
 // увеличивая попытку; эфир и незавершённая выданная подготовка блокируют захват.
+// ctx ограничивает транзакцию, id выбирает поколение. Аннулированное требование запрещает новый захват.
 func (s *Service) ClaimPreparation(ctx context.Context, id ID) (PreparationFence, error) {
 	// result принимает точную идентичность успешно захваченной подготовки.
 	var result PreparationFence
@@ -373,6 +374,9 @@ func (s *Service) ClaimPreparation(ctx context.Context, id ID) (PreparationFence
 		g, e := r.Artifacts.Generation(ctx, id)
 		if e != nil {
 			return e
+		}
+		if g.RequiresProfileRebuild() {
+			return ErrNotReady
 		}
 		if g.State != PreparationQueued || g.Incarnation != s.incarnation {
 			return ErrStale
@@ -414,6 +418,7 @@ func (s *Service) ClaimPreparation(ctx context.Context, id ID) (PreparationFence
 
 // MarkPreparationIssued перед внешними действиями переводит точную CLAIMED-попытку в ISSUED и
 // сохраняет необходимость очистки.
+// ctx ограничивает транзакцию, f фиксирует владельца и попытку; аннулированный комплект не выдаётся.
 func (s *Service) MarkPreparationIssued(ctx context.Context, f PreparationFence) error {
 	return s.uow.Write(ctx, func(r Repositories) error {
 		// В транзакции сверяет точный PreparationFence, отсутствие эфира и конкурирующей подготовки, затем
@@ -428,6 +433,9 @@ func (s *Service) MarkPreparationIssued(ctx context.Context, f PreparationFence)
 		g, e := preparationFenced(ctx, r, f)
 		if e != nil {
 			return e
+		}
+		if g.RequiresProfileRebuild() {
+			return ErrNotReady
 		}
 		if f.Incarnation != s.incarnation || g.State != PreparationClaimed {
 			return ErrStale
@@ -458,6 +466,8 @@ func (s *Service) MarkPreparationIssued(ctx context.Context, f PreparationFence)
 
 // RegisterPreparationFile сохраняет происхождение дополнительного пути только для точной
 // ISSUED-подготовки текущей incarnation; владельцы и новая запись назначаются здесь.
+// ctx ограничивает запись, f выбирает попытку, value описывает новый путь; аннулированный комплект
+// сохраняет прежний журнал очистки, но не регистрирует новые файлы.
 func (s *Service) RegisterPreparationFile(ctx context.Context, f PreparationFence, value OwnedFile) (OwnedFile, error) {
 	// result принимает сохранённую дополнительную запись владения путём подготовки.
 	var result OwnedFile
@@ -471,6 +481,9 @@ func (s *Service) RegisterPreparationFile(ctx context.Context, f PreparationFenc
 		g, e := preparationFenced(ctx, r, f)
 		if e != nil {
 			return e
+		}
+		if g.RequiresProfileRebuild() {
+			return ErrNotReady
 		}
 		if f.Incarnation != s.incarnation || g.State != PreparationIssued || !g.Issued {
 			return ErrStale
@@ -496,6 +509,8 @@ func (s *Service) RegisterPreparationFile(ctx context.Context, f PreparationFenc
 // PublishPreparation атомарно публикует полный проверенный комплект точного поколения и переключает
 // Asset на него. Изменение требуемых профилей, неполный набор или несовпадение вариантов откатывают
 // публикацию; признаки выданной работы снимаются отдельной очисткой.
+// ctx ограничивает транзакцию, f выбирает попытку, p передаёт результаты. Аннулированное требование
+// требует нового поколения и не становится пригодным через повторную публикацию.
 func (s *Service) PublishPreparation(ctx context.Context, f PreparationFence, p GenerationPublication) (FallbackGeneration, error) {
 	// limits содержит проверенные общие пределы очереди и числа профилей. err сообщает об ошибке
 	// проверки общих бюджетов подготовки.
@@ -518,6 +533,9 @@ func (s *Service) PublishPreparation(ctx context.Context, f PreparationFence, p 
 		g, e := preparationFenced(ctx, r, f)
 		if e != nil {
 			return e
+		}
+		if g.RequiresProfileRebuild() {
+			return ErrNotReady
 		}
 		if f.Incarnation != s.incarnation || g.State != PreparationIssued || !g.Issued {
 			return ErrStale

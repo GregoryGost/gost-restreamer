@@ -19,7 +19,7 @@ func issuedFixturePreparation(t *testing.T, f domainFixture) (core.FallbackGener
 	ctx := context.Background()
 	// g содержит зарезервированное поколение проверяемой подготовки. err сообщает об ошибке
 	// резервирования полного поколения подготовки.
-	g, err := f.service.ReservePreparation(ctx, core.PreparationRequest{AssetID: f.asset.ID, ExpectedRevision: f.asset.Revision, Kind: core.AssetImage, GeneratorVersion: "generator-next"})
+	g, err := f.service.ReservePreparation(ctx, core.PreparationRequest{AssetID: f.asset.ID, ExpectedRevision: f.asset.Revision, Kind: core.AssetImage, GeneratorVersion: core.CurrentFallbackGeneratorVersion})
 	if err != nil {
 		t.Fatal(err)
 	}
