@@ -44,15 +44,15 @@ func TestInvalidatedManifestNeverReopensButHealthySiblingDoes(t *testing.T) {
 		VerifiedFormat: profile.Format, GeneratorVersion: core.CurrentFallbackGeneratorVersion, ManagedPath: "healthy.mp4", SizeBytes: uint64(len(content)), ContentHash: hex.EncodeToString(digest[:])}
 	// changed задаёт миграционный факт аннулирования даже при совпадении измерения с новым desired.
 	changed := healthy
-	changed.RequiresRebuild = true
-	if err = changed.Validate(); err != nil {
-		t.Fatal("История аннулированного manifest потеряна", err)
+	changed.VerifiedFormat.Video.CodecProfile = "high10"
+	if err = changed.Validate(); err == nil {
+		t.Fatal("Несовпадающий формат принят", changed)
 	}
 	// iteration повторяет реальные открытия, чтобы первый успешный вызов не кэшировал допуск.
 	for iteration := range 3 {
 		// opened должен отсутствовать у аннулированного manifest; denied сохраняет предметную неготовность.
 		opened, denied := files.OpenVerified(context.Background(), changed)
-		if opened != nil || !errors.Is(denied, core.ErrNotReady) {
+		if opened != nil || !errors.Is(denied, core.ErrInvalid) {
 			t.Fatalf("Открыт аннулированный файл на попытке %d: %v", iteration, denied)
 		}
 		// sibling проверяет пригодный manifest после отказа; readErr сохраняет отказ открытия и чтения.
@@ -71,20 +71,20 @@ func TestInvalidatedManifestNeverReopensButHealthySiblingDoes(t *testing.T) {
 		}
 	}
 	changed.ManagedPath = "absent.mp4"
-	if _, err = files.OpenVerified(context.Background(), changed); !errors.Is(err, core.ErrNotReady) {
+	if _, err = files.OpenVerified(context.Background(), changed); !errors.Is(err, core.ErrInvalid) {
 		t.Fatal("Аннулированный manifest дошёл до файлового ввода-вывода", err)
 	}
 	changed.ManagedPath = healthy.ManagedPath
 	changed.VerifiedFormat.Video.CodecProfile = "high10"
-	if err = changed.Validate(); err != nil {
-		t.Fatal("История не допускает структурно корректное старое измерение", err)
+	if err = changed.Validate(); err == nil {
+		t.Fatal("Несовпадающее измерение принято", changed)
 	}
-	if _, err = files.OpenVerified(context.Background(), changed); !errors.Is(err, core.ErrNotReady) {
+	if _, err = files.OpenVerified(context.Background(), changed); !errors.Is(err, core.ErrInvalid) {
 		t.Fatal("Старое измерение использовано как новый desired", err)
 	}
 	changed.VerifiedFormat.Video.Width = 0
 	if err = changed.Validate(); err == nil {
-		t.Fatal("RequiresRebuild скрыл структурное повреждение raw-измерения")
+		t.Fatal("Проверка пропустила повреждённое измерение")
 	}
 	healthy.GeneratorVersion = "generator-v1"
 	if _, err = files.OpenVerified(context.Background(), healthy); !errors.Is(err, core.ErrNotReady) {

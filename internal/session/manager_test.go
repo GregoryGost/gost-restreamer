@@ -78,7 +78,7 @@ type managerFixture struct {
 }
 
 // fixtureProfile создаёт согласованные конфигурации AV1 и AAC и профиль копирования для проверочных
-// пакетов и подготовленного варианта.
+// пакетов и подготовленного варианта. t сообщает об ошибке разбора синтетических заголовков.
 func fixtureProfile(t testing.TB) (core.GroupProfile, media.CodecConfig, media.CodecConfig) {
 	t.Helper()
 	// headers задаёт AV1-конфигурацию для проверяемых медиапакетов.
@@ -111,7 +111,7 @@ func fixtureProfile(t testing.TB) (core.GroupProfile, media.CodecConfig, media.C
 	}
 	// profile задаёт режим копирования, проверенные форматы и параметры кодирования подготовленной
 	// группы.
-	profile := core.GroupProfile{Mode: core.ModeCopy, Format: core.MediaFormat{Video: video, Audio: audio}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 1000, MaxBitrateBPS: 1000, BufferBits: 1000, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 128000}}
+	profile := core.GroupProfile{Mode: core.ModeCopy, LiveAudioMode: core.LiveAudioCopy, Encoding: core.DefaultEncoding(core.ModeCopy, core.VideoEncoderSVTAV1, core.RateControlCBR), Format: core.MediaFormat{Video: video, Audio: audio}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 1000, MaxBitrateBPS: 1000, BufferBits: 1000, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 128000}}
 	return profile, v, a
 }
 

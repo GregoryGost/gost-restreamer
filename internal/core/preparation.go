@@ -356,11 +356,12 @@ func preparationFenced(ctx context.Context, r Repositories, f PreparationFence) 
 
 // ClaimPreparation захватывает самую раннюю по CreatedAt и ID QUEUED-подготовку текущей incarnation,
 // увеличивая попытку; эфир и незавершённая выданная подготовка блокируют захват.
-// ctx ограничивает транзакцию, id выбирает поколение. Аннулированное требование запрещает новый захват.
+// ctx ограничивает транзакцию, id выбирает поколение. Полный набор профилей и путей проверяется перед захватом.
 func (s *Service) ClaimPreparation(ctx context.Context, id ID) (PreparationFence, error) {
 	// result принимает точную идентичность успешно захваченной подготовки.
 	var result PreparationFence
 	// err сообщает об ошибке транзакционного захвата подготовки.
+	// r предоставляет репозитории текущей транзакции захвата подготовки.
 	err := s.uow.Write(ctx, func(r Repositories) error {
 		// В транзакции допускает захват только своей QUEUED-подготовки с учётом порядка очереди и занятых
 		// исполнений, увеличивает Attempt и сохраняет CLAIMED.
@@ -375,8 +376,8 @@ func (s *Service) ClaimPreparation(ctx context.Context, id ID) (PreparationFence
 		if e != nil {
 			return e
 		}
-		if g.RequiresProfileRebuild() {
-			return ErrNotReady
+		if e = g.Validate(); e != nil {
+			return e
 		}
 		if g.State != PreparationQueued || g.Incarnation != s.incarnation {
 			return ErrStale
@@ -418,8 +419,9 @@ func (s *Service) ClaimPreparation(ctx context.Context, id ID) (PreparationFence
 
 // MarkPreparationIssued перед внешними действиями переводит точную CLAIMED-попытку в ISSUED и
 // сохраняет необходимость очистки.
-// ctx ограничивает транзакцию, f фиксирует владельца и попытку; аннулированный комплект не выдаётся.
+// ctx ограничивает транзакцию, f фиксирует владельца и попытку; профили и пути проверяются до выдачи.
 func (s *Service) MarkPreparationIssued(ctx context.Context, f PreparationFence) error {
+	// r предоставляет репозитории текущей транзакции выдачи попытки подготовки.
 	return s.uow.Write(ctx, func(r Repositories) error {
 		// В транзакции сверяет точный PreparationFence, отсутствие эфира и конкурирующей подготовки, затем
 		// сохраняет ISSUED и CleanupPending до внешнего действия.
@@ -434,8 +436,8 @@ func (s *Service) MarkPreparationIssued(ctx context.Context, f PreparationFence)
 		if e != nil {
 			return e
 		}
-		if g.RequiresProfileRebuild() {
-			return ErrNotReady
+		if e = g.Validate(); e != nil {
+			return e
 		}
 		if f.Incarnation != s.incarnation || g.State != PreparationClaimed {
 			return ErrStale
@@ -466,12 +468,13 @@ func (s *Service) MarkPreparationIssued(ctx context.Context, f PreparationFence)
 
 // RegisterPreparationFile сохраняет происхождение дополнительного пути только для точной
 // ISSUED-подготовки текущей incarnation; владельцы и новая запись назначаются здесь.
-// ctx ограничивает запись, f выбирает попытку, value описывает новый путь; аннулированный комплект
-// сохраняет прежний журнал очистки, но не регистрирует новые файлы.
+// ctx ограничивает запись, f выбирает попытку, value описывает новый путь.
+// Полный набор профилей и путей проверяется до добавления записи.
 func (s *Service) RegisterPreparationFile(ctx context.Context, f PreparationFence, value OwnedFile) (OwnedFile, error) {
 	// result принимает сохранённую дополнительную запись владения путём подготовки.
 	var result OwnedFile
 	// err сообщает об ошибке регистрации дополнительного файла в точной подготовке.
+	// r предоставляет репозитории текущей транзакции регистрации файла подготовки.
 	err := s.uow.Write(ctx, func(r Repositories) error {
 		// В транзакции сверяет свою выданную подготовку, назначает файлу точные AssetID и GenerationID и
 		// сохраняет проверенную запись журнала файлов.
@@ -482,8 +485,8 @@ func (s *Service) RegisterPreparationFile(ctx context.Context, f PreparationFenc
 		if e != nil {
 			return e
 		}
-		if g.RequiresProfileRebuild() {
-			return ErrNotReady
+		if e = g.Validate(); e != nil {
+			return e
 		}
 		if f.Incarnation != s.incarnation || g.State != PreparationIssued || !g.Issued {
 			return ErrStale
@@ -509,8 +512,8 @@ func (s *Service) RegisterPreparationFile(ctx context.Context, f PreparationFenc
 // PublishPreparation атомарно публикует полный проверенный комплект точного поколения и переключает
 // Asset на него. Изменение требуемых профилей, неполный набор или несовпадение вариантов откатывают
 // публикацию; признаки выданной работы снимаются отдельной очисткой.
-// ctx ограничивает транзакцию, f выбирает попытку, p передаёт результаты. Аннулированное требование
-// требует нового поколения и не становится пригодным через повторную публикацию.
+// ctx ограничивает транзакцию, f выбирает попытку, p передаёт результаты.
+// Полный набор профилей и путей проверяется до публикации.
 func (s *Service) PublishPreparation(ctx context.Context, f PreparationFence, p GenerationPublication) (FallbackGeneration, error) {
 	// limits содержит проверенные общие пределы очереди и числа профилей. err сообщает об ошибке
 	// проверки общих бюджетов подготовки.
@@ -520,6 +523,7 @@ func (s *Service) PublishPreparation(ctx context.Context, f PreparationFence, p 
 	}
 	// result принимает опубликованное поколение после атомарной проверки полного комплекта.
 	var result FallbackGeneration
+	// r предоставляет репозитории текущей транзакции публикации полного поколения.
 	err = s.uow.Write(ctx, func(r Repositories) error {
 		// В одной транзакции повторно сверяет точный набор профилей, варианты и журнал файлов, затем публикует
 		// полное поколение и меняет CurrentGenerationID; ошибка не публикует частичный комплект.
@@ -534,8 +538,8 @@ func (s *Service) PublishPreparation(ctx context.Context, f PreparationFence, p 
 		if e != nil {
 			return e
 		}
-		if g.RequiresProfileRebuild() {
-			return ErrNotReady
+		if e = g.Validate(); e != nil {
+			return e
 		}
 		if f.Incarnation != s.incarnation || g.State != PreparationIssued || !g.Issued {
 			return ErrStale
@@ -605,7 +609,7 @@ func (s *Service) PublishPreparation(ctx context.Context, f PreparationFence, p 
 			if e = v.VerifiedFormat.Validate(); e != nil {
 				return e
 			}
-			if CompatibleFormat(v.VerifiedFormat, v.Profile.Format) != nil {
+			if CompatibleProfileFormat(v.VerifiedFormat, v.Profile) != nil {
 				return ErrInvalid
 			}
 			if e = v.Validate(); e != nil {

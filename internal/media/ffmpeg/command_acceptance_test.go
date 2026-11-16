@@ -12,6 +12,7 @@ import (
 
 // Проверяет размещение av1_cuvid до входа и h264_nvenc после него, точные аргументы fMP4 и буквальные
 // пути UDS, а также отказ запуска кодирования для режима copy.
+// t сверяет позиции входного декодера и выходного кодировщика.
 func TestAcceptanceNVIDIAArgumentsBindDecoderAndEncoderOnCorrectSides(t *testing.T) {
 	// color задаёт одинаковое описание SDR bt709 для входного и выходного видео.
 	color := core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}
@@ -22,7 +23,7 @@ func TestAcceptanceNVIDIAArgumentsBindDecoderAndEncoderOnCorrectSides(t *testing
 	output.Video.Codec = core.CodecH264
 	output.Video.CodecProfile = "high"
 	// cfg задаёт проверяемые параметры NVDEC/NVENC и временные шкалы команды.
-	cfg := ffmpeg.NVIDIAConfig{Binary: "/usr/bin/ffmpeg", Input: input, Profile: core.GroupProfile{Mode: core.ModeTranscode, Format: output, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 3000000, MaxBitrateBPS: 4000000, BufferBits: 6000000, GOPFrames: 50, MaxBFrames: 2, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 128000}}, VideoTimeBase: media.TimeBase{Numerator: 1, Denominator: 1000}, AudioTimeBase: media.TimeBase{Numerator: 1, Denominator: 44100}}
+	cfg := ffmpeg.NVIDIAConfig{Binary: "/usr/bin/ffmpeg", Input: input, Profile: core.GroupProfile{Mode: core.ModeTranscode, Encoding: core.DefaultEncoding(core.ModeTranscode, core.VideoEncoderNVENC, core.RateControlVBR), LiveAudioMode: core.LiveAudioTranscode, Format: output, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 3000000, MaxBitrateBPS: 4000000, BufferBits: 6000000, GOPFrames: 50, MaxBFrames: 2, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 128000}}, VideoTimeBase: media.TimeBase{Numerator: 1, Denominator: 1000}, AudioTimeBase: media.TimeBase{Numerator: 1, Denominator: 44100}}
 	// inputPath задаёт входной путь, а outputPath задаёт выходной путь с символами оболочки для
 	// проверки буквальных argv.
 	inputPath, outputPath := "/private/tmp/input literal;$(x)", "/private/tmp/output literal;$(x)"

@@ -429,7 +429,7 @@ func (v FallbackVariant) Validate() error {
 	}
 	if v.State == VariantReady {
 		// err содержит причину несовместимости проверенного формата варианта с его профилем.
-		if err := CompatibleFormat(v.VerifiedFormat, v.Profile.Format); err != nil {
+		if err := CompatibleProfileFormat(v.VerifiedFormat, v.Profile); err != nil {
 			return fmt.Errorf("%w: фактический формат варианта", ErrInvalid)
 		}
 		if v.SizeBytes == 0 {
@@ -502,8 +502,6 @@ type SessionSnapshot struct {
 
 // ArtifactManifest фиксирует точный подготовленный файл и его профиль для использования выходом.
 type ArtifactManifest struct {
-	// RequiresRebuild сохраняет аннулирование доказательства пригодности после замены собственного профиля.
-	RequiresRebuild bool `json:",omitempty"`
 	// GenerationID идентифицирует точное поколение заглушки.
 	GenerationID ID
 	// VerifiedFormat сохраняет фактически проверенный формат подготовленного файла.

@@ -12,9 +12,9 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
-// Проверяет, что активные Session и Output сохраняют первоначальные снимки как прежних, так и новых
-// профилей после изменения текущих настроек.
-func TestActiveSessionAndOutputResponsesKeepOriginalProfileVersions(t *testing.T) {
+// Проверяет через t, что активные Session и Output сохраняют первоначальные снимки
+// разных текущих профилей после изменения настроек.
+func TestActiveSessionAndOutputResponsesKeepOriginalProfiles(t *testing.T) {
 	// f содержит API и SQLite; preparation принимает настоящие задания подготовки; release
 	// освобождает удерживаемую тестовую подготовку при завершении.
 	f, preparation, _, release := newAPIAcceptanceUpload(t, time.Second)
@@ -27,24 +27,24 @@ func TestActiveSessionAndOutputResponsesKeepOriginalProfileVersions(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	// stream содержит поток, запускаемый с прежним и новым профилями одновременно.
+	// stream содержит поток с двумя разными профилями одновременно.
 	stream, err := f.service.CreateStream(ctx, core.Stream{Name: "Поток", PublicationKey: "synthetic-publication-secret", Fallback: core.FallbackPolicy{AssetID: asset.ID, Watchdog: core.WatchdogPolicy{VideoTimeout: time.Second, AudioTimeout: time.Second, RecoveryWindow: time.Second, KeyframeTimeout: time.Second}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// legacyProfile задаёт прежний видеорецепт с согласованной частотой 30/1.
-	legacyProfile := apiAcceptanceProfile()
-	legacyProfile.Format.Video.FrameRate = core.FrameRate{Numerator: 30, Denominator: 1}
-	// legacy содержит вставленный прежний профиль без назначения новых настроек.
-	legacy := apiAcceptanceInsertLegacyProfile(t, f, legacyProfile)
-	// legacyWire сохраняет публичное представление прежнего профиля до запуска.
-	legacyWire := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "GET", "/transcode-profiles/"+string(legacy.ID), "", 200))
-	// modernWire содержит созданный профиль версии 2 до запуска.
+	// initialProfile задаёт первоначальный AV1-профиль с согласованной частотой 30/1.
+	initialProfile := apiAcceptanceProfile()
+	initialProfile.Format.Video.FrameRate = core.FrameRate{Numerator: 30, Denominator: 1}
+	// initial содержит напрямую вставленный полный AV1-профиль.
+	initial := apiAcceptanceInsertProfile(t, f, initialProfile)
+	// initialWire сохраняет публичное представление AV1-профиля до запуска.
+	initialWire := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "GET", "/transcode-profiles/"+string(initial.ID), "", 200))
+	// modernWire содержит созданный H264-профиль до запуска.
 	modernWire := encodingCreate(t, f, encodingRequestProfile(t, "transcode", "vbr"))
-	// ids содержит идентификаторы прежнего и нового профилей для параллельных групп одного запуска.
-	ids := []core.ID{legacy.ID, core.ID(modernWire["id"].(string))}
+	// ids содержит идентификаторы двух профилей для параллельных групп одного запуска.
+	ids := []core.ID{initial.ID, core.ID(modernWire["id"].(string))}
 	// before сохраняет исходные полные профили по ID для сравнения после изменения текущих настроек.
-	before := map[string]any{string(legacy.ID): legacyWire["profile"], string(ids[1]): modernWire["profile"]}
+	before := map[string]any{string(initial.ID): initialWire["profile"], string(ids[1]): modernWire["profile"]}
 	// n задаёт номер создаваемой группы; id выбирает профиль этой группы.
 	for n, id := range ids {
 		// group содержит созданную группу выбранного профиля; err содержит отказ создания.

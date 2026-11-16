@@ -180,12 +180,14 @@ func TestSessionSnapshotRejectsForeignAndDuplicateGroups(t *testing.T) {
 }
 
 // Проверяет согласованность ссылок и полного профиля всех частей снимка выхода.
+// t сообщает об ошибках проверяемого сценария.
 func TestOutputSnapshotRequiresOneConsistentFallbackProfile(t *testing.T) {
 	// tc содержит выбранное изменение или допустимое сочетание полей проверяемой сущности.
 	for _, tc := range []struct {
 		// name задаёт имя проверяемого нарушения доменного ограничения.
 		name string
 		// edit вносит выбранное нарушение в отдельную копию корректного доменного значения.
+		// Параметр v каждого обработчика edit указывает на отдельную изменяемую копию снимка выхода.
 		edit func(*core.OutputSnapshot)
 	}{
 		{"invalid_destination", func(v *core.OutputSnapshot) {
@@ -226,9 +228,10 @@ func TestOutputSnapshotRequiresOneConsistentFallbackProfile(t *testing.T) {
 		}},
 		{"different_full_profile", func(v *core.OutputSnapshot) {
 			// Меняет ширину профиля снимка без изменения профиля манифеста.
-			v.Profile.Profile.Format.Video.Width++
+			v.Profile.Profile.Format.Video.Width += 2
 		}},
 	} {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run(tc.name, func(t *testing.T) {
 			// Проверяет ErrInvalid для выбранного нарушения связей назначения, группы, профиля, политики и
 			// манифеста выхода.

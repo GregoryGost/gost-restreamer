@@ -17,8 +17,10 @@ type contractSequence struct {
 	equal bool
 	// level задаёт индекс уровня AV1 в последовательности и префиксе av1C.
 	level byte
-	// highDepth включает признак высокой разрядности для проверки отказа.
+	// highDepth включает реальную десятибитную глубину последовательности.
 	highDepth bool
+	// highTier включает high tier при уровне, в котором предусмотрено поле seq_tier.
+	highTier bool
 	// superres включает неподдержанное переопределение разрешения.
 	superres bool
 	// primaries задаёт числовой CICP-код основных цветов.
@@ -82,7 +84,7 @@ func contractAV1Config(s contractSequence) []byte {
 	put(0, 12) // operating_point_idc.
 	put(uint32(s.level), 5)
 	if s.level > 7 {
-		put(0, 1) // seq_tier.
+		put(flag(s.highTier), 1) // seq_tier.
 	}
 	put(9, 4) // frame_width_bits_minus_1.
 	put(8, 4) // frame_height_bits_minus_1.
@@ -111,6 +113,9 @@ func contractAV1Config(s contractSequence) []byte {
 	if s.highDepth {
 		depth = 0x40
 	}
+	if s.highTier {
+		depth |= 0x80
+	}
 	return append([]byte{0x81, s.level, 0x0c | depth, 0, 0x0a, byte(len(payload))}, payload...)
 }
 
@@ -138,7 +143,7 @@ func TestContractAV1TimingAndObservedColor(t *testing.T) {
 	}{
 		{"timing-without-metadata", contractSDRSequence(), core.FrameRate{}, core.FrameRate{Numerator: 30000, Denominator: 1001}, core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}},
 		{"equivalent-metadata", contractSDRSequence(), core.FrameRate{Numerator: 60000, Denominator: 2002}, core.FrameRate{Numerator: 30000, Denominator: 1001}, core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}},
-		{"variable-interval-needs-metadata", contractSequence{tick: 1, scale: 60, equal: false, level: 31, primaries: 9, transfer: 14, matrix: 9, fullRange: true}, core.FrameRate{Numerator: 24, Denominator: 1}, core.FrameRate{Numerator: 24, Denominator: 1}, core.ColorInfo{Range: "full", Primaries: "cicp:9", Transfer: "cicp:14", Matrix: "cicp:9"}},
+		{"variable-interval-needs-metadata", contractSequence{tick: 1, scale: 60, equal: false, level: 31, primaries: 9, transfer: 14, matrix: 9, fullRange: true}, core.FrameRate{Numerator: 24, Denominator: 1}, core.FrameRate{Numerator: 24, Denominator: 1}, core.ColorInfo{Range: "full", Primaries: "bt2020", Transfer: "bt2020-10", Matrix: "bt2020nc"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Проверяет размеры, цвет, независимый старт и точную частоту кадров для выбранных timing_info и
@@ -223,9 +228,9 @@ func TestContractAV1RejectsMalformedConfiguration(t *testing.T) {
 	}
 }
 
-// Проверяет отказ AV1 с высокой разрядностью, superres, PQ/HLG, зарезервированным уровнем и нулевыми
-// параметрами timing_info.
-func TestContractAV1RejectsUnsupportedSequences(t *testing.T) {
+// Проверяет malformed/unsupported синтаксис AV1 и границу наблюдения HDR.
+// Валидные PQ/HLG распознаются, но 8-bit BT.709 с HDR transfer не допускается конечным RTMP-портом.
+func TestContractAV1UnsupportedProcessingAndMalformedSequences(t *testing.T) {
 	// tc выбирает неподдержанный параметр последовательности.
 	for _, tc := range []struct {
 		// name обозначает неподдержанную возможность в имени подтеста.
@@ -233,10 +238,6 @@ func TestContractAV1RejectsUnsupportedSequences(t *testing.T) {
 		// change изменяет соответствующее поле исходной SDR-последовательности.
 		change func(*contractSequence)
 	}{
-		{"10-bit", func(s *contractSequence) {
-			// Включает неподдержанную глубину цвета 10 бит в тестовой последовательности AV1.
-			s.highDepth = true
-		}},
 		{"superres", func(s *contractSequence) {
 			// Включает неподдержанное сверхразрешение в тестовой последовательности AV1.
 			s.superres = true
@@ -270,6 +271,20 @@ func TestContractAV1RejectsUnsupportedSequences(t *testing.T) {
 			tc.change(&s)
 			// config содержит av1C после внесения неподдержанного параметра.
 			config := contractAV1Config(s)
+			if tc.name == "PQ" || tc.name == "HLG" {
+				// actual, key и err проверяют наблюдаемое описание валидного битового потока.
+				actual, key, err := InspectAV1TU(config, contractAV1TU(config), core.FrameRate{})
+				if err != nil || !key || actual.BitDepth != 8 || actual.Color.Primaries != "bt709" || actual.Color.Transfer != map[string]string{"PQ": "smpte2084", "HLG": "arib-std-b67"}[tc.name] {
+					t.Fatalf("HDR tuple не распознан: %+v key=%v err=%v", actual, key, err)
+				}
+				// declared использует реальный observed tuple и обычный AAC; желаемые параметры
+				// не могут замаскировать отсутствие 10-bit/BT.2020 у HDR-потока.
+				declared := core.MediaFormat{Video: actual, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}
+				if err = validateOutboundProfile(declared); !errors.Is(err, ErrCodec) {
+					t.Fatalf("Неподдержанный HDR tuple допущен к передаче: %+v %v", actual, err)
+				}
+				return
+			}
 			// err содержит результат проверки неподдержанной последовательности.
 			if _, _, err := InspectAV1TU(config, contractAV1TU(config), core.FrameRate{}); !errors.Is(err, ErrCodec) {
 				t.Fatalf("неподдержанный sequence принят: %v", err)

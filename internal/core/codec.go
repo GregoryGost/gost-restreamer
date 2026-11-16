@@ -12,9 +12,6 @@ import (
 // MetadataVersion задаёт версию общего представления доменных метаданных.
 const MetadataVersion = 1
 
-// profileVersionV3 задаёт версию профиля с явным режимом обработки LIVE-аудио.
-const profileVersionV3 = 3
-
 // MetadataError описывает отказ чтения или проверки конкретной версии метаданных.
 type MetadataError struct {
 	// Kind указывает вид метаданных, чтение или проверка которых завершились отказом.
@@ -45,7 +42,7 @@ type videoMetadata struct {
 	// Height содержит высоту видеокадра в пикселях.
 	Height uint32
 	// FrameRate задаёт частоту видеокадров точной положительной дробью.
-	FrameRate FrameRate
+	FrameRate frameRateMetadata
 	// CodecProfile сохраняет точные байты параметра CodecProfile без нормализации текста.
 	CodecProfile []byte
 	// Level сохраняет точные байты параметра Level без нормализации текста.
@@ -90,74 +87,22 @@ type formatMetadata struct {
 	Audio audioMetadata
 }
 
-// profileMetadataV1 сохраняет точный порядок и типы полей прежнего формата хранения.
-type profileMetadataV1 struct {
-	// Version содержит версию сохраняемого представления.
-	Version int
-	// Mode сохраняет режим обработки LIVE-видео группы.
+// profileMetadata задаёт единственную полную сохраняемую форму профиля.
+// Version принадлежит только вложенному описанию фактического формата MetadataVersion.
+// Профиль не содержит селектора прежних возможностей и всегда требует Encoding.
+type profileMetadata struct {
+	// Mode выбирает обработку LIVE-видео.
 	Mode GroupMode
-	// Format содержит версионированное описание обеих дорожек.
-	Format formatMetadata
-	// VideoEncoding сохраняет параметры видеокодирования.
-	VideoEncoding videoEncodingV1
-	// AudioEncoding сохраняет параметры аудиокодирования.
-	AudioEncoding audioEncodingV1
-}
-
-// videoEncodingV1 сохраняет прежний порядок и типы полей видеокодирования профиля v1.
-type videoEncodingV1 struct {
-	// TargetBitrateBPS содержит целевой видеобитрейт в битах в секунду.
-	TargetBitrateBPS uint64
-	// MaxBitrateBPS содержит верхний предел видеобитрейта в битах в секунду.
-	MaxBitrateBPS uint64
-	// BufferBits содержит размер буфера управления битрейтом в битах.
-	BufferBits uint64
-	// GOPFrames содержит длину GOP в кадрах.
-	GOPFrames uint32
-	// MaxBFrames содержит максимальное число B-кадров.
-	MaxBFrames uint32
-	// ClosedGOP указывает требование закрытого GOP.
-	ClosedGOP bool
-}
-
-// audioEncodingV1 сохраняет прежнее представление аудиобитрейта профиля v1.
-type audioEncodingV1 struct { /* BitrateBPS содержит аудиобитрейт в битах в секунду. */
-	BitrateBPS uint64
-}
-
-// profileMetadataV2 сохраняет полный профиль v2 с явными настройками кодировщиков.
-type profileMetadataV2 struct {
-	// Version содержит версию сохраняемого представления.
-	Version int
-	// Mode сохраняет режим обработки LIVE-видео группы.
-	Mode GroupMode
-	// Format содержит версионированное описание обеих дорожек.
-	Format formatMetadata
-	// VideoEncoding сохраняет параметры видеокодирования.
-	VideoEncoding VideoEncoding
-	// AudioEncoding сохраняет параметры аудиокодирования.
-	AudioEncoding AudioEncoding
-	// Encoding сохраняет настройки конкретных кодировщиков.
-	Encoding EncodingSettings
-}
-
-// profileMetadataV3 сохраняет профиль v3 с явным режимом LIVE-аудио и допускающим null блоком
-// кодировщиков.
-type profileMetadataV3 struct {
-	// Version содержит версию сохраняемого представления.
-	Version int
-	// Mode сохраняет режим обработки LIVE-видео группы.
-	Mode GroupMode
-	// LiveAudioMode сохраняет явно выбранный режим обработки LIVE-аудио.
+	// LiveAudioMode явно задаёт независимую обработку LIVE-аудио.
 	LiveAudioMode LiveAudioMode
-	// Format содержит версионированное описание обеих дорожек.
+	// Format сохраняет обе дорожки и точные байты их строковых параметров.
 	Format formatMetadata
-	// VideoEncoding сохраняет параметры видеокодирования.
+	// VideoEncoding сохраняет битрейты, буфер и структуру GOP без потери нулей.
 	VideoEncoding VideoEncoding
-	// AudioEncoding сохраняет параметры аудиокодирования.
+	// AudioEncoding сохраняет аудиобитрейт, включая неприменимый ноль FLAC.
 	AudioEncoding AudioEncoding
-	// Encoding сохраняет настройки кодировщиков либо явный null для прежнего профиля.
-	Encoding *EncodingSettings
+	// Encoding сохраняет полный запрос кодировщиков и присутствие качества.
+	Encoding EncodingSettings
 }
 
 // formatDTO переводит формат в версионированное представление, сохраняя строковые параметры как точные
@@ -166,7 +111,7 @@ func formatDTO(f MediaFormat) formatMetadata {
 	// v содержит видеодорожку исходного формата, а a — его аудиодорожку для перевода в сохраняемое
 	// представление.
 	v, a := f.Video, f.Audio
-	return formatMetadata{Version: MetadataVersion, Video: videoMetadata{Codec: v.Codec, Width: v.Width, Height: v.Height, FrameRate: v.FrameRate, CodecProfile: []byte(v.CodecProfile), Level: []byte(v.Level), Tier: []byte(v.Tier), PixelFormat: []byte(v.PixelFormat), BitDepth: v.BitDepth, Range: []byte(v.Color.Range), Primaries: []byte(v.Color.Primaries), Transfer: []byte(v.Color.Transfer), Matrix: []byte(v.Color.Matrix)}, Audio: audioMetadata{Codec: a.Codec, CodecProfile: []byte(a.CodecProfile), SampleRateHz: a.SampleRateHz, Channels: a.Channels, ChannelLayout: []byte(a.ChannelLayout)}}
+	return formatMetadata{Version: MetadataVersion, Video: videoMetadata{Codec: v.Codec, Width: v.Width, Height: v.Height, FrameRate: frameRateMetadata(v.FrameRate), CodecProfile: []byte(v.CodecProfile), Level: []byte(v.Level), Tier: []byte(v.Tier), PixelFormat: []byte(v.PixelFormat), BitDepth: v.BitDepth, Range: []byte(v.Color.Range), Primaries: []byte(v.Color.Primaries), Transfer: []byte(v.Color.Transfer), Matrix: []byte(v.Color.Matrix)}, Audio: audioMetadata{Codec: a.Codec, CodecProfile: []byte(a.CodecProfile), SampleRateHz: a.SampleRateHz, Channels: a.Channels, ChannelLayout: []byte(a.ChannelLayout)}}
 }
 
 // value восстанавливает доменный формат из сохранённых байтов без проверки версии и допустимости
@@ -175,7 +120,7 @@ func (d formatMetadata) value() MediaFormat {
 	// v содержит сохранённые параметры видео, а a — сохранённые параметры аудио для восстановления
 	// доменного формата.
 	v, a := d.Video, d.Audio
-	return MediaFormat{Video: VideoFormat{Codec: v.Codec, Width: v.Width, Height: v.Height, FrameRate: v.FrameRate, CodecProfile: string(v.CodecProfile), Level: string(v.Level), Tier: string(v.Tier), PixelFormat: string(v.PixelFormat), BitDepth: v.BitDepth, Color: ColorInfo{Range: string(v.Range), Primaries: string(v.Primaries), Transfer: string(v.Transfer), Matrix: string(v.Matrix)}}, Audio: AudioFormat{Codec: a.Codec, CodecProfile: string(a.CodecProfile), SampleRateHz: a.SampleRateHz, Channels: a.Channels, ChannelLayout: string(a.ChannelLayout)}}
+	return MediaFormat{Video: VideoFormat{Codec: v.Codec, Width: v.Width, Height: v.Height, FrameRate: FrameRate(v.FrameRate), CodecProfile: string(v.CodecProfile), Level: string(v.Level), Tier: string(v.Tier), PixelFormat: string(v.PixelFormat), BitDepth: v.BitDepth, Color: ColorInfo{Range: string(v.Range), Primaries: string(v.Primaries), Transfer: string(v.Transfer), Matrix: string(v.Matrix)}}, Audio: AudioFormat{Codec: a.Codec, CodecProfile: string(a.CodecProfile), SampleRateHz: a.SampleRateHz, Channels: a.Channels, ChannelLayout: string(a.ChannelLayout)}}
 }
 
 // strictJSON декодирует ровно одно значение JSON и отклоняет неизвестные поля и последующие значения.
@@ -197,11 +142,10 @@ func strictJSON(data []byte, value any) error {
 	return nil
 }
 
-// EncodeProfile кодирует проверенный профиль в соответствующее его полям представление v1, v2 или v3.
+// EncodeProfile проверяет p и кодирует единственную полную форму профиля.
 func EncodeProfile(p GroupProfile) ([]byte, error) { return p.MarshalJSON() }
 
-// DecodeProfile восстанавливает и проверяет профиль из поддерживаемого версионированного
-// представления.
+// DecodeProfile строго восстанавливает полный материализованный профиль из data.
 func DecodeProfile(data []byte) (GroupProfile, error) {
 	// p принимает восстановленный профиль, возвращаемый вызывающему коду.
 	var p GroupProfile
@@ -210,68 +154,37 @@ func DecodeProfile(data []byte) (GroupProfile, error) {
 	return p, err
 }
 
-// MarshalJSON проверяет профиль и выбирает v3 при явном LiveAudioMode, v2 при ненулевом Encoding,
-// иначе сохраняет прежнее представление v1.
+// MarshalJSON проверяет p и сохраняет все поля единственной формы, включая false и нули.
+// Настройки по умолчанию не назначаются; нулевой Encoding и пустой LIVE-селектор отклоняются.
 func (p GroupProfile) MarshalJSON() ([]byte, error) {
-	// version выбирает версию сохраняемого профиля по наличию настроек кодировщиков и
-	// LIVE-аудиорежима.
-	version := MetadataVersion
-	if p.Encoding != (EncodingSettings{}) {
-		version = EncodingVersion
-	}
-	if p.LiveAudioMode != "" {
-		version = profileVersionV3
-	}
-	// err содержит причину отказа проверки профиля перед сохранением.
+	// err сообщает об отказе полной проверки перед записью.
 	if err := p.Validate(); err != nil {
-		return nil, &MetadataError{Kind: "profile", Version: version, Cause: err}
+		return nil, &MetadataError{Kind: "profile", Cause: err}
 	}
-	if p.LiveAudioMode != "" {
-		// encoding указывает сохраняемый блок кодировщиков либо nil для прежнего профиля с явным
-		// LIVE-аудиорежимом.
-		var encoding *EncodingSettings
-		if p.Encoding != (EncodingSettings{}) {
-			encoding = &p.Encoding
-		}
-		return json.Marshal(profileMetadataV3{Version: profileVersionV3, Mode: p.Mode, LiveAudioMode: p.LiveAudioMode, Format: formatDTO(p.Format), VideoEncoding: p.VideoEncoding, AudioEncoding: p.AudioEncoding, Encoding: encoding})
-	}
-	if p.Encoding == (EncodingSettings{}) {
-		return json.Marshal(profileMetadataV1{Version: MetadataVersion, Mode: p.Mode, Format: formatDTO(p.Format), VideoEncoding: videoEncodingV1(p.VideoEncoding), AudioEncoding: audioEncodingV1(p.AudioEncoding)})
-	}
-	return json.Marshal(profileMetadataV2{Version: EncodingVersion, Mode: p.Mode, Format: formatDTO(p.Format), VideoEncoding: p.VideoEncoding, AudioEncoding: p.AudioEncoding, Encoding: p.Encoding})
+	return json.Marshal(profileMetadata{Mode: p.Mode, LiveAudioMode: p.LiveAudioMode, Format: formatDTO(p.Format), VideoEncoding: p.VideoEncoding, AudioEncoding: p.AudioEncoding, Encoding: p.Encoding})
 }
 
-// UnmarshalJSON выбирает декодер по версии профиля и изменяет получатель только после успешной
-// проверки; неизвестные поля отклоняются.
+// UnmarshalJSON читает только полную текущую форму data без назначения значений по умолчанию и старых читателей.
+// Неизвестные поля и отсутствующие/null поля отклоняются; p меняется лишь после всех проверок.
 func (p *GroupProfile) UnmarshalJSON(data []byte) error {
-	// header содержит прочитанную версию для выбора декодера профиля.
-	var header struct { /* Version содержит версию сохраняемого представления. */
-		Version int
-	}
-	// err содержит причину отказа чтения версии профиля.
-	if err := json.Unmarshal(data, &header); err != nil {
-		return &MetadataError{Kind: "profile", Cause: err}
-	}
-	if header.Version == EncodingVersion {
-		return p.unmarshalProfileV2(data)
-	}
-	if header.Version == profileVersionV3 {
-		return p.unmarshalProfileV3(data)
-	}
-	// d принимает прежнее сохраняемое представление профиля v1.
-	var d profileMetadataV1
-	// err содержит причину отказа строгого чтения профиля v1.
+	// d принимает материализованные поля до проверки и присваивания получателю.
+	var d profileMetadata
+	// err сообщает нарушение типов или наличие неизвестных полей.
 	if err := strictJSON(data, &d); err != nil {
 		return &MetadataError{Kind: "profile", Cause: err}
 	}
-	if d.Version != MetadataVersion || d.Format.Version != MetadataVersion {
-		return &MetadataError{Kind: "profile", Version: d.Version, Cause: ErrInvalidMetadata}
+	// err сообщает об отсутствующем либо null поле, включая false и нули.
+	if err := completeProfile(data); err != nil {
+		return &MetadataError{Kind: "profile", Cause: err}
 	}
-	// result хранит восстановленный профиль v1 до успешной проверки.
-	result := GroupProfile{Mode: d.Mode, Format: d.Format.value(), VideoEncoding: VideoEncoding(d.VideoEncoding), AudioEncoding: AudioEncoding(d.AudioEncoding)}
-	// err содержит причину отказа проверки восстановленного профиля v1.
+	if d.Format.Version != MetadataVersion {
+		return &MetadataError{Kind: "profile", Cause: ErrInvalidMetadata}
+	}
+	// result хранит профиль до успешной доменной проверки без подстановки значений.
+	result := GroupProfile{Mode: d.Mode, LiveAudioMode: d.LiveAudioMode, Format: d.Format.value(), VideoEncoding: d.VideoEncoding, AudioEncoding: d.AudioEncoding, Encoding: d.Encoding}
+	// err сообщает об отказе полной проверки прочитанного профиля.
 	if err := result.Validate(); err != nil {
-		return &MetadataError{Kind: "profile", Version: d.Version, Cause: err}
+		return &MetadataError{Kind: "profile", Cause: err}
 	}
 	*p = result
 	return nil

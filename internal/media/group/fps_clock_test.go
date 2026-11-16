@@ -8,7 +8,6 @@ import (
 
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/media"
-	"github.com/GregoryGost/gost-restreamer/internal/media/fmp4"
 )
 
 // Проверяет одинаковую точную выходную шкалу и байты пакетов для эквивалентных сокращённой и
@@ -100,16 +99,17 @@ func TestSwitcherClockReducesEquivalentFrameRates(t *testing.T) {
 	}
 }
 
-// Проверяет отказ создания переключателя при частоте, для которой общая шкала дорожек не представима.
-func TestSwitcherRejectsUnrepresentableFrameRateClock(t *testing.T) {
+// TestSwitcherRejectsInvalidFrameRateBeforeClockAllocation проверяет ранний отказ полного профиля
+// при частоте вне нативного диапазона; t контролирует отказ до создания переключателя.
+func TestSwitcherRejectsInvalidFrameRateBeforeClockAllocation(t *testing.T) {
 	// fixture предоставляет контрольные настройки для проверки непредставимой выходной шкалы.
 	fixture, _, _, _ := switcherFixture(t)
 	// c содержит профиль с частотой, вызывающей непредставимую общую шкалу.
 	c := fixture.config
 	c.Profile.Format.Video.FrameRate = core.FrameRate{Numerator: 4294967291, Denominator: 1}
-	// err содержит ожидаемый ErrUnsupportedTiming при создании переключателя.
-	if _, err := NewSwitcher(c); !errors.Is(err, fmp4.ErrUnsupportedTiming) {
-		t.Fatalf("ожидалась ошибка непредставимой шкалы, получено %v", err)
+	// err содержит ожидаемый ErrInvalid при недопустимом полном профиле.
+	if _, err := NewSwitcher(c); !errors.Is(err, core.ErrInvalid) {
+		t.Fatalf("ожидался ранний отказ недопустимой частоты, получено %v", err)
 	}
 }
 

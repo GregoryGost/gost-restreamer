@@ -165,16 +165,26 @@ func (s *Service) CreateProfile(ctx context.Context, value TranscodeProfile) (Tr
 }
 
 // UpdateProfile проверяет ожидаемую ревизию и заменяет профиль без назначения значений по умолчанию;
-// явный режим LIVE-аудио и EncodingVersion нельзя сбросить в прежнее представление.
+// полный материализованный профиль требует явного режима LIVE-аудио.
+// ctx ограничивает операцию хранилища; value содержит заменяемую конфигурацию профиля, expected — её ожидаемую ревизию.
 func (s *Service) UpdateProfile(ctx context.Context, value TranscodeProfile, expected uint64) (TranscodeProfile, error) {
-	// err содержит причину отказа проверки заменяющей конфигурации профиля.
-	if err := value.Validate(); err != nil {
+	// err сообщает об ошибочном имени до обращения к хранилищу.
+	if err := validText("TranscodeProfile.Name", value.Name); err != nil {
 		return TranscodeProfile{}, err
 	}
+	// Пустой LIVE-селектор проверяется после CAS, чтобы устаревшая полная замена
+	// сначала получала конфликт ревизии. Другие явные профили проверяются до транзакции.
+	if value.Profile.LiveAudioMode != "" {
+		// err сообщает нарушение полной явной конфигурации.
+		if err := value.Profile.Validate(); err != nil {
+			return TranscodeProfile{}, err
+		}
+	}
 	// err содержит причину отказа транзакционного изменения профиля.
+	// r предоставляет репозитории текущей транзакции условной замены профиля.
 	err := s.uow.Write(ctx, func(r Repositories) error {
-		// В транзакции сначала сверяет Revision, запрещает потерю явного LiveAudioMode и понижение
-		// EncodingVersion, затем сохраняет следующую версию профиля.
+		// В транзакции сверяет Revision и сохраняет следующую ревизию полного профиля;
+		// переданная функция не подставляет отсутствующие параметры запроса.
 
 		// current содержит сохранённую конфигурацию профиля для проверки ревизии, а err —
 		// причину отказа её чтения.
@@ -185,11 +195,11 @@ func (s *Service) UpdateProfile(ctx context.Context, value TranscodeProfile, exp
 		if err = checkRevision(current.Revision, expected); err != nil {
 			return err
 		}
-		if current.Profile.LiveAudioMode != "" && value.Profile.LiveAudioMode == "" {
+		if value.Profile.LiveAudioMode == "" {
 			return invalidEncoding("live_audio_mode", "Полная замена профиля требует явного live_audio_mode: copy или transcode.")
 		}
-		if current.Profile.Encoding.Version == EncodingVersion && value.Profile.Encoding.Version != EncodingVersion {
-			return invalidEncoding("encoding", "Профиль версии 2 требует полный объект encoding версии 2; переход к прежнему формату запрещён.")
+		if err = value.Validate(); err != nil {
+			return err
 		}
 		value.Record, err = revise(current.Record)
 		if err != nil {

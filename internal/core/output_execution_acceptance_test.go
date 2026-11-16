@@ -51,6 +51,8 @@ type executionAcceptanceFixture struct {
 
 // Открывает временную файловую SQLite с рабочими миграциями и двумя Service, создаёт заданное число
 // выходов и выдаёт их попытки; Store закрывается очисткой теста.
+// t сообщает об ошибках проверяемого сценария.
+// count задаёт число создаваемых выходов, budget — предел одновременных физических резервов.
 func newExecutionAcceptanceFixture(t *testing.T, count, budget int) executionAcceptanceFixture {
 	t.Helper()
 	// ctx задаёт контекст проверяемых операций физического исполнения выхода.
@@ -67,6 +69,7 @@ func newExecutionAcceptanceFixture(t *testing.T, count, budget int) executionAcc
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Обратный вызов очистки освобождает временный Store, в том числе при раннем отказе теста.
 	t.Cleanup(func() {
 		// Закрывает созданный временный Store после теста и сообщает ошибку освобождения ресурсов.
 
@@ -77,7 +80,7 @@ func newExecutionAcceptanceFixture(t *testing.T, count, budget int) executionAcc
 	})
 	// d содержит фактически прочитанные свойства SQLite и версию применённой схемы.
 	d, err := store.Diagnostics(ctx)
-	if err != nil || d.SchemaVersion != 2 || d.SQLiteVersion == "" {
+	if err != nil || d.SchemaVersion != 1 || d.SQLiteVersion == "" {
 		t.Fatalf("Проверка рабочего runner Goose/SQLite: %+v, %v", d, err)
 	}
 	// f объединяет настоящий временный Store, два Service и точные попытки тестовых выходов.
@@ -94,6 +97,7 @@ func newExecutionAcceptanceFixture(t *testing.T, count, budget int) executionAcc
 	sessionSnapshot, _ := contractSnapshots(t)
 	// session задаёт выданный RUNNING-запуск, которому принадлежат тестовые выходы.
 	session := core.Session{Record: contractRecord("execution-session"), Issued: true, StreamID: sessionSnapshot.Stream.ID, Incarnation: store.Incarnation(), State: core.SessionRunning, Lifecycle: 1, Snapshot: sessionSnapshot}
+	// r предоставляет репозитории текущей транзакции создания сессии и выходов.
 	err = store.Write(ctx, func(r core.Repositories) error {
 		// В одной транзакции создаёт Session в состоянии RUNNING, выходы и PENDING-квитанции для дальнейшего
 		// штатного Claim и MarkIssued.

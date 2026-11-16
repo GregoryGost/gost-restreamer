@@ -22,7 +22,8 @@ func stringEnum(schema *huma.Schema, name string, values []string) {
 	schema.Properties[name] = &property
 }
 
-// desiredEnums переносит из доменного каталога fields в свойства схемы schema.
+// desiredEnums переносит текущий каталог fields в свойства schema.
+// Применимость значений проверяется по выбранным кодировщикам в домене.
 // Ключ fields обозначает JSON-свойство, значение — поле строгого желаемого профиля.
 func desiredEnums(schema *huma.Schema, fields map[string]string) *huma.Schema {
 	// name адресует JSON-свойство; field выбирает соответствующий доменный каталог.
@@ -37,7 +38,7 @@ func (ColorDTO) TransformSchema(_ huma.Registry, schema *huma.Schema) *huma.Sche
 	return desiredEnums(schema, map[string]string{"range": "video.color.range", "primaries": "video.color.primaries", "transfer": "video.color.transfer", "matrix": "video.color.matrix"})
 }
 
-// TransformSchema публикует желаемые видеопараметры schema и объединённые уровни двух кодеков.
+// TransformSchema публикует желаемые видеопараметры schema и объединённые уровни поддержанных кодеков.
 func (VideoFormatDTO) TransformSchema(_ huma.Registry, schema *huma.Schema) *huma.Schema {
 	desiredEnums(schema, map[string]string{"codec": "video.codec", "codec_profile": "video.codec_profile", "tier": "video.tier", "pixel_format": "video.pixel_format"})
 	stringEnum(schema, "level", append(core.DesiredStringValues("video.level.h264"), core.DesiredStringValues("video.level.av1")...))

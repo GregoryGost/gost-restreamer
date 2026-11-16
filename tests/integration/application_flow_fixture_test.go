@@ -135,6 +135,7 @@ func applicationFlowDemux(file *os.File) (*fmp4.Demuxer, error) {
 // Verify проверяет совместимость формата и каждую единицу доступа подготовленного файла; ожидает ровно
 // 96 видеопакетов и 75 аудиопакетов. Ошибка чтения, проверки или отмена прерывает проверку, а неверное
 // количество пакетов возвращает ErrNotReady.
+// ctx ограничивает проверку, file содержит подготовленный контейнер, profile задаёт ожидаемый полный профиль.
 func (i applicationFlowInspection) Verify(ctx context.Context, file *os.File, profile core.GroupProfile) (core.MediaFormat, error) {
 	// d содержит демультиплексор подготовленного файла; err содержит отказ его открытия.
 	d, err := applicationFlowDemux(file)
@@ -144,7 +145,7 @@ func (i applicationFlowInspection) Verify(ctx context.Context, file *os.File, pr
 	// actual содержит фактические описания обеих дорожек контейнера для проверки совместимости с
 	// профилем.
 	actual := core.MediaFormat{Video: d.Init().Video.Info().Video, Audio: d.Init().Audio.Info().Audio}
-	if err = codec.Compatible(actual, profile.Format); err != nil {
+	if err = core.CompatibleProfileFormat(actual, profile); err != nil {
 		return actual, err
 	}
 	// inspector проверяет структуру каждой единицы доступа подготовленного файла.
@@ -329,8 +330,29 @@ func applicationFlowProfileJSON(p core.GroupProfile) api.GroupProfileDTO {
 	// v содержит формат видео; a содержит формат аудио; e содержит общие видеонастройки для точного
 	// API-представления профиля.
 	v, a, e := p.Format.Video, p.Format.Audio, p.VideoEncoding
+	// encoding переносит полный текущий рецепт без повторной материализации значений по умолчанию.
+	encoding := api.EncodingDTO{VideoEncoder: p.Encoding.VideoEncoder, AudioEncoder: p.Encoding.AudioEncoder, RateControl: p.Encoding.RateControl, RescaleOutput: p.Encoding.RescaleOutput, VideoCustom: p.Encoding.VideoCustom, AudioCustom: p.Encoding.AudioCustom}
+	if p.Encoding.QP.Set {
+		encoding.QP = &p.Encoding.QP.Value
+	}
+	if p.Encoding.CRF.Set {
+		// quality сохраняет сотые доли CRF для точной публичной сериализации.
+		quality := api.CRFNumber(p.Encoding.CRF.ValueHundredths)
+		encoding.CRF = &quality
+	}
+	if p.Encoding.VideoEncoder == core.VideoEncoderNVENC {
+		// settings содержит полный запрос NVENC для переноса применимых полей.
+		settings := p.Encoding.NVENC
+		encoding.NVENC = &api.NVENCDTO{Preset: settings.Preset, Tuning: settings.Tuning, Multipass: settings.Multipass, LookaheadFrames: settings.LookaheadFrames, EnableSpatialAQ: settings.EnableSpatialAQ, EnableTemporalAQ: settings.EnableTemporalAQ, AQStrength: settings.AQStrength}
+	}
+	if p.Encoding.VideoEncoder == core.VideoEncoderSVTAV1 {
+		// settings содержит полный запрос SVT-AV1 для переноса применимых полей.
+		settings := p.Encoding.SVTAV1
+		encoding.SVTAV1 = &api.SVTAV1DTO{Preset: settings.Preset, Tuning: settings.Tuning, AQMode: settings.AQMode, LookaheadFrames: settings.LookaheadFrames}
+	}
 	return api.GroupProfileDTO{
-		Mode: string(p.Mode),
+		Mode:          string(p.Mode),
+		LiveAudioMode: string(p.LiveAudioMode),
 		Format: api.FormatDTO{
 			Video: api.VideoFormatDTO{
 				Codec: string(v.Codec), Width: v.Width, Height: v.Height,
@@ -343,6 +365,7 @@ func applicationFlowProfileJSON(p core.GroupProfile) api.GroupProfileDTO {
 		},
 		VideoEncoding: api.VideoEncodingDTO{TargetBitrateBPS: api.Decimal(e.TargetBitrateBPS), MaxBitrateBPS: api.Decimal(e.MaxBitrateBPS), BufferBits: api.Decimal(e.BufferBits), GOPFrames: e.GOPFrames, MaxBFrames: e.MaxBFrames, ClosedGOP: e.ClosedGOP},
 		AudioEncoding: api.AudioEncodingDTO{BitrateBPS: api.Decimal(p.AudioEncoding.BitrateBPS)},
+		Encoding:      encoding,
 	}
 }
 

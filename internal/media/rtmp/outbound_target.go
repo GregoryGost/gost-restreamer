@@ -199,23 +199,39 @@ func ResolveOutbound(endpoint, streamKey string, profile core.MediaFormat) (Outb
 	return OutboundTarget{endpoint: strings.Clone(endpoint), address: net.JoinHostPort(host, port), hostname: strings.Clone(host), app: strings.Clone(app), key: strings.Clone(streamKey), tls: u.Scheme == "rtmps", profile: profile}, nil
 }
 
-// Проверяет поддержанное исходящее подмножество AV1/H.264 и AAC-LC, включая размеры, профиль, уровень,
-// цвет и согласованное число каналов.
+// validateOutboundProfile проверяет конечное исходящее подмножество p, включая новые аудиопривязки.
+// Размеры, профиль, уровень, цвет и число каналов сверяются до создания сетевого соединения.
 func validateOutboundProfile(p core.MediaFormat) error {
 	// err сообщает о неподдержанном полном формате исходящего потока.
-	if err := codec.Compatible(p, p); err != nil {
+	if err := codec.CompatibleActual(p, p); err != nil {
 		return err
 	}
 	// a содержит аудиоформат назначения. v содержит видеоформат назначения.
 	a, v := p.Audio, p.Video
-	if a.CodecProfile != "LC" || a.SampleRateHz > 0xffffff || a.Channels != 1 && a.Channels != 2 || a.Channels == 1 && a.ChannelLayout != "mono" || a.Channels == 2 && a.ChannelLayout != "stereo" {
+	if a.Codec == core.CodecAAC && (a.CodecProfile != "LC" || a.SampleRateHz > 0xffffff || !core.ValidAACLayout(a.ChannelLayout, a.Channels)) {
+		return ErrCodec
+	}
+	if a.Codec != core.CodecAAC && (outboundAudioFourCC(a.Codec) == "" || a.SampleRateHz != 48000 || a.Channels != 2 || a.ChannelLayout != "stereo") {
 		return ErrCodec
 	}
 	if v.Color.Range != "limited" && v.Color.Range != "full" && v.Color.Range != "tv" && v.Color.Range != "pc" {
 		return ErrCodec
 	}
+	if v.BitDepth != 8 && v.BitDepth != 10 || !outboundPixel(v) {
+		return ErrCodec
+	}
+	if hdrVideo(v) && (v.BitDepth != 10 || v.Color.Primaries != "bt2020" || v.Color.Matrix != "bt2020nc") {
+		return ErrCodec
+	}
+	if v.Codec == core.CodecHEVC || v.Codec == core.CodecVP9 {
+		return validateNewOutboundVideo(v)
+	}
+	// primary, transfer и matrix независимо задают канонические имена трёх таблиц CICP.
+	primary := map[uint8]string{1: "bt709", 2: "unspecified", 4: "bt470m", 5: "bt470bg", 6: "smpte170m", 7: "smpte240m", 8: "film", 9: "bt2020"}
+	transfer := map[uint8]string{1: "bt709", 2: "unspecified", 4: "gamma22", 5: "gamma28", 6: "smpte170m", 7: "smpte240m", 8: "linear", 13: "iec61966-2-1", 14: "bt2020-10", 15: "bt2020-12", 16: "smpte2084", 18: "arib-std-b67"}
+	matrix := map[uint8]string{0: "gbr", 1: "bt709", 2: "unspecified", 4: "fcc", 5: "bt470bg", 6: "smpte170m", 7: "smpte240m", 9: "bt2020nc", 10: "bt2020c"}
 	if v.Codec == core.CodecAV1 {
-		if v.CodecProfile != "main" || v.Width > 65536 || v.Height > 65536 || v.Tier != "" && v.Tier != "main" && v.Tier != "high" {
+		if v.CodecProfile != "main" && v.CodecProfile != "high" && v.CodecProfile != "professional" || v.Width > 65536 || v.Height > 65536 || v.Tier != "" && v.Tier != "main" && v.Tier != "high" {
 			return ErrCodec
 		}
 		if v.Level != "" && v.Level != "auto" && v.Level != "unspecified" {
@@ -236,14 +252,7 @@ func validateOutboundProfile(p core.MediaFormat) error {
 				return ErrCodec
 			}
 		}
-		// value содержит очередную цветовую характеристику AV1 для проверки имени или
-		// канонического кода.
-		for _, value := range []string{v.Color.Primaries, v.Color.Transfer, v.Color.Matrix} {
-			if !outboundColorValue(value, "cicp:", map[uint8]string{1: "bt709", 2: "unspecified"}) {
-				return ErrCodec
-			}
-		}
-		if v.Color.Transfer == "cicp:16" || v.Color.Transfer == "cicp:18" || v.Color.Primaries == "bt709" && v.Color.Transfer == "cicp:13" && v.Color.Matrix == "cicp:0" {
+		if !outboundColorValue(v.Color.Primaries, "cicp:", primary) || !outboundColorValue(v.Color.Transfer, "cicp:", transfer) || !outboundColorValue(v.Color.Matrix, "cicp:", matrix) {
 			return ErrCodec
 		}
 		return nil
@@ -272,14 +281,37 @@ func validateOutboundProfile(p core.MediaFormat) error {
 			return ErrCodec
 		}
 	}
-	// primary связывает известные числовые коды основных цветов с именами для проверки H.264.
-	primary := map[uint8]string{1: "bt709", 2: "unspecified", 5: "bt470bg", 6: "smpte170m", 9: "bt2020"}
-	// transfer связывает известные коды передаточных характеристик H.264 с их именами.
-	transfer := map[uint8]string{1: "bt709", 2: "unspecified", 6: "smpte170m", 8: "linear", 13: "iec61966-2-1", 16: "smpte2084", 18: "arib-std-b67"}
-	if !outboundColorValue(v.Color.Primaries, "iso-", primary) || !outboundColorValue(v.Color.Transfer, "iso-", transfer) || !outboundColorValue(v.Color.Matrix, "iso-", primary) {
+	if !outboundColorValue(v.Color.Primaries, "iso-", primary) || !outboundColorValue(v.Color.Transfer, "iso-", transfer) || !outboundColorValue(v.Color.Matrix, "iso-", matrix) {
 		return ErrCodec
 	}
 	return nil
+}
+
+// outboundPixel проверяет согласованность имени плоскостей с глубиной и профилем v.
+// Это ограничения структуры сжатого потока; выбор доступного кодировщика проверяется владельцем группы.
+func outboundPixel(v core.VideoFormat) bool {
+	// pixel содержит имя без суффикса десятибитных компонент.
+	pixel := v.PixelFormat
+	if v.BitDepth == 10 {
+		if !strings.HasSuffix(pixel, "10le") {
+			return false
+		}
+		pixel = strings.TrimSuffix(pixel, "10le")
+	}
+	if pixel != "gray" && pixel != "yuv420p" && pixel != "yuv422p" && pixel != "yuv444p" {
+		return false
+	}
+	if v.Codec == core.CodecAV1 {
+		switch v.CodecProfile {
+		case "main":
+			return pixel == "gray" || pixel == "yuv420p"
+		case "high":
+			return pixel == "yuv444p"
+		case "professional":
+			return pixel == "gray" || pixel == "yuv422p"
+		}
+	}
+	return true
 }
 
 // Принимает известное имя либо канонический числовой код с заданным префиксом, если для этого кода нет

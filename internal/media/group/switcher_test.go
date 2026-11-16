@@ -26,6 +26,7 @@ func av1TU(key bool) []byte {
 
 // Создаёт переключатель AV1/AAC с проверенным форматом и конечными бюджетами и регистрирует закрытие
 // после теста.
+// t проверяет создание переключателя и закрывает его после сценария.
 func switcherFixture(t *testing.T) (*Switcher, media.CodecConfig, media.CodecConfig, time.Time) {
 	t.Helper()
 	// vf содержит формат, подтверждённый инспекцией контрольного AV1 TU; err сохраняет результаты
@@ -43,7 +44,7 @@ func switcherFixture(t *testing.T) (*Switcher, media.CodecConfig, media.CodecCon
 	// a содержит AAC-конфигурацию той же эпохи и ревизии 3.
 	a, _ := media.NewCodecConfig(media.CodecConfigInfo{Track: media.TrackAudio, SourceEpoch: 50, Revision: 3, TimeBase: base, Audio: af}, []byte{0x11, 0x90})
 	// c задаёт контрольный copy-профиль, сроки восстановления и конечные бюджеты переключателя.
-	c := SwitcherConfig{Profile: core.GroupProfile{Mode: core.ModeCopy, Format: core.MediaFormat{Video: vf, Audio: af}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 1000, MaxBitrateBPS: 1000, BufferBits: 1000, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 128000}}, Watchdog: media.WatchdogPolicy{VideoTimeout: time.Second, AudioTimeout: time.Second, RecoveryWindow: 100 * time.Millisecond, KeyframeTimeout: 200 * time.Millisecond}, Queue: media.QueueLimits{MaxPackets: 64, MaxBytes: 65536, MaxPacketBytes: 4096, MaxConfigBytes: 512, ResyncTimeout: time.Second}, Router: media.RouterLimits{MaxConsumers: 8, MaxRetainedBytes: 1 << 20, MaxConfigBytes: 512}, MaxAVSkew: time.Second, MaxTransitionGap: time.Second}
+	c := SwitcherConfig{Profile: core.GroupProfile{Mode: core.ModeCopy, LiveAudioMode: core.LiveAudioCopy, Encoding: core.DefaultEncoding(core.ModeCopy, core.VideoEncoderSVTAV1, core.RateControlCBR), Format: core.MediaFormat{Video: vf, Audio: af}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 1000, MaxBitrateBPS: 1000, BufferBits: 1000, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 128000}}, Watchdog: media.WatchdogPolicy{VideoTimeout: time.Second, AudioTimeout: time.Second, RecoveryWindow: 100 * time.Millisecond, KeyframeTimeout: 200 * time.Millisecond}, Queue: media.QueueLimits{MaxPackets: 64, MaxBytes: 65536, MaxPacketBytes: 4096, MaxConfigBytes: 512, ResyncTimeout: time.Second}, Router: media.RouterLimits{MaxConsumers: 8, MaxRetainedBytes: 1 << 20, MaxConfigBytes: 512}, MaxAVSkew: time.Second, MaxTransitionGap: time.Second}
 	// s содержит созданный переключатель AV1/AAC для конкретного теста.
 	s, err := NewSwitcher(c)
 	if err != nil {

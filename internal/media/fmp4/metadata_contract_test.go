@@ -528,8 +528,7 @@ func TestContractH264ConfigurationRejectsBrokenParameterSetFraming(t *testing.T)
 	}
 }
 
-// Проверяет фактические AAC-LC с одним или двумя каналами из ASC и отказ для усечения, AAC Main и
-// многоканального описания без закрепления категории отказа.
+// Проверяет фактические AAC-LC mono/stereo и 5.1 из ASC и отказ для усечения и AAC Main.
 func TestContractAACResolverUsesActualASCAndRejectsUnsupportedDescriptions(t *testing.T) {
 	// tc выбирает поддержанное либо отклоняемое описание AAC и ожидаемые параметры принятого
 	// формата.
@@ -553,7 +552,7 @@ func TestContractAACResolverUsesActualASCAndRejectsUnsupportedDescriptions(t *te
 		{"stereo-48000", []byte{0x11, 0x90}, 48000, 2, "stereo", false},
 		{"truncated", []byte{0x11}, 48000, 2, "", true},
 		{"aac-main", []byte{0x09, 0x90}, 48000, 2, "", true},
-		{"multichannel", []byte{0x11, 0xb0}, 48000, 6, "", true},
+		{"multichannel", []byte{0x11, 0xb0}, 48000, 6, "5.1", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Проверяет точное описание поддержанного AAC LC по ASC либо отказ для выбранного обрезанного или

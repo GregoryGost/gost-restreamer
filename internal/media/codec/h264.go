@@ -29,16 +29,19 @@ type VideoDescription struct {
 func H264SPS(desc VideoDescription) (h264.SPS, error) {
 	// b содержит непрочитанную часть avcC при проверке SPS и записей PPS.
 	b := desc.Headers
-	if len(b) < 8 || b[0] != 1 || b[4]&3 != 3 || b[5]&31 != 1 {
-		return h264.SPS{}, fmt.Errorf("%w: поддерживается один SPS и четырёхбайтовые NAL lengths", ErrCodec)
+	if len(b) < 8 || b[0] != 1 || b[4] != 0xff || b[5] != 0xe1 {
+		return h264.SPS{}, fmt.Errorf("%w: поддерживается один SPS и четырёхбайтовые длины NAL", ErrCodec)
 	}
 	// n содержит длину единственного SPS в байтах.
 	n := int(be.Uint16(b[6:8]))
-	if len(b) < 8+n+1 || n == 0 {
+	if len(b) < 8+n+1 || n < 4 {
 		return h264.SPS{}, ErrCodec
 	}
 	// spsBytes ссылается на исходные байты единственного SPS внутри avcC.
 	spsBytes := b[8 : 8+n]
+	if spsBytes[0]&0x9f != 7 || !bytes.Equal(b[1:4], spsBytes[1:4]) || spsBytes[2]&3 != 0 {
+		return h264.SPS{}, fmt.Errorf("%w: avcC расходится с SPS", ErrCodec)
+	}
 	b = b[8+n:]
 	// ppsCount задаёт число следующих записей PPS в avcC.
 	ppsCount := int(b[0])
@@ -63,8 +66,19 @@ func H264SPS(desc VideoDescription) (h264.SPS, error) {
 	if err := s.Unmarshal(spsBytes); err != nil {
 		return h264.SPS{}, fmt.Errorf("%w: SPS: %v", ErrCodec, err)
 	}
+	if !validSPSRaw(spsBytes) {
+		return h264.SPS{}, fmt.Errorf("%w: неполный либо некорректный SPS", ErrCodec)
+	}
 	if s.ID > 31 || !s.FrameMbsOnlyFlag || s.SeparateColourPlaneFlag || s.ChromaFormatIdc > 3 || s.BitDepthLumaMinus8 > 8 || s.BitDepthLumaMinus8 != s.BitDepthChromaMinus8 {
 		return h264.SPS{}, fmt.Errorf("%w: неподдержанный H.264 SPS", ErrUnready)
+	}
+	// err сообщает о повреждённых PPS либо ссылках, расходящихся с единственным SPS.
+	if err := validateAVCCPPS(desc.Headers[9+n:], ppsCount, s); err != nil {
+		return h264.SPS{}, err
+	}
+	// err сообщает о неполном либо противоречивом расширении avcC, если оно присутствует.
+	if err := validateAVCCExtension(b, s); err != nil {
+		return h264.SPS{}, err
 	}
 	// width содержит вычисленную из макроблоков ширину кадра в пикселях до применения обрезки.
 	width := (uint64(s.PicWidthInMbsMinus1) + 1) * 16
@@ -95,6 +109,38 @@ func H264SPS(desc VideoDescription) (h264.SPS, error) {
 		return h264.SPS{}, fmt.Errorf("%w: размеры sample entry не совпадают с SPS", ErrCodec)
 	}
 	return s, nil
+}
+
+// validateAVCCPPS проверяет count полных PPS в records против SPS s.
+// Бюджет задаётся однобайтовым счётчиком avcC, идентификаторы не могут повторяться.
+func validateAVCCPPS(records []byte, count int, s h264.SPS) error {
+	// seen ограничивает множество уже прочитанных PPS нормативными идентификаторами 0..255.
+	var seen [256]bool
+	for range count {
+		if len(records) < 2 {
+			return ErrCodec
+		}
+		// n задаёт размер следующей PPS NAL в байтах.
+		n := int(be.Uint16(records[:2]))
+		if n < 2 || len(records) < 2+n {
+			return ErrCodec
+		}
+		// raw ссылается на исходную PPS без двухбайтового поля длины.
+		raw := records[2 : 2+n]
+		records = records[2+n:]
+		if raw[0]&0x9f != 8 {
+			return ErrCodec
+		}
+		// r читает поля PPS после удаления защитных байтов NAL.
+		r := bitReader{b: h264.EmulationPreventionRemove(raw[1:])}
+		// id задаёт идентификатор PPS, parent содержит ссылку на SPS.
+		id, parent := r.ue(), r.ue()
+		if r.err != nil || id > 255 || parent != s.ID || seen[id] || !validPPS(&r, s.ProfileIdc, s.BitDepthLumaMinus8) {
+			return ErrCodec
+		}
+		seen[id] = true
+	}
+	return nil
 }
 
 // H264Format получает формат из проверенного SPS, включая сокращённую частоту из VUI.TimingInfo,
@@ -152,66 +198,36 @@ func H264Format(desc VideoDescription) (core.VideoFormat, error) {
 
 // Преобразует известные коды основных цветов H.264 в имена; неизвестный код сохраняет как iso-<номер>.
 func h264ColorName(v uint8) string {
-	switch v {
-	case 1:
-		return "bt709"
-	case 2:
-		return "unspecified"
-	case 5:
-		return "bt470bg"
-	case 6:
-		return "smpte170m"
-	case 9:
-		return "bt2020"
-	}
-	return "iso-" + strconv.Itoa(int(v))
+	return primaryName(v, "iso-")
 }
 
 // Преобразует код передаточной характеристики H.264 в имя, сохраняя неизвестные значения как
 // iso-<номер>.
 func transferName(v uint8) string {
-	switch v {
-	case 1:
-		return "bt709"
-	case 2:
-		return "unspecified"
-	case 6:
-		return "smpte170m"
-	case 8:
-		return "linear"
-	case 13:
-		return "iec61966-2-1"
-	case 14:
-		return "bt2020-10"
-	case 15:
-		return "bt2020-12"
-	case 16:
-		return "smpte2084"
-	case 18:
-		return "arib-std-b67"
-	}
-	return "iso-" + strconv.Itoa(int(v))
+	return cicpTransferName(v, "iso-")
 }
 
 // Преобразует код цветовой матрицы H.264 в имя, сохраняя неизвестные значения как iso-<номер>.
 func matrixName(v uint8) string {
-	switch v {
-	case 0:
-		return "gbr"
-	case 1:
-		return "bt709"
-	case 2:
-		return "unspecified"
-	case 5:
-		return "bt470bg"
-	case 6:
-		return "smpte170m"
-	case 9:
-		return "bt2020nc"
-	case 10:
-		return "bt2020c"
+	return cicpMatrixName(v, "iso-")
+}
+
+// validateAVCCExtension сверяет необязательные поля chroma/depth с разобранным SPS s.
+// Пустой tail сохраняет допустимость прежних avcC без расширения; присутствующий хвост должен быть
+// полным. Дополнительные SPS расширения не входят в поддержанный прогрессивный видеотракт.
+func validateAVCCExtension(tail []byte, s h264.SPS) error {
+	if len(tail) == 0 {
+		return nil
 	}
-	return "iso-" + strconv.Itoa(int(v))
+	switch s.ProfileIdc {
+	case 100, 110, 122, 144, 244:
+	default:
+		return ErrCodec
+	}
+	if len(tail) != 4 || tail[0]&0xfc != 0xfc || tail[1]&0xf8 != 0xf8 || tail[2]&0xf8 != 0xf8 || tail[3] != 0 || uint32(tail[0]&3) != s.ChromaFormatIdc || uint32(tail[1]&7) != s.BitDepthLumaMinus8 || uint32(tail[2]&7) != s.BitDepthChromaMinus8 {
+		return fmt.Errorf("%w: расширение avcC расходится с SPS", ErrCodec)
+	}
+	return nil
 }
 
 // Читает беззнаковое число Exp-Golomb; усечение или более 31 ведущего нуля сохраняют ErrCodec.
@@ -266,7 +282,7 @@ func InspectH264AU(desc VideoDescription, payload []byte) (bool, error) {
 		// id содержит идентификатор PPS. parent содержит идентификатор SPS, на который ссылается
 		// этот PPS.
 		id, parent := r.ue(), r.ue()
-		if r.err != nil || id > 255 || parent != s.ID || !validPPS(&r, s.ProfileIdc) {
+		if r.err != nil || id > 255 || parent != s.ID || !validPPS(&r, s.ProfileIdc, s.BitDepthLumaMinus8) {
 			return false, ErrCodec
 		}
 		if pps[id] {
@@ -344,9 +360,10 @@ func InspectH264AU(desc VideoDescription, payload []byte) (bool, error) {
 	return key, nil
 }
 
-// Проверяет поддержанные поля PPS после идентификаторов: ограничения ссылок, квантования и расширения
-// без матриц масштабирования, а также завершающие биты RBSP.
-func validPPS(r *bitReader, profile uint8) bool {
+// validPPS проверяет поля PPS читателем r после идентификаторов: ссылки, квантование и расширения
+// без матриц масштабирования, а также завершающие биты RBSP. profile задаёт ограничения baseline,
+// depthMinus8 расширяет нижнюю границу начального QP для фактической глубины SPS.
+func validPPS(r *bitReader, profile uint8, depthMinus8 uint32) bool {
 	// entropy содержит признак режима энтропийного кодирования PPS для проверки ограничения
 	// baseline.
 	entropy := r.read(1)
@@ -370,7 +387,7 @@ func validPPS(r *bitReader, profile uint8) bool {
 	// qp содержит начальное смещение квантования PPS. qs содержит начальное смещение квантования
 	// переключаемых срезов. chroma содержит смещение квантования цветовых компонент.
 	qp, qs, chroma := r.se(), r.se(), r.se()
-	if qp < -26 || qp > 25 || qs < -26 || qs > 25 || chroma < -12 || chroma > 12 {
+	if qp < -26-6*int64(depthMinus8) || qp > 25 || qs < -26 || qs > 25 || chroma < -12 || chroma > 12 {
 		return false
 	}
 	r.read(3)

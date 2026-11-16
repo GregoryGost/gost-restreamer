@@ -2,7 +2,7 @@
 
 Реестр описывает строки с ограниченной семантикой. Все маршруты имеют префикс `/api/v1`; `[]` обозначает элемент списка. Наборы чувствительны к регистру. Поля передаются JSON-строками; объект Base64 не является представлением настройки. Числа, даты, идентификаторы и непрозрачные курсоры сохраняют [собственный контракт](numeric-json-contracts.md).
 
-Обычный тип `string` сам по себе не означает отсутствие проверки. До закрытия общего контракта режимы, кодеки, блок кодировщика и query-фильтры уже проверялись; прежде открытые текстовые параметры старого профиля проверялись только структурно. Выходные состояния и причины ограничивались владельцами наблюдений, даже если схема не перечисляла их явно. Теперь DTO и схемы описывают те же конечные наборы; валидация профиля выполняется также без `encoding` и с `encoding: null`.
+DTO, схемы и единая доменная проверка описывают конечные наборы. Отсутствующий/null encoding допускается только как немедленно материализуемое сокращение текущего полного профиля; обхода проверки строк и сочетаний нет.
 
 ## Полный профиль: места использования
 
@@ -19,37 +19,45 @@
 | `GET /sessions/{id}/outputs`, ответ | `items[].profile.profile` |
 | `GET /fallback-assets/{id}/variants`, ответ | `items[].profile` |
 
-На входе целый `profile` заменяется целиком; PATCH без него сохраняет прежний профиль. Обязательные объекты и настройки нельзя заменять `null`. В выходных полных профилях перечисленные строковые поля присутствуют, кроме отсутствующего у прежнего профиля `live_audio_mode`. `encoding: null` обозначает прежний видеорецепт и не отключает проверку общих параметров. Поля `level`/`tier` обязательны в полном HTTP-профиле: передайте пустую строку, если ограничение не задано; отсутствие и явный `null` не допускаются.
+На входе profile заменяется целиком; PATCH без него сохраняет значение. Обязательные объекты и настройки нельзя заменить null. Выходной профиль всегда содержит явный live_audio_mode и полный объект encoding. Поля level/tier обязательны: пустая строка означает отсутствие ограничения, отсутствие и null запрещены. Полей версии возможностей нет.
 
 ## Настройки
 
 | Поле относительно P | Доменный тип или владелец проверки | Допустимые значения и сочетания |
 | --- | --- | --- |
 | `mode` | `core.GroupMode` | `copy`, `transcode`; обязательное непустое значение. |
-| `format.video.codec` | `core.Codec` | `av1` при `copy`, `h264` при `transcode`. |
-| `format.audio.codec` | `core.Codec` | `aac`. |
-| `format.video.codec_profile` | `core.VideoFormat`, общая проверка desired | AV1: `main`; H.264: `baseline`, `main`, `high`. H.264 baseline требует нулевые B-кадры. |
-| `format.video.level` | Та же проверка | H.264: `""`, `auto`, `1`, `1.0`, `1b`, `1.0b`, `1.1`, `1.2`, `1.3`, `2`, `2.0`, `2.1`, `2.2`, `3`, `3.0`, `3.1`, `3.2`, `4`, `4.0`, `4.1`, `4.2`, `5`, `5.0`, `5.1`, `5.2`. AV1: `""`, `auto`, а также `2.0`…`7.3`, последняя цифра от 0 до 3. |
-| `format.video.tier` | Та же проверка | H.264: только `""`; AV1: `""` или `main`. |
-| `format.video.pixel_format` | Та же проверка | `yuv420p`, глубина `bit_depth: 8`. |
+| `format.video.codec` | `core.Codec` | `av1` при copy, `h264` при transcode, `hevc`/`vp9` при copy либо transcode. |
+| `format.audio.codec` | `core.Codec` | `aac`, `opus`, `flac`, `mp3`, `ac3` с точными зависимостями аудиопривязок. |
+| `format.video.codec_profile` | `core.VideoFormat`, Проверка желаемого формата по кодеку и кодировщику | AV1 `main/high/professional`, H.264 `baseline/constrained-baseline/main/high/high10/high422/high444`, HEVC `main/main10`, VP9 `profile0/profile2` по матрице encoder/pixel/depth. Baseline/constrained-baseline требуют B0. |
+| `format.video.level` | Та же проверка | H.264: `""`, `auto`, `1`, `1.0`, `1b`, `1.0b`, `1.1`, `1.2`, `1.3`, `2`, `2.0`, `2.1`, `2.2`, `3`, `3.0`, `3.1`, `3.2`, `4`, `4.0`, `4.1`, `4.2`, `5`, `5.0`, `5.1`, `5.2`, `6.0`, `6.1`, `6.2`; последние три только с применимым CBR/VBR. AV1: `""`, `auto`, `2.0`…`7.3` с последней цифрой 0…3, high tier по отдельной таблице; AOM требует пустой уровень/auto. HEVC/VP9: только `""`/`auto`. |
+| `format.video.tier` | Та же проверка | H.264/VP9: только `""`; AV1: `""`, `main`, либо `high` только с SVT CBR и явным применимым уровнем; HEVC: `""`/`main`. |
+| `format.video.pixel_format` | Та же проверка | `yuv420p`, `yuv420p10le`, `yuv422p`, `yuv444p`, `yuv422p10le`, `yuv444p10le`, `gray` с точной глубиной 8/10 и применимым encoder/profile. |
 | `format.video.color.range` | `core.ColorInfo`, общая проверка desired | `limited`, `full`, `tv`, `pc`; допустимые псевдонимы сохраняются точно. |
-| `format.video.color.primaries` | Та же проверка | `bt709`. |
-| `format.video.color.transfer` | Та же проверка | `bt709`. |
-| `format.video.color.matrix` | Та же проверка | `bt709`. |
-| `format.audio.codec_profile` | `core.AudioFormat`, общая проверка desired | `LC`. |
-| `format.audio.channel_layout` | Та же проверка | `mono` при `channels: 1`, `stereo` при `channels: 2`. |
-| `live_audio_mode` | `core.LiveAudioMode` | `copy`, `transcode`; transcode требует видео transcode. При создании отсутствие материализуется в copy. У прежнего сохранённого профиля отсутствие сохраняет прежнюю обработку. Явные `null` и `""` недопустимы. |
-| `encoding.video_encoder` | `core.EncodingSettings.VideoEncoder` | `h264_nvenc` для H.264 transcode; `libsvtav1` для AV1 copy. |
-| `encoding.audio_encoder` | `core.EncodingSettings.AudioEncoder` | `aac`; при пропуске в новом блоке назначается один раз. |
-| `encoding.rate_control` | `core.EncodingSettings.RateControl` | `cbr`, `vbr`. |
+| `format.video.color.primaries` | Та же проверка | `bt709`, `bt470m`, `bt470bg`, `smpte170m`, `smpte240m`, `film`, `bt2020`. |
+| `format.video.color.transfer` | Та же проверка | `bt709`, `gamma22`, `gamma28`, `smpte170m`, `smpte240m`, `linear`, `iec61966-2-1`, `bt2020-10`, `bt2020-12`; `smpte2084`/`arib-std-b67` только с применимой HDR-парой, BT.2020/BT.2020nc, известным диапазоном и 10 битами. |
+| `format.video.color.matrix` | Та же проверка | `bt709`, `fcc`, `bt470bg`, `smpte170m`, `smpte240m`, `bt2020nc`, `bt2020c`; последний требует цветной формат и transfer bt709/smpte170m/bt2020-10/bt2020-12. |
+| `format.audio.codec_profile` | `core.AudioFormat`, Проверка желаемого формата по кодеку | AAC `LC`, Opus `celt`, FLAC `s16`, MP3 `mpeg1-layer3`, AC-3 `ac3`. Чужой профиль не подходит другому кодеку. |
+| `format.audio.channel_layout` | Та же проверка | AAC: `mono`/1, `stereo`/2, `2.1`/3, `3.0`/3, `4.0`/4, `5.0`/5, `5.1`/6, `7.1`/8; остальные конечные привязки — только `stereo`/2. |
+| `live_audio_mode` | `core.LiveAudioMode` | `copy`, `transcode`; аудио transcode требует видео transcode. Создание при отсутствии выбирает copy; полная замена явного профиля требует селектора. Null и пустая строка запрещены. |
+| `encoding.video_encoder` | `core.EncodingSettings.VideoEncoder` | H.264 transcode: `h264_nvenc`/`libx264`; AV1 copy: `libsvtav1`/`libaom-av1`; HEVC copy/transcode: `libx265`/`hevc_nvenc`; VP9 copy/transcode: `libvpx-vp9`. |
+| `encoding.audio_encoder` | `core.EncodingSettings.AudioEncoder` | `aac` по умолчанию; явные `libopus`, `flac`, `libmp3lame`, `ac3` с соответствующим codec/profile. |
+| `encoding.rate_control` | `core.EncodingSettings.RateControl` | CBR/VBR по ограничениям кодировщика; SVT/x264/x265 также CQP/CRF, H.264/HEVC NVENC — CQP, AOM/VP9 — CRF. Диапазон качества и применимость отдельны для каждого кодировщика. |
 | `encoding.nvenc.preset` | `core.NVENCSettings` | `p1`…`p7`. |
-| `encoding.nvenc.tuning` | Тот же тип | `hq`, `ll`, `ull`. |
+| `encoding.nvenc.tuning` | Тот же тип | `hq`, `ll`, `ull`; `lossless` только с P4/high444/4448/CQP0/B0/CAVLC и без AQ/lookahead/multipass/custom overrides. |
 | `encoding.nvenc.multipass` | Тот же тип | `disabled`, `qres`, `fullres`. |
-| `encoding.svt_av1.tuning` | `core.SVTAV1Settings` | `psnr`, `vq`; CBR допускает только psnr. |
+| `encoding.svt_av1.tuning` | `core.SVTAV1Settings` | `psnr`, `vq`; CBR/CQP допускают только psnr. CRF также допускает `ssim`, `ms_ssim`, `vmaf` со штатным tune 2/4/5. |
 
-Кроме level/tier и описанного отсутствия LIVE-селектора пустые значения недопустимы. Необязательные поля нового блока кодировщика получают [явно описанные defaults](api-contracts.md#полный-профиль-кодирования); явный `null` внутри блока запрещён. Неприменимый блок кодировщика запрещён, даже пустой. Числовые зависимости v2 сохраняются отдельно: закрытие строк не переносит их на прежний видеорецепт.
+Кроме level/tier и разрешённых пустых custom-строк пустые значения недопустимы. Необязательные настройки encoding получают [единые defaults](api-contracts.md#полный-профиль-кодирования) при материализации входа; null внутри блока запрещён. Неприменимый блок запрещён даже пустым. Сохранённый профиль полон, без старого нулевого рецепта.
+
+Таблица описывает единую матрицу, а не свободный выбор любых сочетаний. [SDR-матрица](api-contracts.md#sdr-форматы-цвет-и-кодировщики) ограничивает кодировщик/профиль/пиксели/глубина, RC, level/tier и преобразования. Одного появления строки в enum недостаточно для приёма профиля.
+
+[HEVC/VP9/HDR-матрица](api-contracts.md#hevc-vp9-и-hdr) дополняет SDR-пары. HEVC/VP9 SDR-цели имеют BT.709, HDR — 10 бит, BT.2020, PQ/HLG и BT.2020nc. Profile0/profile2 соответствуют native 0/2; числовые строки не являются псевдонимами. Фиксированные рецепты кодировщиков требуют пустого video_custom; nvenc применим только к h264_nvenc, svt_av1 — к libsvtav1. Неприменимый объект, включая {}, отклоняется. Пользовательских MDCV/CLL-полей нет.
+
+[Аудиоматрица](api-contracts.md#opus-flac-mp3-и-ac-3) определяет 48 kHz, 2/stereo, собственные профиль и кодировщик, пустой audio_custom и target: Opus/MP3 — 128000, AC-3 — 192000, FLAC — 0 как неприменимое значение. FLAC требует явных video/аудио transcode; остальные допускают copy при фактической совместимости. Новые кодеки не выбираются автоматически по одному имени codec.
 
 `encoding.video_custom` и `encoding.audio_custom` не являются одним перечислением. Их грамматика — `name=value name=value`: NVENC `nonref_p=0|1`, `strict_gop=0|1`; SVT `lp=0..6`; AAC `aac_coder=twoloop|fast`. Пустая строка допустима; действуют прежние пределы, нормализация, запрет дубликатов и конфликтов. Неизвестное имя или недопустимое значение отклоняется.
+
+Новые x264/AOM используют фиксированный рецепт и допускают только пустой `video_custom`, без собственных блоков настройки. NVENC CQP/lossless также требует пустого video custom. Это не разрешает передавать внутренние параметры FFmpeg под произвольным именем.
 
 Недопустимые значение, регистр, сочетание, пустота, `null`, JSON-тип, UTF-8 и Base64-объект дают безопасный `422`. Ответ не повторяет присланные строки. Наличие блока кодировщика не создаёт альтернативного пути обхода общей проверки.
 
@@ -61,16 +69,16 @@
 
 | Поле относительно format | Распознаваемые непустые обозначения |
 | --- | --- |
-| `video.codec`, `audio.codec` | `av1`, `h264`; соответственно `aac`. |
-| `video.codec_profile` | H.264: `baseline`, `constrained-baseline`, `main`, `extended`, `high`, `high10`, `high422`, `high444`; AV1: `main`. |
-| `video.level` | H.264: все 256 строк вида `n/10.n%10` для целого n=0…255, которые формирует действующий парсер, и прежние алиасы `1`, `1b`, `1.0b`, `2`, `3`, `4`, `5`. AV1: `2.0`…`7.3` с последней цифрой 0…3, `unspecified`. |
-| `video.tier` | AV1: `main`, `high`; для H.264 непустая категория не распознаётся. |
+| `video.codec`, `audio.codec` | `av1`, `h264`, `hevc`, `vp9`; соответственно `aac`, `opus`, `flac`, `mp3`, `ac3`. |
+| `video.codec_profile` | H.264: `baseline`, `constrained-baseline`, `main`, `extended`, `high`, `high10`, `high422`, `high444`; AV1: `main`, `high`, `professional`; HEVC: `main`, `main10`; VP9: `profile0`, `profile1`, `profile2`, `profile3`. |
+| `video.level` | H.264: все 256 строк вида `n/10.n%10` для целого n=0…255, которые формирует действующий парсер, и прежние алиасы `1`, `1b`, `1.0b`, `2`, `3`, `4`, `5`. AV1: `2.0`…`7.3` с последней цифрой 0…3, `unspecified`. HEVC: `1.0`, `2.0`, `2.1`, `3.0`, `3.1`, `4.0`, `4.1`, `5.0`, `5.1`, `5.2`, `6.0`, `6.1`, `6.2`, `6.3`, `7.0`, `7.1`, `7.2`, `8.5`. VP9: тот же набор от `1.0` до `6.2` без `6.3` и выше, а также `1.1` и `unspecified` для record Undefined. |
+| `video.tier` | AV1/HEVC: `main`, `high`; для H.264/VP9 непустая категория не распознаётся. |
 | `video.pixel_format` | `gray`, `yuv420p`, `yuv422p`, `yuv444p`; также каждая база с суффиксом `9le`…`16le`. |
 | `video.color.range` | `limited`, `full`, `tv`, `pc`, `unspecified`. |
-| `video.color.primaries` | `bt709`, `unspecified`, `bt470bg`, `smpte170m`, `bt2020`. |
-| `video.color.transfer` | `bt709`, `unspecified`, `smpte170m`, `linear`, `iec61966-2-1`, `bt2020-10`, `bt2020-12`, `smpte2084`, `arib-std-b67`. |
-| `video.color.matrix` | `gbr`, `bt709`, `unspecified`, `bt470bg`, `smpte170m`, `bt2020nc`, `bt2020c`. |
-| `audio.codec_profile`, `audio.channel_layout` | `LC`; соответственно `mono`, `stereo`. |
+| `video.color.primaries` | `bt709`, `unspecified`, `bt470m`, `bt470bg`, `smpte170m`, `smpte240m`, `film`, `bt2020`. |
+| `video.color.transfer` | `bt709`, `unspecified`, `gamma22`, `gamma28`, `smpte170m`, `smpte240m`, `linear`, `iec61966-2-1`, `bt2020-10`, `bt2020-12`, `smpte2084`, `arib-std-b67`. При разборе нового результата transfer-псевдонимы ffprobe `bt470m/bt470bg` приводятся к `gamma22/gamma28`; сохранённая история этим не переписывается. |
+| `video.color.matrix` | `gbr`, `bt709`, `unspecified`, `fcc`, `bt470bg`, `smpte170m`, `smpte240m`, `bt2020nc`, `bt2020c`. |
+| `audio.codec_profile`, `audio.channel_layout` | По фактическому кодеку: AAC `LC`, Opus `celt`, FLAC `s16`, MP3 `mpeg1-layer3`, AC-3 `ac3`; профиль другого кодека проецируется в `UNKNOWN`. Раскладки: `mono`, `stereo`, `2.1`, `3.0`, `4.0`, `5.0`, `5.1`, `7.1`, `7.1(wide-back)`. Последняя распознаётся как несовместимая с desired `7.1`. |
 
 Эти обозначения описывают уже распознаваемые данные. Они не расширяют допустимые настройки и не подтверждают возможность их обработки. Динамические `iso-N`, `cicp:N`, `h264-profile-idc-N` и прочие значения вне таблицы проецируются в UNKNOWN.
 
@@ -108,7 +116,7 @@
 | `R.groups[].source`, SSE `source` | `core.ObservationSource` | `NONE`, `LIVE`, `FALLBACK`; до первого наблюдения NONE. |
 | `R.ffmpeg[].role`, SSE `role` | Роль FFmpeg владельца наблюдений | `""`, `live_transcode`, `fallback_player`; общий worker может не иметь роли. |
 | Неприменимые SSE `observation.state`, `source`, `role` | Общая observation-проекция | `""`; применимые значения берутся из наборов соответствующего владельца. |
-| `M.format.video_codec`, `audio_codec` | `core.ObservedFormat`, `core.Codec` | `""`, `av1`, `h264`, `UNKNOWN`; соответственно `""`, `aac`, `UNKNOWN`. Пустота — до распознавания; UNKNOWN — общая защитная проекция непустого нераспознанного обозначения. |
+| `M.format.video_codec`, `audio_codec` | `core.ObservedFormat`, `core.Codec` | `""`, `av1`, `h264`, `hevc`, `vp9`, `UNKNOWN`; соответственно `""`, `aac`, `opus`, `flac`, `mp3`, `ac3`, `UNKNOWN`. Пустота — до распознавания; UNKNOWN — общая защитная проекция непустого нераспознанного обозначения. |
 | `M.rates.fps`, `M.rates.payload_bitrate`, `M.rates.written_bitrate`: `status` | `core.MetricStatus` | `available`, `warming_up`, `unavailable`, `stale`, `saturated`, `counter_reset`, `unsupported`. |
 | Те же объекты: `reason` | `core.MetricReason` | Набор причин метрик ниже. |
 | `R.ffmpeg[].metrics.status/reason`, SSE `ffmpeg.status/reason` | Те же типы | Те же наборы. Нулевые Rate/FFmpeg проецируются unavailable/source_absent. |
@@ -135,29 +143,10 @@
 
 `message`, `title`, `detail`, `field`, `type` и `instance` ошибок сохраняют своё назначение пояснения, пути либо URI, а не превращаются в перечисления. Внешняя диагностика и отклонённые значения в ответ не переносятся. `name`, ID, публикационные ключи, stream keys, endpoint, platform, cursor и даты также не являются enum.
 
-## Одноразовый переход хранилища
+## Граница формата хранилища
 
-При открытии под lifetime-блокировкой Goose выполняет миграцию версии 2 до строгого чтения и Recover. В одной транзакции обновляются данные, ограничение уникальности и маркер `storage_format` с 2 на 3; версия Goose записывается вместе с ними. Первая SQL-миграция не редактируется. Повторное открытие не повторяет замену. При ошибке переход откатывается целиком.
+Сохранённые профили используют единственную полную форму. Маркер storage_format=4, история Goose и набор таблиц проверяются до потенциально пишущих вызовов Goose и Recover. Отсутствие маркера не означает пустую БД; неизвестная или неполная схема и несогласованные метаданные отклоняются через ErrIncompatibleFormat.
 
-Миграция преобразует прежние допустимые текстовые настройки, впервые закрываемые строгим контрактом, включая невалидный UTF-8. Корректные значения и псевдонимы сохраняются побайтно. Исправный блок v2 не переписывается; прежний профиль не превращается в v2 и не получает новый LIVE-селектор.
+Единственный скрипт `migrations/sqlite/00001_initial.sql` создаёт схему, маркер и ограничения одной транзакцией со своей записью Goose 1. Создание Goose 0 предшествует ей отдельной транзакцией; весь Open не является атомарным. MetadataVersion=1 оболочек, receipts/cursors и физический контракт генератора имеют самостоятельное назначение.
 
-| Прежняя неподдерживаемая настройка или сочетание | Замена |
-| --- | --- |
-| Известный codec не соответствует корректному mode | copy → av1; transcode → h264. |
-| Неподдерживаемый video profile | AV1 main; H.264 high. |
-| H.264 baseline при B>0 | high, число B сохраняется. |
-| Неподдерживаемый level/tier выбранного кодека | Пустая строка. |
-| Неподдерживаемая пара pixel/depth | yuv420p / 8. |
-| Неподдерживаемый range | limited. |
-| Неподдерживаемые primaries/transfer/matrix | bt709. |
-| Неподдерживаемый audio profile | LC. |
-| Неверный layout при одном/двух каналах | mono/stereo соответственно. |
-| Другое ранее допустимое положительное число каналов | 2 / stereo. |
-
-Независимые битрейты, sample rate, размеры, FPS, GOP, B-кадры и остальные числа не исправляются. Неизвестная версия, повреждённая структура, исходные несогласованные ключи/SQL-проекции и нарушение уже действовавшего контракта приводят к откату. В частности, прежде запрещённые Mode/codec/live_audio_mode/encoder/RC/custom не получают выдуманные defaults: миграция настроек не является общим ремонтом повреждённой БД.
-
-Каждая копия desired в текущем профиле, RequiredProfiles, варианте, Session snapshot и Output snapshot/ArtifactManifest преобразуется из собственных сохранённых данных. Пересчитываются связанные canonical/key. SourceFormat и raw VerifiedFormat не меняются. Идентификаторы, история команд и их идентичности, ревизии/времена, пути, holds, владение и cleanup сохраняются.
-
-При совпадении профилей все прежние требования и VariantID остаются. Изменённые требования помечены внутренним RequiresRebuild, изменённые варианты становятся FAILED; неизменённый READY-сосед остаётся пригодным. Миграционное исключение не разрешает обычным операциям создавать дубли. PUBLISHED и текущий оригинал сохраняются для штатного rebuild.
-
-Изменённый ArtifactManifest сохраняет историю и измерение, но его прежнее доказательство соответствия аннулировано. Проверки использования запрещают такой manifest до открытия файла/процесса, включая повторный запуск выхода и повторное открытие проигрывателя. Выполните существующий `POST /fallback-assets/{id}/rebuild` до эфира; исходник повторно загружать не нужно. Старый OutputSnapshot автоматически не получает новый файл. Миграция не запускает FFmpeg, не перекодирует и не удаляет медиаресурсы. Исполнение перехода на рабочей БД относится к обновлению сервиса, а локальные проверки используют изолированные временные БД.
+Правила инициализации, повторного открытия и проверки схемы описаны в [контракте хранения](domain-storage-contracts.md#sqlite-и-миграции).

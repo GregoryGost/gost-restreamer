@@ -144,23 +144,9 @@ func (r *repositories) Variants(ctx context.Context, q core.ListQuery) ([]core.F
 	return listValues[core.FallbackVariant](ctx, r, "fallback_variants", q)
 }
 
-// InsertVariant проверяет и сохраняет вариант с точным профилем и принадлежностью поколению.
-// ctx задаёт текущую транзакцию записи, v содержит новый вариант. Исторические FAILED-дубли
-// разрешены только миграции: обычная вставка проверяет все состояния под IMMEDIATE-транзакцией.
+// InsertVariant сохраняет вариант v с точным профилем в транзакции ctx.
+// UNIQUE(generation_id,canonical_profile) запрещает дубли независимо от состояния.
 func (r *repositories) InsertVariant(ctx context.Context, v core.FallbackVariant) error {
-	// db предоставляет ту же транзакцию для проверки дубля и самой вставки; err сообщает отказ доступа.
-	db, err := r.access(ctx, true)
-	if err != nil {
-		return err
-	}
-	// count содержит число уже сохранённых вариантов той же полной идентичности независимо от state.
-	var count int64
-	if err = db.Table("fallback_variants").Where("generation_id = ? AND canonical_profile = ?", v.GenerationID, v.CanonicalProfile).Count(&count).Error; err != nil {
-		return translate(err)
-	}
-	if count != 0 {
-		return core.ErrConflict
-	}
 	return insertValue(ctx, r, "fallback_variants", v)
 }
 
@@ -208,11 +194,8 @@ func (r *repositories) Outputs(ctx context.Context, q core.ListQuery) ([]core.Se
 }
 
 // InsertOutput проверяет и сохраняет новый выход v с его самостоятельным снимком в транзакции ctx.
-// Аннулированный manifest может появиться только при миграции уже существовавшей истории.
+// Полное соответствие артефакта профилю проверяет текущий доменный кодек.
 func (r *repositories) InsertOutput(ctx context.Context, v core.SessionOutput) error {
-	if v.Snapshot.Artifact.RequiresRebuild {
-		return core.ErrInvalid
-	}
 	return insertValue(ctx, r, "outputs", v)
 }
 
@@ -357,11 +340,8 @@ func (r *repositories) Generations(ctx context.Context, q core.ListQuery) ([]cor
 }
 
 // InsertGeneration проверяет и сохраняет новое поколение с полным комплектом требуемых профилей.
-// ctx задаёт текущую транзакцию, v — новое поколение; отметки аннулирования создаёт только миграция.
+// ctx задаёт текущую транзакцию, v содержит новое поколение с полной текущей идентичностью.
 func (r *repositories) InsertGeneration(ctx context.Context, v core.FallbackGeneration) error {
-	if v.RequiresProfileRebuild() {
-		return core.ErrInvalid
-	}
 	return insertValue(ctx, r, "fallback_generations", v)
 }
 

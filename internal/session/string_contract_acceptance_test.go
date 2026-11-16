@@ -42,7 +42,7 @@ func membershipContractOutput(t *testing.T) core.SessionOutput {
 }
 
 // TestMembershipRejectsInvalidatedSnapshotBeforeRegistrationOrReuse проверяет ранний отказ
-// RequiresRebuild до Scope.Register и возврата прежнего членства. t сверяет сохранность пригодного соседа.
+// несовместимого генератора до Scope.Register и возврата прежнего членства. t сверяет сохранность пригодного соседа.
 func TestMembershipRejectsInvalidatedSnapshotBeforeRegistrationOrReuse(t *testing.T) {
 	// healthy содержит самостоятельный пригодный снимок без внешних ресурсов.
 	healthy := membershipContractOutput(t)
@@ -52,7 +52,7 @@ func TestMembershipRejectsInvalidatedSnapshotBeforeRegistrationOrReuse(t *testin
 	node := &sessionNode{manager: &Manager{config: Config{GeneratorVersion: core.CurrentFallbackGeneratorVersion, MaxOutputs: 2}}, members: map[core.ID]*membership{healthy.ID: member}, excluded: map[core.ID]uint64{}}
 	// invalid отличается только аннулированием доказательства пригодности файла.
 	invalid := healthy
-	invalid.Snapshot.Artifact.RequiresRebuild = true
+	invalid.Snapshot.Artifact.GeneratorVersion = "unsupported-generator"
 	// before сохраняет точный снимок для проверки отсутствия автоматической перепривязки.
 	before := invalid
 	// id выбирает прежнее членство и новый выход, ещё не зарегистрированный в scope.

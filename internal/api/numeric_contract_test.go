@@ -16,9 +16,8 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// numericLegacyProfile задаёт запрос прежнего рецепта с большими независимыми числами.
-// Строки, глубина и число каналов удовлетворяют общему контракту, числовая матрица v2 не применяется.
-const numericLegacyProfile = `{"mode":"copy","format":{"video":{"codec":"av1","width":4294967295,"height":4294967295,"frame_rate":{"numerator":4294967295,"denominator":4294967294},"codec_profile":"main","level":"2.0","tier":"","pixel_format":"yuv420p","bit_depth":8,"color":{"range":"limited","primaries":"bt709","transfer":"bt709","matrix":"bt709"}},"audio":{"codec":"aac","codec_profile":"LC","sample_rate_hz":4294967295,"channels":2,"channel_layout":"stereo"}},"video_encoding":{"target_bitrate_bps":18446744073709551614,"max_bitrate_bps":18446744073709551615,"buffer_bits":18446744073709551615,"gop_frames":4294967295,"max_b_frames":4294967295,"closed_gop":false},"audio_encoding":{"bitrate_bps":9007199254740993},"encoding":null}`
+// numericProfile задаёт полный текущий AV1-профиль в нативных границах кодировщика.
+const numericProfile = `{"mode":"copy","format":{"video":{"codec":"av1","width":640,"height":360,"frame_rate":{"numerator":60000,"denominator":2002},"codec_profile":"main","level":"2.0","tier":"","pixel_format":"yuv420p","bit_depth":8,"color":{"range":"limited","primaries":"bt709","transfer":"bt709","matrix":"bt709"}},"audio":{"codec":"aac","codec_profile":"LC","sample_rate_hz":48000,"channels":2,"channel_layout":"stereo"}},"video_encoding":{"target_bitrate_bps":4000000,"max_bitrate_bps":4000000,"buffer_bits":8000000,"gop_frames":30,"max_b_frames":0,"closed_gop":true},"audio_encoding":{"bitrate_bps":128000},"encoding":null}`
 
 // numericJSON разбирает raw без промежуточного float64 и требует ровно один JSON-объект.
 func numericJSON(t *testing.T, raw []byte) map[string]any {
@@ -70,20 +69,20 @@ func numericWant(t *testing.T, value map[string]any, path, want string) {
 	}
 }
 
-// TestNumericRESTLegacyPhysicalBounds проверяет POST, PATCH и GET с точными
-// uint64/uint32, допустимыми uint16/uint8 и несокращённой дробью FPS через настоящий роутер.
-func TestNumericRESTLegacyPhysicalBounds(t *testing.T) {
+// TestNumericRESTNativeProfileRoundTrip проверяет через t POST, PATCH и GET с точными
+// допустимыми числами и несокращённой дробью FPS через настоящий роутер.
+func TestNumericRESTNativeProfileRoundTrip(t *testing.T) {
 	// f содержит собственную временную SQLite и зарегистрированный API.
 	f := newAPIAcceptanceFixture(t, nil)
-	// response содержит POST полного прежнего профиля без ограничений v2.
-	response := apiAcceptanceRequest(t, f.api, "POST", "/transcode-profiles", `{"name":"Числовой профиль","profile":`+numericLegacyProfile+`}`, 201)
+	// response содержит результат создания полного текущего профиля.
+	response := apiAcceptanceRequest(t, f.api, "POST", "/transcode-profiles", `{"name":"Числовой профиль","profile":`+numericProfile+`}`, 201)
 	// created сохраняет точные числовые токены ответа и строковый идентификатор.
 	created := numericJSON(t, response.Body.Bytes())
 	// path адресует созданный профиль для полного цикла PATCH и GET.
 	path := "/transcode-profiles/" + created["id"].(string)
 	// body проверяет математически целые записи uint32 и Decimal с точкой и степенью.
-	body := strings.ReplaceAll(numericLegacyProfile, "4294967295", "429496729500e-2")
-	body = strings.Replace(body, "9007199254740993", "9.007199254740993e15", 1)
+	body := strings.Replace(numericProfile, `"width":640`, `"width":64000e-2`, 1)
+	body = strings.Replace(body, "128000", "1.28e5", 1)
 	body = strings.Replace(body, `"mode":"copy"`, `"mode":"copy","live_audio_mode":"copy"`, 1)
 	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":1.0,"profile":`+body+`}`, 200)
 	// wire содержит фактически сохранённый и повторно прочитанный публичный профиль.
@@ -91,23 +90,24 @@ func TestNumericRESTLegacyPhysicalBounds(t *testing.T) {
 	numericWant(t, wire, "revision", "2")
 	// field задаёт публичный числовой путь; want содержит независимую границу типа.
 	for field, want := range map[string]string{
-		"profile.format.video.width": "4294967295", "profile.format.video.height": "4294967295",
-		"profile.format.video.frame_rate.numerator": "4294967295", "profile.format.video.frame_rate.denominator": "4294967294",
+		"profile.format.video.width": "640", "profile.format.video.height": "360",
+		"profile.format.video.frame_rate.numerator": "60000", "profile.format.video.frame_rate.denominator": "2002",
 		"profile.format.video.bit_depth": "8", "profile.format.audio.channels": "2",
-		"profile.format.audio.sample_rate_hz": "4294967295", "profile.video_encoding.gop_frames": "4294967295",
-		"profile.video_encoding.max_b_frames": "4294967295", "profile.video_encoding.target_bitrate_bps": "18446744073709551614",
-		"profile.video_encoding.max_bitrate_bps": "18446744073709551615", "profile.video_encoding.buffer_bits": "18446744073709551615",
-		"profile.audio_encoding.bitrate_bps": "9007199254740993",
+		"profile.format.audio.sample_rate_hz": "48000", "profile.video_encoding.gop_frames": "30",
+		"profile.video_encoding.max_b_frames": "0", "profile.video_encoding.target_bitrate_bps": "4000000",
+		"profile.video_encoding.max_bitrate_bps": "4000000", "profile.video_encoding.buffer_bits": "8000000",
+		"profile.audio_encoding.bitrate_bps": "128000",
 	} {
 		numericWant(t, wire, field, want)
 	}
-	if numericAt(t, wire, "profile.format.video.level") != "2.0" || numericAt(t, wire, "profile.encoding") != nil || numericAt(t, wire, "profile.video_encoding.closed_gop") != false {
+	if numericAt(t, wire, "profile.format.video.level") != "2.0" || numericAt(t, wire, "profile.encoding") == nil || numericAt(t, wire, "profile.video_encoding.closed_gop") != true {
 		t.Fatal("изменена строка, null или false", wire)
 	}
 }
 
 // TestNumericRESTInvalidTokensNeverWrite проверяет каждый физический размер,
 // строгие типы и дроби. Отказ POST не оставляет профиль в настоящей SQLite.
+// t сообщает об ошибках проверяемого сценария.
 func TestNumericRESTInvalidTokensNeverWrite(t *testing.T) {
 	// f содержит изолированное хранилище для проверки отсутствия записей после отказов.
 	f := newAPIAcceptanceFixture(t, nil)
@@ -116,30 +116,30 @@ func TestNumericRESTInvalidTokensNeverWrite(t *testing.T) {
 		// old адресует точное свойство; invalid содержит неверный тип или границу.
 		old, invalid string
 	}{
-		{`"width":4294967295`, `"width":4294967296`},
+		{`"width":640`, `"width":4294967296`},
 		{`"bit_depth":8`, `"bit_depth":256`},
 		{`"channels":2`, `"channels":65536`},
-		{`"width":4294967295`, `"width":"4294967295"`},
-		{`"width":4294967295`, `"width":1.5`},
-		{`"width":4294967295`, `"width":-0.0`},
-		{`"width":4294967295`, `"width":true`},
-		{`"width":4294967295`, `"width":null`},
-		{`"bitrate_bps":9007199254740993`, `"bitrate_bps":"9007199254740993"`},
-		{`"bitrate_bps":9007199254740993`, `"bitrate_bps":18446744073709551616`},
-		{`"bitrate_bps":9007199254740993`, `"bitrate_bps":9007199254740993.1`},
-		{`"bitrate_bps":9007199254740993`, `"bitrate_bps":1e-1000000`},
-		{`"bitrate_bps":9007199254740993`, `"bitrate_bps":1e1000000`},
-		{`"bitrate_bps":9007199254740993`, `"bitrate_bps":[]`},
-		{`"bitrate_bps":9007199254740993`, `"bitrate_bps":{}`},
-		{`"bitrate_bps":9007199254740993`, `"bitrate_bps":null`},
-		{`"bitrate_bps":9007199254740993`, `"bitrate_bps":-0e0`},
+		{`"width":640`, `"width":"4294967295"`},
+		{`"width":640`, `"width":1.5`},
+		{`"width":640`, `"width":-0.0`},
+		{`"width":640`, `"width":true`},
+		{`"width":640`, `"width":null`},
+		{`"bitrate_bps":128000`, `"bitrate_bps":"9007199254740993"`},
+		{`"bitrate_bps":128000`, `"bitrate_bps":18446744073709551616`},
+		{`"bitrate_bps":128000`, `"bitrate_bps":9007199254740993.1`},
+		{`"bitrate_bps":128000`, `"bitrate_bps":1e-1000000`},
+		{`"bitrate_bps":128000`, `"bitrate_bps":1e1000000`},
+		{`"bitrate_bps":128000`, `"bitrate_bps":[]`},
+		{`"bitrate_bps":128000`, `"bitrate_bps":{}`},
+		{`"bitrate_bps":128000`, `"bitrate_bps":null`},
+		{`"bitrate_bps":128000`, `"bitrate_bps":-0e0`},
 		{`"codec_profile":"main"`, `"codec_profile":1`},
-		{`"closed_gop":false`, `"closed_gop":0`},
+		{`"closed_gop":true`, `"closed_gop":0`},
 		{`"mode":"copy"`, `"mode":"unknown"`},
 		{`"mode":"copy"`, `"mode":"copy","unknown_numeric":1`},
 	} {
 		// body сохраняет все остальные поля корректными, изолируя причину отказа.
-		body := strings.Replace(numericLegacyProfile, tc.old, tc.invalid, 1)
+		body := strings.Replace(numericProfile, tc.old, tc.invalid, 1)
 		apiAcceptanceRequest(t, f.api, "POST", "/transcode-profiles", `{"name":"Недопустимый профиль","profile":`+body+`}`, 422)
 		// page проверяет хранилище независимо от HTTP-ответа; err сообщает отказ чтения.
 		page, err := f.service.ListProfiles(context.Background(), core.PageRequest{Query: core.ListQuery{Limit: 10}})
@@ -197,11 +197,12 @@ func TestNumericRESTPolicyAndCAS(t *testing.T) {
 
 // TestNumericRESTEscapedProfileStrings проверяет экранированные ключи и повторные
 // строковые поля рядом с точными числовыми токенами; Base64 и неверный UTF-8 отклоняются.
+// t сообщает об ошибках проверяемого сценария.
 func TestNumericRESTEscapedProfileStrings(t *testing.T) {
 	// f содержит настоящий API для проверки полного пути декодирования запроса.
 	f := newAPIAcceptanceFixture(t, nil)
 	// body задаёт повторный экранированный ключ с последним допустимым значением уровня.
-	body := strings.Replace(numericLegacyProfile, `"level":"2.0"`, `"level":"3.0","le\u0076el":"2.0"`, 1)
+	body := strings.Replace(numericProfile, `"level":"2.0"`, `"level":"3.0","le\u0076el":"2.0"`, 1)
 	// created содержит ответ профиля после обработки исходных числовых лексем.
 	created := numericJSON(t, apiAcceptanceRequest(t, f.api, "POST", "/transcode-profiles", `{"name":"Точный профиль","profile":`+body+`}`, 201).Body.Bytes())
 	// saved содержит независимо прочитанный профиль; err сообщает отказ чтения.
@@ -211,7 +212,7 @@ func TestNumericRESTEscapedProfileStrings(t *testing.T) {
 	}
 	// invalid задаёт запрещённый тип, неизвестный текст или неверные UTF-8 байты уровня.
 	for _, invalid := range []string{`{"encoding":"base64","value":"/3j+"}`, `"1e0"`, "\"" + string([]byte{0xff}) + "\""} {
-		apiAcceptanceRequest(t, f.api, "POST", "/transcode-profiles", `{"name":"Ошибка","profile":`+strings.Replace(numericLegacyProfile, `"level":"2.0"`, `"level":`+invalid, 1)+`}`, 422)
+		apiAcceptanceRequest(t, f.api, "POST", "/transcode-profiles", `{"name":"Ошибка","profile":`+strings.Replace(numericProfile, `"level":"2.0"`, `"level":`+invalid, 1)+`}`, 422)
 	}
 }
 
@@ -252,31 +253,29 @@ func TestNumericRESTHighRevisionCAS(t *testing.T) {
 
 // TestNumericRESTEncodingIntegerForms проверяет int и числовое перечисление
 // в реальном POST: целые записи со степенью, отрицательное особое значение, значения по умолчанию и явный ноль.
+// t сообщает об ошибках проверяемого сценария.
 func TestNumericRESTEncodingIntegerForms(t *testing.T) {
-	// f содержит API с изолированными профилями версии 2.
+	// f содержит API с изолированными текущими профилями.
 	f := newAPIAcceptanceFixture(t, nil)
 	// profile предоставляет существующий допустимый AV1/VBR формат без медиапроцессов.
 	profile := encodingRequestProfile(t, "copy", "vbr")
 	// encoding задаёт точные записи числового перечисления и знаковых полей.
 	encoding := profile["encoding"].(map[string]any)
-	encoding["version"] = json.Number("2.0")
 	encoding["svt_av1"] = map[string]any{"preset": json.Number("0e0"), "lookahead_frames": json.Number("-1.0"), "aq_mode": json.Number("2e0")}
 	// body сохраняет числовые лексемы при сериализации контрольного запроса.
 	body := encodingJSON(t, map[string]any{"name": "Целые настройки", "profile": profile})
 	// created содержит ответ POST с материализованными значениями по умолчанию и точными целыми.
 	created := numericJSON(t, apiAcceptanceRequest(t, f.api, "POST", "/transcode-profiles", body, 201).Body.Bytes())
-	numericWant(t, created, "profile.encoding.version", "2")
 	numericWant(t, created, "profile.encoding.svt_av1.preset", "0")
 	numericWant(t, created, "profile.encoding.svt_av1.lookahead_frames", "-1")
 	numericWant(t, created, "profile.encoding.svt_av1.aq_mode", "2")
 	numericWant(t, created, "profile.video_encoding.max_bitrate_bps", "0")
 	numericWant(t, created, "profile.video_encoding.buffer_bits", "0")
-	// replacement изолирует неверную версию, тип, дробь, null и границы int.
+	// replacement изолирует неверный тип, дробь, null и границы int.
 	for _, replacement := range []struct {
 		// old выбирает корректное поле; invalid задаёт единственное нарушение запроса.
 		old, invalid string
 	}{
-		{`"version":2.0`, `"version":"2"`}, {`"version":2.0`, `"version":3.0`},
 		{`"preset":0e0`, `"preset":"0"`}, {`"preset":0e0`, `"preset":null`},
 		{`"preset":0e0`, `"preset":0.1`}, {`"preset":0e0`, `"preset":14`},
 		{`"lookahead_frames":-1.0`, `"lookahead_frames":-9223372036854775809`},

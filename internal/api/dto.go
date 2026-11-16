@@ -342,29 +342,28 @@ type VideoEncodingDTO struct {
 
 // AudioEncodingDTO передаёт общий аудиобитрейт независимо от конкретного рецепта.
 type AudioEncodingDTO struct {
-	// BitrateBPS содержит целевой аудиобитрейт в битах за секунду.
-	BitrateBPS Decimal `json:"bitrate_bps"`
+	// BitrateBPS содержит целевой аудиобитрейт в битах за секунду; для FLAC требуется ноль.
+	BitrateBPS Decimal `json:"bitrate_bps" doc:"Положительный целевой битрейт AAC; Привязки: Opus/MP3 128000, AC-3 192000, FLAC 0 (целевой битрейт неприменим). Ноль разрешён только для полного FLAC/s16/48000/stereo с audio_encoder=flac и явными mode=transcode, live_audio_mode=transcode."`
 }
 
-// GroupProfileDTO возвращает полный сохранённый профиль группы без назначения новых значений прежним
-// снимкам.
+// GroupProfileDTO возвращает полный сохранённый профиль группы и самостоятельных снимков.
 type GroupProfileDTO struct {
 	// Mode содержит режим видео copy или transcode.
 	Mode string `json:"mode" enum:"copy,transcode"`
-	// LiveAudioMode содержит самостоятельный режим LIVE-аудио; отсутствие значения сохраняет прежнюю
-	// семантику профиля.
-	LiveAudioMode string `json:"live_audio_mode,omitempty" enum:"copy,transcode"`
+	// LiveAudioMode содержит явно сохранённый режим LIVE-аудио.
+	LiveAudioMode string `json:"live_audio_mode" enum:"copy,transcode"`
 	// Format содержит полный ожидаемый медиаформат обеих дорожек.
 	Format FormatDTO `json:"format"`
 	// VideoEncoding содержит общие параметры видеобитрейта и GOP.
 	VideoEncoding VideoEncodingDTO `json:"video_encoding"`
 	// AudioEncoding содержит общий параметр аудиобитрейта.
 	AudioEncoding AudioEncodingDTO `json:"audio_encoding"`
-	Encoding      *EncodingDTO     `json:"encoding" doc:"Материализованные настройки кодировщика. null обозначает прежний видеорецепт; выбор LIVE-аудио задаётся отдельно."`
+	// Encoding содержит полный материализованный набор применимых настроек кодировщика.
+	Encoding EncodingDTO `json:"encoding" doc:"Полные текущие настройки кодировщика; null не возвращается."`
 }
 
-// domain проверяет явный селектор LIVE-аудио и преобразует настройки профиля, сохраняя отсутствие
-// селектора для доменных правил совместимости.
+// domain преобразует входной p, материализуя encoding. Отсутствующий LIVE-селектор
+// остаётся пустым для правил CreateProfile и UpdateProfile; null и неизвестный режим отклоняются.
 func (p GroupProfileInput) domain() (core.GroupProfile, error) {
 	// liveAudioMode сохраняет отсутствие селектора либо проверенный явный режим LIVE-аудио.
 	var liveAudioMode core.LiveAudioMode
@@ -376,15 +375,14 @@ func (p GroupProfileInput) domain() (core.GroupProfile, error) {
 	}
 	// encoding содержит проверенные настройки конкретного кодировщика; err содержит отказ их
 	// преобразования для выбранного режима видео.
-	encoding, err := p.Encoding.domain(core.GroupMode(p.Mode))
+	encoding, err := p.Encoding.domain(core.GroupMode(p.Mode), core.Codec(p.Format.Video.Codec))
 	if err != nil {
 		return core.GroupProfile{}, err
 	}
 	return core.GroupProfile{Mode: core.GroupMode(p.Mode), LiveAudioMode: liveAudioMode, Format: p.Format.domain(), VideoEncoding: core.VideoEncoding{TargetBitrateBPS: uint64(p.VideoEncoding.TargetBitrateBPS), MaxBitrateBPS: uint64(p.VideoEncoding.MaxBitrateBPS), BufferBits: uint64(p.VideoEncoding.BufferBits), GOPFrames: p.VideoEncoding.GOPFrames, MaxBFrames: p.VideoEncoding.MaxBFrames, ClosedGOP: p.VideoEncoding.ClosedGOP}, AudioEncoding: core.AudioEncoding{BitrateBPS: uint64(p.AudioEncoding.BitrateBPS)}, Encoding: encoding}, nil
 }
 
-// groupProfileDTO переводит полный профиль в HTTP DTO без назначения новых настроек прежним
-// сохранённым профилям.
+// groupProfileDTO переводит полный сохранённый p в HTTP DTO без изменения настроек.
 func groupProfileDTO(p core.GroupProfile) GroupProfileDTO {
 	// v содержит общие настройки видеокодирования для возврата точных значений DTO.
 	v := p.VideoEncoding

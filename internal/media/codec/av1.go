@@ -8,72 +8,10 @@ import (
 	"strconv"
 
 	"github.com/GregoryGost/gost-restreamer/internal/core"
+	"github.com/GregoryGost/gost-restreamer/internal/media"
 	"github.com/abema/go-mp4"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/av1"
-	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
 )
-
-// AudioFormatASC получает наблюдаемый монофонический или стереофонический AAC-LC из полного ASC.
-// PCE, активные расширения SBR/PS и нестандартная длина кадра в этот ограниченный порт не входят.
-func AudioFormatASC(raw []byte) (core.AudioFormat, error) {
-	if len(raw) < 2 || len(raw) > 64 {
-		return core.AudioFormat{}, ErrCodec
-	}
-	// a принимает разобранную AudioSpecificConfig для проверки ограничений AAC-LC.
-	var a mpeg4audio.AudioSpecificConfig
-	// err сообщает об отказе разбора AudioSpecificConfig.
-	if err := a.Unmarshal(raw); err != nil {
-		return core.AudioFormat{}, fmt.Errorf("%w: ASC: %v", ErrCodec, err)
-	}
-	if a.Type != mpeg4audio.ObjectTypeAACLC || a.ExtensionType != 0 || a.FrameLengthFlag || a.DependsOnCoreCoder || a.SampleRate <= 0 || a.ChannelConfig < 1 || a.ChannelConfig > 2 {
-		return core.AudioFormat{}, ErrCodec
-	}
-	// canonical содержит повторно закодированную основную AudioSpecificConfig для обнаружения
-	// дополнительных данных. err сообщает об отказе её кодирования.
-	canonical, err := a.Marshal()
-	if err != nil {
-		return core.AudioFormat{}, err
-	}
-	if !bytes.Equal(raw, canonical) && !hasDisabledSBRSyncExtension(raw, len(canonical)*8) {
-		return core.AudioFormat{}, fmt.Errorf("%w: расширенный ASC", ErrCodec)
-	}
-	// layout задаёт обозначение mono или stereo по подтверждённой конфигурации каналов.
-	layout := "mono"
-	if a.ChannelConfig == 2 {
-		layout = "stereo"
-	}
-	return core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: uint32(a.SampleRate), Channels: uint16(a.ChannelConfig), ChannelLayout: layout}, nil
-}
-
-// hasDisabledSBRSyncExtension допускает только расширение синхронизации с выключенным SBR и нулевым заполнением.
-func hasDisabledSBRSyncExtension(raw []byte, canonicalBaseBits int) bool {
-	// r читает биты ASC для проверки единственного допустимого расширения с выключенным SBR.
-	r := bitReader{b: raw}
-	r.read(5) // audioObjectType
-	if r.read(4) == 15 {
-		r.read(24) // Явная samplingFrequency.
-	}
-	r.read(4) // channelConfiguration
-	r.read(1) // frameLengthFlag
-	if r.read(1) != 0 {
-		r.read(14) // coreCoderDelay
-	}
-	if r.read(1) != 0 || r.err != nil { // extensionFlag
-		return false
-	}
-	if r.p != canonicalBaseBits {
-		return false
-	}
-	if r.read(11) != 0x2b7 || r.read(5) != 5 || r.read(1) != 0 || r.err != nil {
-		return false
-	}
-	// padding задаёт число нулевых битов до ближайшей границы байта.
-	padding := (8 - r.p%8) % 8
-	if len(raw)*8-r.p != padding {
-		return false
-	}
-	return r.read(padding) == 0 && r.err == nil
-}
 
 // OBU представляет элемент AV1 с исходной записью и её полезной нагрузкой без копирования входного
 // буфера.
@@ -143,7 +81,7 @@ type AV1Description struct {
 	provenance string
 }
 
-// ParseAV1Config сверяет av1C с единственным заголовком последовательности поддержанного AV1 Main SDR
+// ParseAV1Config сверяет av1C с единственным заголовком последовательности AV1
 // и сохраняет его копию. Частота берётся из корректного timing_info с равными интервалами, если он
 // присутствует.
 func ParseAV1Config(raw []byte) (AV1Description, error) {
@@ -199,12 +137,10 @@ func ParseAV1Config(raw []byte) (AV1Description, error) {
 	// cc содержит цветовые параметры последовательности для проверки поддержанного SDR и
 	// согласованности av1C.
 	cc := s.ColorConfig
-	if s.SeqProfile != 0 || s.ReducedStillPictureHeader || s.StillPicture || s.OperatingPointsCntMinus1 != 0 || s.OperatingPointIdc[0] != 0 || s.FrameIDNumbersPresentFlag || s.DecoderModelInfoPresentFlag || s.EnableSuperRes || cc.BitDepth != 8 || cc.MonoChrome || !cc.SubsamplingX || !cc.SubsamplingY {
-		return d, fmt.Errorf("%w: требуется single-layer Main SDR без superres/frame IDs/film grain", ErrCodec)
+	if s.SeqProfile > 2 || s.ReducedStillPictureHeader || s.StillPicture || s.OperatingPointsCntMinus1 != 0 || s.OperatingPointIdc[0] != 0 || s.FrameIDNumbersPresentFlag || s.DecoderModelInfoPresentFlag || s.EnableSuperRes {
+		return d, fmt.Errorf("%w: требуется однослойный поток без superres, frame IDs и film grain", ErrCodec)
 	}
-	if cc.TransferCharacteristics == 16 || cc.TransferCharacteristics == 18 {
-		return d, fmt.Errorf("%w: HDR", ErrCodec)
-	}
+
 	if c.SeqProfile != s.SeqProfile || c.SeqLevelIdx0 != s.SeqLevelIdx[0] || c.SeqTier0 != boolByte(s.SeqTier[0]) || c.HighBitdepth != boolByte(cc.HighBitDepth) || c.TwelveBit != boolByte(cc.TwelveBit) || c.Monochrome != boolByte(cc.MonoChrome) || c.ChromaSubsamplingX != boolByte(cc.SubsamplingX) || c.ChromaSubsamplingY != boolByte(cc.SubsamplingY) || c.ChromaSamplePosition != uint8(cc.ChromaSamplePosition) {
 		return d, fmt.Errorf("%w: av1C расходится с sequence", ErrCodec)
 	}
@@ -333,7 +269,7 @@ func (d *AV1Description) frame(payload []byte) (key, shown bool, err error) {
 	return false, shown, nil
 }
 
-// InspectAV1TU разбирает один TU в ограниченном Main SDR. fps применяется только
+// InspectAV1TU разбирает один TU в поддержанном AV1. fps применяется только
 // как проверенные сведения вызывающего, если частота не определена в timing_info;
 // при наличии обеих частот они должны совпадать.
 // Независимый старт требует заголовка последовательности в этом же TU
@@ -407,12 +343,18 @@ func (d *AV1Description) Inspect(tu []byte, fps core.FrameRate) (core.VideoForma
 	if d.width == 0 || d.height == 0 || d.fps.Validate() != nil {
 		return core.VideoFormat{}, false, ErrUnready
 	}
+	return d.videoFormat(), sequence && firstFrameKey, nil
+}
+
+// videoFormat собирает наблюдаемые поля сохранённой последовательности и ранее проверенного кадра.
+// Вызывающий устанавливает width, height и fps только из подтверждённых сведений.
+func (d *AV1Description) videoFormat() core.VideoFormat {
 	// s указывает на сохранённый заголовок последовательности при построении наблюдаемого формата.
 	s := &d.seq
 	// cc содержит цветовые параметры сохранённой последовательности.
 	cc := s.ColorConfig
 	// color содержит диапазон и именованные характеристики цвета наблюдаемого видео.
-	color := core.ColorInfo{Range: "limited", Primaries: colorName(uint8(cc.ColorPrimaries)), Transfer: colorName(uint8(cc.TransferCharacteristics)), Matrix: colorName(uint8(cc.MatrixCoefficients))}
+	color := core.ColorInfo{Range: "limited", Primaries: primaryName(uint8(cc.ColorPrimaries), "cicp:"), Transfer: cicpTransferName(uint8(cc.TransferCharacteristics), "cicp:"), Matrix: cicpMatrixName(uint8(cc.MatrixCoefficients), "cicp:")}
 	if cc.ColorRange {
 		color.Range = "full"
 	}
@@ -427,20 +369,50 @@ func (d *AV1Description) Inspect(tu []byte, fps core.FrameRate) (core.VideoForma
 		tier = "high"
 	}
 	// f содержит наблюдаемый формат видео, подтверждённый последовательностью и кадрами TU.
-	f := core.VideoFormat{Codec: core.CodecAV1, Width: d.width, Height: d.height, FrameRate: d.fps, CodecProfile: "main", Level: level, Tier: tier, PixelFormat: "yuv420p", BitDepth: 8, Color: color}
-	return f, sequence && firstFrameKey, nil
+	f := core.VideoFormat{Codec: core.CodecAV1, Width: d.width, Height: d.height, FrameRate: d.fps, CodecProfile: []string{"main", "high", "professional"}[s.SeqProfile], Level: level, Tier: tier, PixelFormat: av1Pixel(cc), BitDepth: uint8(cc.BitDepth), Color: color}
+	return f
 }
 
-// Преобразует известные CICP-коды AV1 в имена цвета; остальные сохраняет в строке cicp:<номер>.
-func colorName(v uint8) string {
-	switch v {
-	case 1:
-		return "bt709"
-	case 2:
-		return "unspecified"
-	default:
-		return "cicp:" + strconv.Itoa(int(v))
+// ValidateAV1Config сверяет declared с полями исходного av1C и последовательности raw.
+// Размеры сравниваются с максимальным кадром: поддержанный порт запрещает frame_size_override,
+// а фактический независимый старт дополнительно подтверждается при Inspect. Частота declared
+// используется только при отсутствии равномерного timing_info, без подмены остальных полей.
+func ValidateAV1Config(raw []byte, declared core.VideoFormat) error {
+	return validateAV1Config(raw, declared, media.ColorConfigProvenance{})
+}
+
+// validateAV1Config проверяет исходные заголовки против declared с отдельным доказательством внешних CICP.
+// provenance разрешает только уточнение действительно unspecified осей; остальные ограничения неизменны.
+func validateAV1Config(raw []byte, declared core.VideoFormat, provenance media.ColorConfigProvenance) error {
+	// d содержит разобранную последовательность; err сообщает о повреждённых заголовках.
+	d, err := ParseAV1Config(raw)
+	if err != nil {
+		return err
 	}
+	d.width, d.height = d.seq.MaxFrameWidthMinus1+1, d.seq.MaxFrameHeightMinus1+1
+	if d.fps.Validate() != nil {
+		d.fps = declared.FrameRate
+	}
+	return CompatibleVideoConstraints(d.videoFormat(), declared, provenance)
+}
+
+// av1Pixel выводит имя плоскостного формата из фактической цветовой конфигурации c.
+// Монохромность проверяется раньше субдискретизации, поскольку её служебные X/Y также равны единице.
+func av1Pixel(c av1.SequenceHeader_ColorConfig) string {
+	// pixel содержит базовое имя восьмибитного формата до добавления глубины.
+	pixel := "yuv444p"
+	if c.MonoChrome {
+		pixel = "gray"
+	} else if c.SubsamplingX {
+		pixel = "yuv422p"
+		if c.SubsamplingY {
+			pixel = "yuv420p"
+		}
+	}
+	if c.BitDepth > 8 {
+		pixel += strconv.Itoa(c.BitDepth) + "le"
+	}
+	return pixel
 }
 
 var (
@@ -451,6 +423,9 @@ var (
 	// ErrUnready обозначает отсутствие достаточных подтверждённых сведений для определения формата.
 	ErrUnready = errors.New("формат источника ещё не определён")
 )
+
+// ErrUnsupported обозначает синтаксически допустимую форму вне конечного медиапорта.
+var ErrUnsupported = errors.New("форма кодека не поддержана медиапортом")
 
 // ErrTiming обозначает временное значение, которое невозможно точно представить требуемой шкалой.
 var ErrTiming = errors.New("время не представимо точно")

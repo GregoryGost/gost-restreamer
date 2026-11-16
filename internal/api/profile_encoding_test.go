@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -23,6 +22,8 @@ func encodingJSON(t *testing.T, value any) string {
 
 // encodingRequestProfile создаёт полный допустимый запрос для H264 с transcode либо AV1 с copy и
 // согласованными настройками CBR/VBR.
+// t сообщает об ошибках проверяемого сценария.
+// mode выбирает обработку LIVE-видео, rc — режим управления битрейтом CBR или VBR.
 func encodingRequestProfile(t *testing.T, mode, rc string) map[string]any {
 	t.Helper()
 	// p принимает полный исходный профиль, который затем настраивается под видеорежим и управление
@@ -50,7 +51,7 @@ func encodingRequestProfile(t *testing.T, mode, rc string) map[string]any {
 			ve["max_bitrate_bps"], ve["buffer_bits"] = json.Number("0"), json.Number("0")
 		}
 	}
-	p["encoding"] = map[string]any{"version": 2, "video_encoder": encoder, "rate_control": rc}
+	p["encoding"] = map[string]any{"video_encoder": encoder, "rate_control": rc}
 	return p
 }
 
@@ -163,11 +164,13 @@ func TestProfileEncodingPreservesFalseZeroAndNormalizesCustom(t *testing.T) {
 
 // Проверяет обязательные поля encoding, запрет null внутри настроек и отклонение даже пустого блока
 // другого кодировщика.
+// t сообщает об ошибках проверяемого сценария.
 func TestProfileEncodingRejectsMissingRequiredNullAndWrongBlocks(t *testing.T) {
 	// f содержит изолированный API всех отказов обязательных и неприменимых полей.
 	f := newAPIAcceptanceFixture(t, nil)
 	// name указывает обязательное поле encoding, удаляемое из очередного запроса.
-	for _, name := range []string{"version", "video_encoder", "rate_control"} {
+	for _, name := range []string{"video_encoder", "rate_control"} {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run("missing/"+name, func(t *testing.T) {
 			// Проверяет отказ создания профиля без выбранного обязательного поля encoding.
 
@@ -179,6 +182,7 @@ func TestProfileEncodingRejectsMissingRequiredNullAndWrongBlocks(t *testing.T) {
 	}
 	// field указывает очередное поле encoding, которому намеренно передаётся null.
 	for _, field := range []string{"version", "video_encoder", "audio_encoder", "rate_control", "rescale_output", "video_custom", "audio_custom", "nvenc", "svt_av1"} {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run("null/"+field, func(t *testing.T) {
 			// Проверяет отказ создания профиля с null в выбранном поле encoding.
 
@@ -260,72 +264,9 @@ func TestProfileEncodingCustomErrorsKeepTrustedDetailsWithoutRejectedValues(t *t
 	}
 }
 
-// Проверяет чтение и переименование прежнего рецепта без материализации и запрет удаления уже
-// сохранённого encoding при полной замене.
-func TestProfileEncodingPatchPreservesLegacyAndRequiresExplicitReplacement(t *testing.T) {
-	// f содержит API сценария сохранения прежнего рецепта и обязательной полной замены.
-	f := newAPIAcceptanceFixture(t, nil)
-	// old содержит вставленный прежний профиль без материализованного encoding.
-	old := apiAcceptanceInsertLegacyProfile(t, f, apiAcceptanceProfile())
-	// path адресует сохранённый прежний профиль при чтении и изменениях.
-	path := "/transcode-profiles/" + string(old.ID)
-	// before содержит исходный ответ GET прежнего профиля без назначения новых значений по
-	// умолчанию.
-	before := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "GET", path, "", 200))
-	if before["profile"].(map[string]any)["encoding"] != nil {
-		t.Fatal("Прежнему профилю выданы вымышленные значения по умолчанию")
-	}
-	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":1,"name":"Прежний"}`, 200)
-	// stored содержит профиль после переименования; err содержит отказ чтения для проверки
-	// неизменности содержимого.
-	stored, err := f.service.GetProfile(context.Background(), old.ID)
-	if err != nil || stored.Profile != old.Profile {
-		t.Fatal("Имя изменило прежний профиль:", stored, err)
-	}
-	// include выбирает отсутствие encoding либо явный null при создании нового профиля из прежнего
-	// рецепта.
-	for _, include := range []bool{false, true} {
-		// p содержит прежний публичный профиль с выбранным представлением отсутствующего
-		// encoding.
-		p := before["profile"].(map[string]any)
-		if !include {
-			delete(p, "encoding")
-		} else {
-			p["encoding"] = nil
-		}
-		// created содержит новый ресурс из прежнего видеорецепта с самостоятельным LIVE copy.
-		created := encodingCreate(t, f, p)
-		if created["profile"].(map[string]any)["encoding"] != nil || created["profile"].(map[string]any)["live_audio_mode"] != "copy" {
-			t.Fatal("Новый POST не сохранил видеонастройки или не назначил LIVE copy:", created)
-		}
-	}
-	// p содержит новый явный рецепт для полной замены прежнего профиля.
-	p := encodingRequestProfile(t, "transcode", "vbr")
-	// changed содержит ответ успешной полной замены для сравнения после отклонённых изменений.
-	changed := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": json.Number("2"), "profile": p}), 200))
-	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":3,"name":"Новое имя"}`, 200)
-	// encoding выбирает null либо отсутствие блока при запрещённом удалении уже сохранённой версии
-	// 2.
-	for _, encoding := range []any{nil, "absent"} {
-		// legacy содержит прежний видеорецепт, подставляемый как недопустимая полная замена
-		// нового encoding.
-		legacy := before["profile"].(map[string]any)
-		if encoding == nil {
-			legacy["encoding"] = nil
-		} else {
-			delete(legacy, "encoding")
-		}
-		apiAcceptanceRequest(t, f.api, "PATCH", path, encodingJSON(t, map[string]any{"expected_revision": json.Number("4"), "profile": legacy}), 422)
-	}
-	// got содержит итоговый ресурс после отказов для проверки неизменной версии профиля и ревизии.
-	got := apiAcceptanceJSON(t, apiAcceptanceRequest(t, f.api, "GET", path, "", 200))
-	if !reflect.DeepEqual(got["profile"], changed["profile"]) || got["revision"] != json.Number("4") {
-		t.Fatal("Отклонённая замена изменила профиль:", got)
-	}
-}
-
 // Проверяет обязательность и типы полей OpenAPI, документированные значения по умолчанию, допустимость
 // encoding:null, строгий селектор LIVE-аудио и схему ошибок профиля.
+// t сообщает об ошибках проверяемого сценария.
 func TestProfileEncodingOpenAPIDocumentsPresenceNullabilityAndDefaults(t *testing.T) {
 	// f содержит настоящий API для проверки генерируемой OpenAPI-схемы.
 	f := newAPIAcceptanceFixture(t, nil)
@@ -335,7 +276,7 @@ func TestProfileEncodingOpenAPIDocumentsPresenceNullabilityAndDefaults(t *testin
 	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
 	// input содержит схему EncodingInput с проверяемыми обязательными полями.
 	input := schemas["EncodingInput"].(map[string]any)
-	if !reflect.DeepEqual(input["required"], []any{"version", "video_encoder", "rate_control"}) {
+	if !reflect.DeepEqual(input["required"], []any{"video_encoder", "rate_control"}) {
 		t.Fatal("Необязательные поля стали обязательными:", input)
 	}
 	// properties содержит свойства EncodingInput для проверки значений по умолчанию и типа boolean.
@@ -347,8 +288,8 @@ func TestProfileEncodingOpenAPIDocumentsPresenceNullabilityAndDefaults(t *testin
 	profile := schemas["GroupProfileDTO"].(map[string]any)
 	// encoding содержит свойство encoding ответа для проверки явной допустимости null.
 	encoding := profile["properties"].(map[string]any)["encoding"].(map[string]any)
-	if !strings.Contains(encodingJSON(t, encoding), `"type":"null"`) {
-		t.Fatal("Ответ не описывает прежний encoding:null:", encoding)
+	if strings.Contains(encodingJSON(t, encoding), `"type":"null"`) {
+		t.Fatal("Ответ разрешает encoding:null:", encoding)
 	}
 	// request содержит схему входного GroupProfileInput.
 	request := schemas["GroupProfileInput"].(map[string]any)
@@ -376,10 +317,11 @@ func TestProfileEncodingOpenAPIDocumentsPresenceNullabilityAndDefaults(t *testin
 
 // Проверяет независимое назначение режима copy для LIVE-аудио при создании, обязательность селектора
 // при последующей полной замене, CAS и безопасные ошибки неверного выбора.
+// t сообщает об ошибках проверяемого сценария.
 func TestProfileLiveAudioCreationReplacementAndTrustedErrors(t *testing.T) {
 	// f содержит API сценария независимого назначения LIVE-аудио и последующих полных замен.
 	f := newAPIAcceptanceFixture(t, nil)
-	// encoding выбирает отсутствие, null или явную версию 2 видеорецепта при создании.
+	// encoding выбирает отсутствие, null или явные настройки при создании.
 	for _, encoding := range []string{"absent", "null", "v2"} {
 		// p содержит полный входной профиль с текущим представлением encoding.
 		p := encodingRequestProfile(t, "transcode", "vbr")

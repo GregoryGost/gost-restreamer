@@ -1,15 +1,14 @@
 package codec
 
-// ValidateAACAU проверяет ASC и обязательный префикс первого SCE/CPE в raw AAC-LC.
-// Перед ним допускаются FIL и DSE с проверенными длинами. ADTS, ADIF, PCE и
-// другие канальные элементы в этот ограниченный порт не входят.
+// ValidateAACAU проверяет ASC и обязательный префикс канальных элементов raw AAC-LC.
+// FIL/DSE пропускаются по проверенным длинам; PCE должен точно повторять карту ASC.
 // Границу и длительность полной единицы доступа предоставляет адаптер. Проверка
 // заголовка не декодирует спектральные данные Huffman и не доказывает их целостность.
 // Для каналов с max_sfb=0 без инструментов дополнительно проверяется истинный ID_END.
 func ValidateAACAU(headers, payload []byte) error {
-	// format содержит подтверждённый ASC формат AAC-LC. err сообщает о неподдержанном или
+	// config содержит подтверждённую карту AAC-LC. err сообщает о неподдержанном или
 	// повреждённом ASC.
-	format, err := AudioFormatASC(headers)
+	config, err := parseAACConfig(headers)
 	if err != nil {
 		return err
 	}
@@ -18,17 +17,74 @@ func ValidateAACAU(headers, payload []byte) error {
 	}
 	// r читает синтаксические элементы из сжатой AAC-единицы по битам.
 	r := bitReader{b: payload}
+	// seen отмечает уже прочитанные канальные элементы. found считает подтверждённые элементы.
+	var seen [8]bool
+	// tags обнаруживает повтор type/tag внутри AU; для indexed config сами номера tags произвольны.
+	var tags [4][16]bool
+	found := 0
 	for r.err == nil {
 		// typ содержит трёхбитный идентификатор очередного элемента AAC.
 		typ := r.read(3)
+		if typ == 7 {
+			if found != config.count {
+				return ErrCodec
+			}
+			aacSkip(&r, (8-r.p%8)%8)
+			return r.err
+		}
+		if typ == 5 {
+			// repeated содержит полную карту PCE внутри AU, включая её хвост.
+			repeated := aacReadPCE(&r, config.format.SampleRateHz)
+			if !config.pce || found != 0 || !aacSameProgram(config, repeated) {
+				return ErrCodec
+			}
+			continue
+		}
 		// tag содержит идентификатор канального элемента либо число байтов FIL.
 		tag := r.read(4)
 		switch typ {
-		case 0, 1: // ID_SCE, ID_CPE.
-			if typ+1 != uint32(format.Channels) {
+		case 0, 1, 3: // ID_SCE, ID_CPE, ID_LFE.
+			// index связывает прочитанные type/tag с единственным элементом карты ASC.
+			index := config.elementIndex(typ, tag)
+			if !config.pce {
+				index = -1
+				// candidate выбирает следующий элемент данного типа в нормативном порядке indexed config.
+				for candidate := range config.count {
+					if config.elements[candidate].typ == typ && !seen[candidate] {
+						index = candidate
+						break
+					}
+				}
+			}
+			if r.err != nil || index < 0 || seen[index] || tags[typ][tag] {
 				return ErrCodec
 			}
-			return aacChannelPrefix(&r, typ == 1)
+			tags[typ][tag] = true
+			seen[index] = true
+			found++
+			// empty показывает, можно ли после префикса точно найти следующий элемент без Huffman.
+			// prefixErr сообщает о повреждении проверенной части текущего элемента.
+			empty, prefixErr := aacChannelPrefix(&r, typ == 1)
+			if prefixErr != nil {
+				return prefixErr
+			}
+			if !empty {
+				// minimum учитывает минимальные заголовки ещё не прочитанных каналов и ID_END.
+				minimum := 3
+				// pending выбирает непрочитанный элемент для оценки его минимального размера.
+				for pending := range config.count {
+					if !seen[pending] {
+						minimum += 29
+						if config.elements[pending].typ == 1 {
+							minimum += 14
+						}
+					}
+				}
+				if len(payload)*8-r.p < minimum {
+					return ErrCodec
+				}
+				return nil
+			}
 		case 4: // ID_DSE.
 			aacSkipData(&r)
 		case 6: // ID_FIL; поле tag содержит count.
@@ -43,7 +99,9 @@ func ValidateAACAU(headers, payload []byte) error {
 // aacChannelPrefix следует таблицам 4.4–4.6 AAC: common_window меняет положение
 // global_gain и ICS. Минимальный остаток учитывает обязательные поля оставшихся
 // каналов и ID_END, но не ищет ID_END внутри непрочитанных спектральных данных.
-func aacChannelPrefix(r *bitReader, pair bool) error {
+// true возвращается только после полностью прочитанного пустого элемента; false без ошибки
+// сохраняет прежнюю границу проверки префикса для спектра и дополнительных инструментов.
+func aacChannelPrefix(r *bitReader, pair bool) (bool, error) {
 	// common показывает, используют ли два канала CPE общее описание окна.
 	common := pair && r.read(1) != 0
 	// ics хранит параметры окна и частотных полос проверяемого канала.
@@ -53,7 +111,7 @@ func aacChannelPrefix(r *bitReader, pair bool) error {
 		// mask содержит режим применения маски совместного стереокодирования.
 		mask := r.read(2)
 		if mask == 3 {
-			return ErrCodec
+			return false, ErrCodec
 		}
 		if mask == 1 {
 			aacSkip(r, ics.groups*ics.maxSFB)
@@ -75,10 +133,10 @@ func aacChannelPrefix(r *bitReader, pair bool) error {
 		}
 	}
 	if r.err != nil || len(r.b)*8-r.p < minimum {
-		return ErrCodec
+		return false, ErrCodec
 	}
 	if !aacReadEmptyChannel(r, ics) {
-		return r.err
+		return false, r.err
 	}
 	if pair {
 		r.read(8)
@@ -86,13 +144,40 @@ func aacChannelPrefix(r *bitReader, pair bool) error {
 			ics = aacReadICS(r)
 		}
 		if r.err != nil {
-			return ErrCodec
+			return false, ErrCodec
 		}
 		if !aacReadEmptyChannel(r, ics) {
-			return r.err
+			return false, r.err
 		}
 	}
-	return aacEmptyTail(r)
+	return true, r.err
+}
+
+// elementIndex находит точную ссылку type/tag в проверенной карте либо возвращает -1.
+func (c aacConfig) elementIndex(typ, tag uint32) int {
+	// index и element обозначают позицию и значение проверяемого канального элемента.
+	for index, element := range c.elements[:c.count] {
+		if element.typ == typ && element.tag == tag {
+			return index
+		}
+	}
+	return -1
+}
+
+// aacSameProgram сравнивает speaker/tag карту PCE независимо от порядка объявления элементов.
+func aacSameProgram(a, b aacConfig) bool {
+	if a.format != b.format || a.program != b.program || a.count != b.count {
+		return false
+	}
+	// element задаёт ссылку и динамики очередного элемента исходного PCE.
+	for _, element := range a.elements[:a.count] {
+		// index содержит позицию соответствующего элемента в повторённой карте.
+		index := b.elementIndex(element.typ, element.tag)
+		if index < 0 || b.elements[index].speakers != element.speakers {
+			return false
+		}
+	}
+	return true
 }
 
 // При max_sfb=0 section_data, scale_factor_data и spectral_data пусты.
@@ -116,31 +201,6 @@ func aacReadEmptyChannel(r *bitReader, ics aacICS) bool {
 	}
 	*r = peek
 	return true
-}
-
-// Читает FIL и DSE после пустых каналов до обязательного ID_END и проверяет доступность выравнивания
-// до байта.
-func aacEmptyTail(r *bitReader) error {
-	for r.err == nil {
-		// typ содержит идентификатор элемента после пустых каналов для поиска допустимого
-		// ID_END.
-		typ := r.read(3)
-		if typ == 7 { // ID_END найден по синтаксису после пустых канальных элементов.
-			aacSkip(r, (8-r.p%8)%8)
-			return r.err
-		}
-		// tag содержит поле счётчика FIL либо идентификатор пропускаемого DSE.
-		tag := r.read(4)
-		switch typ {
-		case 4:
-			aacSkipData(r)
-		case 6:
-			aacSkipFill(r, tag)
-		default:
-			return ErrCodec
-		}
-	}
-	return ErrCodec
 }
 
 // Пропускает тело DSE с обычной или расширенной длиной и, при установленном флаге, предварительным

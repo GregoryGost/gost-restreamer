@@ -12,6 +12,7 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/media"
 	"github.com/GregoryGost/gost-restreamer/internal/media/codec"
+	"github.com/GregoryGost/gost-restreamer/internal/media/encoding"
 	"github.com/GregoryGost/gost-restreamer/internal/media/fmp4"
 )
 
@@ -259,6 +260,8 @@ func index(f Feed) int { return int(f) - 1 }
 
 // Push принимает только локальную идентичность источника и его полную пару конфигураций.
 // Внешние очереди продолжают вызывать Push для обоих источников при любом выборе.
+// feed и attempt идентифицируют источник в s; p содержит AU, video и audio — его конфигурации.
+// now задаёт локальное время получения для контроля продвижения и восстановления.
 func (s *Switcher) Push(feed Feed, attempt uint64, p media.Packet, video, audio media.CodecConfig, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -278,6 +281,10 @@ func (s *Switcher) Push(feed Feed, attempt uint64, p media.Packet, video, audio 
 	if video.Validate() != nil || audio.Validate() != nil || video.Info().Track != media.TrackVideo || audio.Info().Track != media.TrackAudio || video.Info().SourceEpoch != audio.Info().SourceEpoch {
 		return s.reject(feed, ErrFeed)
 	}
+	// err сообщает о ненормализованном Opus либо FLAC без подтверждённого локального происхождения.
+	if err := validateGroupAudio(s.config.Profile, audio); err != nil {
+		return s.reject(feed, err)
+	}
 	if attempt == f.attempt && f.attempt != 0 {
 		if video.Info().SourceEpoch < f.video.Info().SourceEpoch {
 			return ErrFeed
@@ -290,6 +297,11 @@ func (s *Switcher) Push(feed Feed, attempt uint64, p media.Packet, video, audio 
 		}
 	}
 	if attempt != f.attempt || !sameConfig(video, f.video) || !sameConfig(audio, f.audio) {
+		// err сообщает о расхождении видеозаголовков с профилем, включая ограничение числа
+		// опорных кадров H.264 level 6, до сброса готовности источника.
+		if err := encoding.ValidateProfileVideoHeaders(s.config.Profile, video); err != nil {
+			return s.reject(feed, err)
+		}
 		*f = feedState{attempt: attempt, video: video, audio: audio}
 		if s.selected == feed {
 			s.selected = 0
@@ -310,12 +322,12 @@ func (s *Switcher) Push(feed Feed, attempt uint64, p media.Packet, video, audio 
 		return s.reject(feed, ErrFeed)
 	}
 	// err сообщает о несовместимости фактического формата источника с профилем группы.
-	if err := codec.Compatible(core.MediaFormat{Video: video.Info().Video, Audio: audio.Info().Audio}, s.config.Profile.Format); err != nil {
+	if err := core.CompatibleProfileFormat(core.MediaFormat{Video: video.Info().Video, Audio: audio.Info().Audio}, s.config.Profile); err != nil {
 		return s.reject(feed, err)
 	}
 	// key содержит подтверждённый признак независимого видеостарта; err сохраняет ошибки инспекции и
 	// последующего размещения пакета.
-	key, err := f.inspector.Inspect(p)
+	key, _, err := f.inspector.InspectMetadata(p)
 	if err != nil {
 		return s.reject(feed, err)
 	}

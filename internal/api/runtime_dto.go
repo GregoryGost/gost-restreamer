@@ -58,9 +58,9 @@ type RatesDTO struct {
 // ObservedFormatDTO передаёт фактически наблюдаемые кодеки, размеры видео и параметры аудио.
 type ObservedFormatDTO struct {
 	// VideoCodec содержит идентификатор наблюдаемого видеокодека.
-	VideoCodec string `json:"video_codec" enum:",UNKNOWN,av1,h264"`
+	VideoCodec string `json:"video_codec" enum:",UNKNOWN,av1,h264,hevc,vp9"`
 	// AudioCodec содержит идентификатор наблюдаемого аудиокодека.
-	AudioCodec string `json:"audio_codec" enum:",UNKNOWN,aac"`
+	AudioCodec string `json:"audio_codec" enum:",UNKNOWN,aac,opus,flac,mp3,ac3"`
 	// Width содержит наблюдаемую ширину видеокадра в пикселях.
 	Width uint32 `json:"width"`
 	// Height содержит наблюдаемую высоту видеокадра в пикселях.

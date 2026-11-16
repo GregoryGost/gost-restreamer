@@ -154,8 +154,8 @@ func (s *Service) SelectAddBinding(ctx context.Context, sessionID, destinationID
 
 // selectDestinationBinding проверяет принадлежность назначения и группы Stream, затем выбирает из
 // текущего поколения заглушки точный готовый вариант полного профиля.
-// ctx ограничивает чтение r, streamID задаёт родителя d, policy выбирает Asset. Аннулированные
-// требования пропускаются; на полный профиль допускается одно неаннулированное требование.
+// ctx ограничивает чтение r, streamID задаёт родителя d, policy выбирает Asset.
+// Каждому полному каноническому профилю соответствует единственный вариант.
 // Отказ чтения или проверки его варианта сохраняется целиком.
 func selectDestinationBinding(ctx context.Context, r Repositories, streamID ID, policy FallbackPolicy, d Destination) (PreparedBinding, error) {
 	if d.StreamID != streamID {
@@ -192,7 +192,7 @@ func selectDestinationBinding(ctx context.Context, r Repositories, streamID ID, 
 	}
 	// required содержит очередной профиль и заранее выбранный вариант поколения.
 	for _, required := range generation.RequiredProfiles {
-		if !required.RequiresRebuild && required.Profile.Equal(p.Profile) {
+		if required.Profile.Equal(p.Profile) {
 			// binding фиксирует поколение, группу, вариант и версию генератора найденного
 			// профиля.
 			binding := PreparedBinding{GenerationID: generation.ID, GroupID: g.ID, VariantID: required.VariantID, GeneratorVersion: generation.GeneratorVersion}

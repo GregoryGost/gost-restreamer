@@ -105,9 +105,12 @@ type Store struct {
 // Open открывает файловую SQLite с единственным владельцем до Close. Он разрешает путь, создаёт
 // необходимые каталог и файлы с ограниченными правами, получает неблокирующую эксклюзивную блокировку,
 // настраивает пул и создаёт общую RuntimeAuthority. Повторное открытие занятой БД отклоняется.
-// До возврата применяются встроенные миграции, проверяется формат хранилища и выполняется Recover,
+// До вызовов Goose проверяются метаданные пустой либо текущей схемы. Затем применяются встроенные
+// миграции, проверяется созданный формат хранилища и выполняется Recover,
 // который изменяет долговечное управление незавершённых запусков прежнего владельца. При ошибке уже
 // полученные ресурсы закрываются; после успеха вызывающий останавливает пользователей перед Close.
+// ctx ограничивает открытие, миграции и Recover; path задаёт файл БД, options — явные бюджеты хранилища.
+// retErr сохраняет итоговую ошибку, включая отказ закрытия частично полученных ресурсов и перевод в доменную категорию.
 func Open(ctx context.Context, path string, options Options) (_ *Store, retErr error) {
 	// err сообщает об ошибке проверки всех явных параметров открытия.
 	if err := options.Validate(); err != nil {
@@ -164,7 +167,10 @@ func Open(ctx context.Context, path string, options Options) (_ *Store, retErr e
 	if err != nil {
 		return nil, fmt.Errorf("создать отображение SQLite: %w", err)
 	}
-	s.provider, err = goose.NewProvider(goose.DialectSQLite3, s.sqlDB, sqlitemigrations.Files, goose.WithDisableGlobalRegistry(true), goose.WithGoMigrations(desiredProfilesMigration()))
+	if err = s.preflightStorage(ctx); err != nil {
+		return nil, err
+	}
+	s.provider, err = goose.NewProvider(goose.DialectSQLite3, s.sqlDB, sqlitemigrations.Files, goose.WithDisableGlobalRegistry(true))
 	if err != nil {
 		return nil, fmt.Errorf("создать исполнитель миграций: %w", err)
 	}
@@ -277,9 +283,14 @@ func (s *Store) Incarnation() string { return s.incarnation }
 func (s *Store) RuntimeAuthority() *core.RuntimeAuthority { return s.authority }
 
 // Migrate повторно применяет только ещё не выполненные встроенные миграции.
+// ctx ограничивает проверку метаданных и применение ещё не выполненных миграций.
 func (s *Store) Migrate(ctx context.Context) error {
 	if s.closed.Load() {
 		return core.ErrClosed
+	}
+	// err сообщает об отказе метаданных до возможной записи Goose.
+	if err := s.preflightStorage(ctx); err != nil {
+		return err
 	}
 	// err сообщает об ошибке применения ещё не выполненных встроенных миграций.
 	if _, err := s.provider.Up(ctx); err != nil {
@@ -366,8 +377,9 @@ func (s *Store) Diagnostics(ctx context.Context) (_ Diagnostics, retErr error) {
 // ErrIncompatibleFormat обозначает БД с неподдерживаемым форматом управления.
 var ErrIncompatibleFormat = errors.New("несовместимый формат хранилища")
 
-// checkStorageFormat требует единственную запись storage_format с singleton=1 и version=3; отсутствие
+// checkStorageFormat требует единственную запись storage_format с singleton=1 и version=4; отсутствие
 // таблицы и иной маркер дают ErrIncompatibleFormat.
+// ctx ограничивает чтение обязательного маркера формата из SQLite.
 func (s *Store) checkStorageFormat(ctx context.Context) error {
 	// count содержит число строк маркера формата, singleton — минимальный ключ единственной строки,
 	// а version — её версию для проверки совместимости.
@@ -376,7 +388,7 @@ func (s *Store) checkStorageFormat(ctx context.Context) error {
 	if err := s.sqlDB.QueryRowContext(ctx, "SELECT count(*), coalesce(min(singleton),0), coalesce(min(version),0) FROM storage_format").Scan(&count, &singleton, &version); err != nil {
 		return fmt.Errorf("%w: требуется первичная инициализация поддерживаемого формата: %w", ErrIncompatibleFormat, err)
 	}
-	if count != 1 || singleton != 1 || version != 3 {
+	if count != 1 || singleton != 1 || version != 4 {
 		return fmt.Errorf("%w: неизвестный маркер формата", ErrIncompatibleFormat)
 	}
 	return nil

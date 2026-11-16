@@ -429,16 +429,15 @@ func TestStreamPublicationKeyCannotChangeDuringConfigurationUpdate(t *testing.T)
 
 // Проверяет назначение copy только новому профилю, приоритет CAS и запрет удаления явного селектора
 // при полной замене.
+// t сообщает об ошибках проверяемого сценария.
 func TestServiceLiveAudioDefaultAndReplacementCAS(t *testing.T) {
 	// ctx задаёт контекст проверяемых конфигурационных операций.
 	ctx := context.Background()
-	// encoding выбирает полный профиль v2 или прежний профиль без Encoding.
-	for _, encoding := range []bool{false, true} {
+	// encoder выбирает две текущие реализации H.264 с одинаковым контрактом LIVE-аудио.
+	for _, encoder := range []string{core.VideoEncoderNVENC, core.VideoEncoderX264} {
 		// p содержит исходный профиль без явного LIVE-аудиорежима.
-		p := encodedProfile(core.VideoEncoderNVENC, core.RateControlVBR)
-		if !encoding {
-			p.Encoding = core.EncodingSettings{}
-		}
+		p := expandedProfile(encoder, core.RateControlVBR)
+		p.LiveAudioMode = ""
 		// u предоставляет контролируемый UnitOfWork конфигурационных операций.
 		u := &configContractUOW{}
 		// s предоставляет доменные операции текущей конфигурации. err сообщает об ошибке

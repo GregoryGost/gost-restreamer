@@ -3,6 +3,7 @@ package fmp4
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -306,9 +307,15 @@ func TestAV1OmitsCompositionOffsets(t *testing.T) {
 	// info содержит изменяемое описание видео для выбора AV1.
 	info := init.Video.Info()
 	info.Video.Codec = core.CodecAV1
+	info.Video.CodecProfile = "main"
+	info.Video.Color = core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}
+	// headers содержит настоящий av1C с последовательностью Main 128×128, 8 бит.
+	headers, err := hex.DecodeString("81000c000a0e0200000499bfff00be0404040410")
+	if err != nil {
+		t.Fatal(err)
+	}
 	// err принимает ошибку создания конфигурации AV1 и последующих операций контейнера.
-	var err error
-	init.Video, err = media.NewCodecConfig(info, []byte{0x81, 0, 0, 0})
+	init.Video, err = media.NewCodecConfig(info, headers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,19 +435,25 @@ func TestConfigMetadataPreservesContractualStringBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// wire накапливает инициализацию с контрактными байтами строки профиля.
-	var wire bytes.Buffer
-	if _, err = NewMuxer(&wire, init, testLimits()); err != nil {
-		t.Fatal(err)
-	}
-	// d восстанавливает конфигурации из собственных метаданных контейнера.
-	d, err := NewDemuxer(&wire, DemuxOptions{Limits: testLimits()})
+	// data содержит собственные метаданные с контрактными строками без выдачи ложного SPS-описания в медиатракт.
+	data, err := json.Marshal(configMetadata{Version: 1, Format: core.MediaFormat{Video: info.Video, Audio: init.Audio.Info().Audio}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Init().Video.Info() != init.Video.Info() {
+	// decoded восстанавливает строки побайтно через действующий JSON-контракт.
+	var decoded configMetadata
+	if err = json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Format.Video != info.Video {
 		t.Fatal("JSON изменил байты контрактных строк")
 	}
+	// wire проверяет, что противоречивое описание нельзя опубликовать вместе с реальным SPS.
+	var wire bytes.Buffer
+	if _, err = NewMuxer(&wire, init, testLimits()); !errors.Is(err, ErrInvalid) || wire.Len() != 0 {
+		t.Fatal("Ложный профиль опубликован", err)
+	}
+
 }
 
 // Проверяет отказ противоречащей SPS ширины или высоты до записи инициализации.

@@ -15,11 +15,11 @@ import (
 )
 
 // NVIDIAConfig задаёт наблюдаемый вход, выходной профиль и фактические шкалы обеих дорожек.
-// FPS и размеры преобразуются по профилю; преобразование HDR не поддерживается.
+// FPS и размеры преобразуются по профилю; HDR сохраняет исходные CICP, диапазон и глубину.
 type NVIDIAConfig struct {
-	// Binary задаёт исполняемый файл FFmpeg для аппаратного перекодирования.
+	// Binary задаёт исполняемый файл FFmpeg для выбранного перекодирования.
 	Binary string
-	// Input содержит проверяемый формат входных AV1 и AAC.
+	// Input содержит фактические дорожки с подтверждёнными форматами до выбора маршрута.
 	Input core.MediaFormat
 	// Profile задаёт целевой формат группы и параметры кодирования LIVE.
 	Profile core.GroupProfile
@@ -29,11 +29,15 @@ type NVIDIAConfig struct {
 	AudioTimeBase media.TimeBase
 }
 
-// BuildNVIDIACommand строит отдельные argv для AV1 NVDEC → H.264 NVENC/AAC.
-// Неподдержанные настройки отвергаются; автоматического CPU fallback нет.
+// BuildNVIDIACommand выбирает ограниченный AV1 NVDEC → H.264 NVENC/AAC при совпадении
+// фактического SDR BT.709 8-bit; остальные подтверждённые сочетания используют программное преобразование.
+// c задаёт фактический вход и целевой профиль; a содержит выделенные пути UDS попытки.
+// Неподдержанные настройки отвергаются; автоматической замены кодировщика нет.
 func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
-	// invalid формирует отказ построения команды с ErrInvalidSupervisor и описанием неподдержанного
-	// параметра.
+	if !supportsCUDARoute(c) {
+		return buildSoftwareCommand(c, a)
+	}
+	// invalid формирует отказ с ErrInvalidSupervisor; detail объясняет неподдержанный параметр.
 	invalid := func(detail string) (Command, error) {
 		// Возвращает ErrInvalidSupervisor с конкретным описанием неподдержанного параметра команды.
 
@@ -76,10 +80,8 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 	if p.VideoEncoding.GOPFrames > math.MaxInt32 || p.VideoEncoding.MaxBFrames > math.MaxInt32 || p.VideoEncoding.TargetBitrateBPS > math.MaxInt64 || p.VideoEncoding.MaxBitrateBPS > math.MaxInt64 || p.VideoEncoding.BufferBits > math.MaxInt32 || p.AudioEncoding.BitrateBPS > math.MaxInt64 {
 		return invalid("параметры превышают диапазон FFmpeg")
 	}
-	// validLayout показывает, согласованы ли число каналов AAC и обозначение mono/stereo.
-	validLayout := au.Channels == 1 && au.ChannelLayout == "mono" || au.Channels == 2 && au.ChannelLayout == "stereo"
-	if au.CodecProfile != "LC" || !oneOf(strconv.FormatUint(uint64(au.SampleRateHz), 10), "96000", "88200", "64000", "48000", "44100", "32000", "24000", "22050", "16000", "12000", "11025", "8000", "7350") || !validLayout {
-		return invalid("поддержан AAC LC mono/stereo с известной частотой")
+	if au.CodecProfile != "LC" || !oneOf(strconv.FormatUint(uint64(au.SampleRateHz), 10), "96000", "88200", "64000", "48000", "44100", "32000", "24000", "22050", "16000", "12000", "11025", "8000", "7350") || !core.ValidAACLayout(au.ChannelLayout, au.Channels) {
+		return invalid("поддержан AAC LC с известными частотой и расположением каналов")
 	}
 	if !oneOf(v.Color.Range, "limited", "full", "tv", "pc") || !oneOf(v.Color.Primaries, "bt709", "bt470m", "bt470bg", "smpte170m", "smpte240m", "film", "bt2020", "unspecified") || !oneOf(v.Color.Transfer, "bt709", "gamma22", "gamma28", "smpte170m", "smpte240m", "linear", "bt2020-10", "bt2020-12", "unspecified") || !oneOf(v.Color.Matrix, "bt709", "fcc", "bt470bg", "smpte170m", "smpte240m", "bt2020nc", "bt2020c", "unspecified") {
 		return invalid("неподдержанное описание цвета SDR")
@@ -106,7 +108,7 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 	if movieScale > math.MaxInt32 || videoScale > math.MaxInt32 {
 		return invalid("timescale превышает диапазон FFmpeg")
 	}
-	// n переводит беззнаковые числовые параметры команды в десятичные аргументы.
+	// n переводит беззнаковое значение x в десятичный аргумент команды.
 	n := func(x uint64) string {
 		// Представляет числовые параметры FFmpeg десятичными строками без знака.
 		return strconv.FormatUint(x, 10)
@@ -118,7 +120,7 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 	}
 	// filter содержит цепочку преобразования FPS и, при разрешённом масштабировании, размеров видео.
 	filter := fmt.Sprintf("fps=fps=%d/%d:round=near:eof_action=round", fps.Numerator, fps.Denominator)
-	if p.Encoding.Version == 0 || p.Encoding.RescaleOutput {
+	if p.Encoding.RescaleOutput {
 		filter += fmt.Sprintf(",scale_cuda=w=%d:h=%d:format=yuv420p", v.Width, v.Height)
 	} else if c.Input.Video.Width != v.Width || c.Input.Video.Height != v.Height {
 		return invalid("rescale_output=false требует совпадения входных и выходных размеров")
@@ -137,4 +139,18 @@ func BuildNVIDIACommand(c NVIDIAConfig, a Attempt) (Command, error) {
 // Проверяет точное совпадение строки с одним из поддержанных значений параметра FFmpeg.
 func oneOf(s string, values ...string) bool {
 	return slices.Contains(values, s)
+}
+
+// supportsCUDARoute выбирает физический CUDA-маршрут только для подтверждённого сочетания c.
+// Выбор не проверяет наличие GPU и не разрешает замену кодировщика после ошибки запуска.
+func supportsCUDARoute(c NVIDIAConfig) bool {
+	// p содержит целевой профиль, source — фактическое входное видео, v — целевое видео.
+	p, source, v := c.Profile, c.Input.Video, c.Profile.Format.Video
+	return source.Codec == core.CodecAV1 && v.Codec == core.CodecH264 && p.Encoding.VideoEncoder == core.VideoEncoderNVENC &&
+		p.Encoding.AudioEncoder == core.AudioEncoderAAC && c.Input.Audio.Codec == core.CodecAAC && p.Format.Audio.Codec == core.CodecAAC &&
+		(p.Encoding.RateControl == core.RateControlCBR || p.Encoding.RateControl == core.RateControlVBR) &&
+		source.PixelFormat == "yuv420p" && source.BitDepth == 8 && v.PixelFormat == "yuv420p" && v.BitDepth == 8 && source.Color == v.Color &&
+		v.Color.Primaries == "bt709" && v.Color.Transfer == "bt709" && v.Color.Matrix == "bt709" &&
+		oneOf(v.Color.Range, "limited", "full", "tv", "pc") && oneOf(v.CodecProfile, "baseline", "main", "high") &&
+		oneOf(v.Level, "", "auto", "1", "1.0", "1b", "1.0b", "1.1", "1.2", "1.3", "2", "2.0", "2.1", "2.2", "3", "3.0", "3.1", "3.2", "4", "4.0", "4.1", "4.2", "5", "5.0", "5.1", "5.2")
 }

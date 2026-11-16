@@ -198,12 +198,6 @@ func exactManifest(ctx context.Context, r Repositories, policy FallbackPolicy, p
 	if g.AssetID != a.ID || g.State != PreparationPublished {
 		return ArtifactManifest{}, ErrNotReady
 	}
-	// required связывает точный VariantID с историческим требованием; аннулированная запись не выдаёт файл.
-	for _, required := range g.RequiredProfiles {
-		if required.VariantID == binding.VariantID && required.RequiresRebuild {
-			return ArtifactManifest{}, ErrNotReady
-		}
-	}
 	// v содержит конкретный вариант, который сверяется с поколением и полным профилем.
 	v, err := r.Artifacts.Variant(ctx, binding.VariantID)
 	if err != nil {

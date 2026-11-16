@@ -88,8 +88,14 @@ type OutboundConn struct {
 	// headersPending требует записи метаданных и заголовков перед следующей независимой AU.
 	// requireIndependent запрещает зависимый старт после обновления конфигураций.
 	headersPending, requireIndependent bool
+	// colorInfoActive показывает, отправлял ли сериализатор colorInfo текущему соединению.
+	// Следующая конфигурация без него получает явный reset перед SequenceStart.
+	colorInfoActive bool
 	// clock сохраняет общее начало и последние логические DTS дорожек исходящего потока.
 	clock outboundClock
+	// flacSamples считает полностью записанные отсчёты FLAC физического соединения.
+	// Повтор заголовков, resync и смена Source не сбрасывают его; новое соединение начинает с0.
+	flacSamples uint64
 	// outboundChunkSize задаёт размер исходящих блоков после согласования SetChunkSize.
 	outboundChunkSize uint32
 	// peerAcknowledged хранит восстановленное абсолютное число байтов последнего однозначного ACK.
@@ -631,9 +637,19 @@ func (c *OutboundConn) writeInitialChunkSize(ctx context.Context, body []byte) e
 	})
 }
 
-// Строит команду connect с отдельными точными app и tcUrl и объявленной поддержкой AV1 в fourCcList.
+// Строит команду connect с точными app/tcUrl и применимым fourCcList.
+// Старые SDR назначения сохраняют прежние bytes команды; новый кодек объявляется по actual target.
 func outboundConnectData(target OutboundTarget) amf0.Data {
-	return amf0.Data{"connect", float64(1), amf0.Object{{Key: "app", Value: target.app}, {Key: "tcUrl", Value: target.endpoint}, {Key: "type", Value: "nonprivate"}, {Key: "flashVer", Value: "FMLE/3.0 (compatible; native)"}, {Key: "fpad", Value: false}, {Key: "capabilities", Value: float64(15)}, {Key: "audioCodecs", Value: float64(1024)}, {Key: "videoCodecs", Value: float64(128)}, {Key: "videoFunction", Value: float64(1)}, {Key: "objectEncoding", Value: float64(0)}, {Key: "fourCcList", Value: amf0.StrictArray{"av01"}}}}
+	// codecs сохраняет прежнее объявление AV1 у старых SDR назначений и добавляет новый FourCC
+	// только тогда, когда его действительно будет отправлять данное соединение.
+	codecs := amf0.StrictArray{"av01"}
+	if target.profile.Video.Codec == "hevc" || target.profile.Video.Codec == "vp9" || target.profile.Video.Codec == "h264" && hdrVideo(target.profile.Video) {
+		codecs = append(codecs, outboundFourCC(target.profile.Video))
+	}
+	if target.profile.Audio.Codec != "aac" && target.profile.Audio.Codec != "" {
+		codecs = append(codecs, outboundAudioFourCC(target.profile.Audio.Codec))
+	}
+	return amf0.Data{"connect", float64(1), amf0.Object{{Key: "app", Value: target.app}, {Key: "tcUrl", Value: target.endpoint}, {Key: "type", Value: "nonprivate"}, {Key: "flashVer", Value: "FMLE/3.0 (compatible; native)"}, {Key: "fpad", Value: false}, {Key: "capabilities", Value: float64(15)}, {Key: "audioCodecs", Value: float64(1024)}, {Key: "videoCodecs", Value: float64(128)}, {Key: "videoFunction", Value: float64(1)}, {Key: "objectEncoding", Value: float64(0)}, {Key: "fourCcList", Value: codecs}}}
 }
 
 // Кодирует проверенную AMF-команду и передаёт её на заданный MessageStreamID через поток блоков 3.

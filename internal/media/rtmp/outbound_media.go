@@ -79,7 +79,7 @@ func outboundSubtract(a, b int64) (int64, error) {
 func (c *outboundClock) project(p media.Packet, independent bool) (uint32, int32, error) {
 	// info содержит метки пакета. config содержит описание его дорожки и единицу времени.
 	info, config := p.Info(), p.Config().Info()
-	if (config.Track == media.TrackAudio || config.Video.Codec == core.CodecAV1) && info.PTS != info.DTS {
+	if (config.Track == media.TrackAudio || config.Video.Codec == core.CodecAV1 || config.Video.Codec == core.CodecVP9) && info.PTS != info.DTS {
 		return 0, 0, outboundError(OutboundTiming, codec.ErrTiming)
 	}
 	// pts содержит округлённое время показа в миллисекундах. err сообщает о невозможности его
@@ -159,10 +159,10 @@ func (c *OutboundConn) WriteHeaders(ctx context.Context, video, audio media.Code
 	return nil
 }
 
-// Проверяет бюджеты и согласованность пары конфигураций с назначением, фактическим ASC и H.264 SPS
-// либо допустимым av1C.
+// validateHeaders проверяет бюджеты video/audio и согласованность с назначением и заголовками кодеков.
+// VP9 record не содержит geometry/FPS, поэтому эти поля дополнительно проверяет AU Inspector.
 func (c *OutboundConn) validateHeaders(video, audio media.CodecConfig) error {
-	if video.StoredBytes() > uint64(c.opts.Limits.MaxConfigBytes) || audio.StoredBytes() > uint64(c.opts.Limits.MaxConfigBytes) || video.StoredBytes()+5 > uint64(c.opts.Limits.MaxMessageBytes) || audio.StoredBytes()+2 > uint64(c.opts.Limits.MaxMessageBytes) {
+	if video.StoredBytes() > uint64(c.opts.Limits.MaxConfigBytes) || audio.StoredBytes() > uint64(c.opts.Limits.MaxConfigBytes) || video.StoredBytes()+5 > uint64(c.opts.Limits.MaxMessageBytes) || audio.StoredBytes()+audioWirePrefixSize(audio.Info().Audio) > uint64(c.opts.Limits.MaxMessageBytes) {
 		return outboundError(OutboundMedia, ErrLimit)
 	}
 	// err сообщает о некорректной видеоконфигурации.
@@ -179,16 +179,16 @@ func (c *OutboundConn) validateHeaders(video, audio media.CodecConfig) error {
 		return outboundError(OutboundMedia, ErrCodec)
 	}
 	// err сообщает о несовместимости заявленной пары дорожек с назначением.
-	if err := codec.Compatible(core.MediaFormat{Video: vi.Video, Audio: ai.Audio}, c.target.profile); err != nil {
+	if err := codec.CompatibleActual(core.MediaFormat{Video: vi.Video, Audio: ai.Audio}, c.target.profile); err != nil {
 		return outboundError(OutboundMedia, err)
 	}
-	// actual содержит фактический аудиоформат ASC. err сообщает об отказе его разбора.
-	actual, err := codec.AudioFormatASC(audio.Headers())
+	// audioBody содержит нормативные сетевые заголовки; err сохраняет отказ формата или происхождения.
+	audioBody, err := outboundAudioSequenceBody(audio)
 	if err != nil {
 		return outboundError(OutboundMedia, err)
 	}
-	if actual != ai.Audio {
-		return outboundError(OutboundMedia, ErrCodec)
+	if uint64(len(audioBody)) > uint64(c.opts.Limits.MaxMessageBytes) || uint64(len(audioBody))-audioWirePrefixSize(ai.Audio) > uint64(c.opts.Limits.MaxConfigBytes) {
+		return outboundError(OutboundMedia, ErrLimit)
 	}
 	switch vi.Video.Codec {
 	case core.CodecH264:
@@ -198,11 +198,15 @@ func (c *OutboundConn) validateHeaders(video, audio media.CodecConfig) error {
 		if err != nil {
 			return outboundError(OutboundMedia, err)
 		}
-		if err = codec.Compatible(core.MediaFormat{Video: actual, Audio: ai.Audio}, c.target.profile); err != nil {
+		if err = codec.CompatibleVideoConstraints(actual, vi.Video, vi.HDR.ColorConfig); err != nil {
 			return outboundError(OutboundMedia, err)
 		}
 	case core.CodecAV1:
-		if _, err = codec.ParseAV1Config(video.Headers()); err != nil {
+		if err = codec.ValidateVideoConfig(video); err != nil {
+			return outboundError(OutboundMedia, err)
+		}
+	case core.CodecHEVC, core.CodecVP9:
+		if err = validateNewVideoHeaders(video); err != nil {
 			return outboundError(OutboundMedia, err)
 		}
 	default:
@@ -223,9 +227,9 @@ func (c *OutboundConn) WriteDelivery(ctx context.Context, d media.Delivery) (Out
 	return c.writePacket(ctx, d.Packet, d.IsCurrent)
 }
 
-// Сериализует проверенный актуальный AU под общим допуском записи, при необходимости предваряя его
-// метаданными и заголовками. Время и результат полной записи обновляются после успешной отправки всего
-// сообщения.
+// writePacket сериализует актуальный p в пределах ctx, проверяя current до I/O, если callback задан.
+// Замыкание под общим сериализатором предваряет AU метаданными и заголовками при необходимости.
+// Часы и счётчик FLAC обновляются только после успешной отправки всего сообщения.
 func (c *OutboundConn) writePacket(ctx context.Context, p media.Packet, current func() bool) (OutboundWriteResult, error) {
 	// result подтверждает размер нагрузки и свойства AU только после полной успешной записи.
 	var result OutboundWriteResult
@@ -249,7 +253,7 @@ func (c *OutboundConn) writePacket(ctx context.Context, p media.Packet, current 
 		}
 		// independent показывает независимость AU по содержимому. err сообщает об отказе
 		// проверки сжатых данных.
-		independent, err := c.inspector.Inspect(p)
+		independent, _, err := c.inspector.InspectMetadata(p)
 		if err != nil {
 			return outboundError(OutboundMedia, err)
 		}
@@ -267,34 +271,54 @@ func (c *OutboundConn) writePacket(ctx context.Context, p media.Packet, current 
 		}
 		// payload содержит отдельную копию сжатой нагрузки AU.
 		payload := p.Payload()
+		// nextFLAC сохраняет следующий счётчик; после отказа или частичной записи он не назначается.
+		nextFLAC := c.flacSamples
+		if info.Track == media.TrackAudio {
+			payload, nextFLAC, err = prepareOutboundAudio(p, c.flacSamples)
+			if err != nil {
+				return outboundError(OutboundMedia, err)
+			}
+		}
 		// prefix содержит аудио- или видеопрефикс тела RTMP перед исходной нагрузкой.
-		prefix := []byte{0xaf, 1}
+		prefix := audioFramePrefix(info.Audio, 1)
 		// csid задаёт поток блоков для выбранной дорожки. typ задаёт тип аудио- или
 		// видеосообщения RTMP.
 		csid, typ := byte(4), byte(8)
 		if info.Track == media.TrackVideo {
 			csid, typ = 6, 9
-			// frame содержит признак ключевого либо зависимого видеокадра для RTMP-префикса.
-			frame := byte(2)
-			if independent {
-				frame = 1
-			}
-			if info.Video.Codec == core.CodecAV1 {
-				prefix = []byte{0x80 | frame<<4 | 1, 'a', 'v', '0', '1'}
-			} else {
-				// v содержит младшие 24 бита знакового смещения PTS относительно DTS для
-				// H.264.
-				v := uint32(cts) & 0xffffff
-				prefix = []byte{frame<<4 | 7, 1, byte(v >> 16), byte(v >> 8), byte(v)}
-			}
+			prefix = videoFramePrefix(info, independent, cts)
 		}
 		if uint64(len(prefix))+uint64(len(payload)) > uint64(c.opts.Limits.MaxMessageBytes) {
 			return outboundError(OutboundMedia, ErrLimit)
 		}
 		if c.headersPending {
+			// colorBody готовится полностью до первых сетевых байтов, чтобы неподдерживаемый HDR
+			// не оставлял получателя с частично обновлённым описанием.
+			var colorBody []byte
+			if hdrVideo(c.video.Info().Video) || c.video.Info().HDR != (media.HDRMetadata{}) || c.colorInfoActive {
+				// metadata содержит полный colorInfo либо Undefined reset; parseErr сохраняет
+				// отказ представимости без записи заголовков и AU.
+				metadata, parseErr := outboundColorInfo(p, independent)
+				if parseErr != nil {
+					return outboundError(OutboundMedia, parseErr)
+				}
+				colorBody, err = c.marshalAMF(metadata)
+				if err != nil {
+					return err
+				}
+				if uint64(len(colorBody))+5 > uint64(c.opts.Limits.MaxMessageBytes) {
+					return outboundError(OutboundMedia, ErrLimit)
+				}
+			}
+			if len(colorBody) > 0 {
+				if err = c.writeColorInfoLocked(ts, colorBody); err != nil {
+					return err
+				}
+			}
 			if err = c.writeHeadersLocked(ts); err != nil {
 				return err
 			}
+			c.colorInfoActive = hdrVideo(c.video.Info().Video) || c.video.Info().HDR != (media.HDRMetadata{})
 		}
 		// body объединяет RTMP-префикс и сжатую нагрузку в полное тело сообщения.
 		body := make([]byte, len(prefix)+len(payload))
@@ -304,28 +328,37 @@ func (c *OutboundConn) writePacket(ctx context.Context, p media.Packet, current 
 			return err
 		}
 		c.clock = clock
+		c.flacSamples = nextFLAC
 		c.requireIndependent = false
-		result = OutboundWriteResult{PayloadBytes: uint64(len(payload)), Track: info.Track, Independent: independent}
+		result = OutboundWriteResult{PayloadBytes: p.StoredBytes() - p.Config().StoredBytes(), Track: info.Track, Independent: independent}
 		return nil
 	})
 	return result, err
 }
 
-// Записывает метаданные и исходные видео-/аудиозаголовки на заданной метке перед независимым AU;
-// вызывающий удерживает сериализатор и допуск записи.
+// writeHeadersLocked пишет метаданные и заголовки на ts перед независимым AU.
+// Вызывающий удерживает сериализатор и допуск записи; новые аудиозаголовки готовятся до I/O.
 func (c *OutboundConn) writeHeadersLocked(ts uint32) error {
+	// a содержит готовый SequenceStart аудиокодека до первой записи метаданных.
+	// err сохраняет отказ формата или происхождения без частично выданных заголовков.
+	a, err := outboundAudioSequenceBody(c.audio)
+	if err != nil {
+		return outboundError(OutboundMedia, err)
+	}
 	// vi содержит выходной формат видео. ai содержит выходной формат аудио для метаданных.
 	vi, ai := c.video.Info().Video, c.audio.Info().Audio
-	// videoCodec содержит числовое обозначение H.264 либо FourCC AV1 для AMF-метаданных.
+	// videoCodec содержит legacy H.264 либо настоящий FourCC Enhanced Video для onMetaData.
 	videoCodec := float64(7)
-	if vi.Codec == core.CodecAV1 {
-		videoCodec = float64(0x61763031)
+	if enhancedVideo(c.video.Info()) {
+		// fourCC содержит четыре сетевых байта транспортного обозначения кодека.
+		fourCC := outboundFourCC(vi)
+		videoCodec = float64(uint32(fourCC[0])<<24 | uint32(fourCC[1])<<16 | uint32(fourCC[2])<<8 | uint32(fourCC[3]))
 	}
 	// metadata содержит onMetaData с фактическими размерами, FPS и аудиопараметрами.
 	metadata := amf0.Data{"@setDataFrame", "onMetaData", amf0.ECMAArray{
 		{Key: "videocodecid", Value: videoCodec}, {Key: "width", Value: float64(vi.Width)}, {Key: "height", Value: float64(vi.Height)},
 		{Key: "framerate", Value: float64(vi.FrameRate.Numerator) / float64(vi.FrameRate.Denominator)},
-		{Key: "audiocodecid", Value: float64(10)}, {Key: "audiosamplerate", Value: float64(ai.SampleRateHz)}, {Key: "audiochannels", Value: float64(ai.Channels)}, {Key: "stereo", Value: ai.Channels == 2},
+		{Key: "audiocodecid", Value: audioMetadataCodec(ai.Codec)}, {Key: "audiosamplerate", Value: float64(ai.SampleRateHz)}, {Key: "audiochannels", Value: float64(ai.Channels)}, {Key: "stereo", Value: ai.Channels == 2},
 	}}
 	// b содержит сериализованные метаданные. err сообщает об отказе их проверки или кодирования.
 	b, err := c.marshalAMF(metadata)
@@ -335,21 +368,29 @@ func (c *OutboundConn) writeHeadersLocked(ts uint32) error {
 	if err = c.writeFramed(5, 18, c.streamID.Load(), ts, b); err != nil {
 		return err
 	}
-	// prefix содержит префикс сообщения видеоконфигурации H.264 либо AV1.
+	// prefix содержит legacy AVC либо Enhanced SequenceStart перед исходным codec record.
 	prefix := []byte{0x17, 0, 0, 0, 0}
-	if vi.Codec == core.CodecAV1 {
-		prefix = []byte{0x90, 'a', 'v', '0', '1'}
+	if enhancedVideo(c.video.Info()) {
+		// fourCC выбирает исходный record кодека без добавления контейнерного FullBox.
+		fourCC := outboundFourCC(vi)
+		prefix = []byte{0x90, fourCC[0], fourCC[1], fourCC[2], fourCC[3]}
 	}
 	// v содержит полное тело сообщения с исходными видеозаголовками.
 	v := append(prefix, c.video.Headers()...)
 	if err = c.writeFramed(6, 9, c.streamID.Load(), ts, v); err != nil {
 		return err
 	}
-	// a содержит полное тело сообщения с исходным ASC аудиодорожки.
-	a := append([]byte{0xaf, 0}, c.audio.Headers()...)
 	if err = c.writeFramed(4, 8, c.streamID.Load(), ts, a); err != nil {
 		return err
 	}
 	c.headersPending = false
 	return nil
+}
+
+// audioWirePrefixSize возвращает длину префикса фактического format: legacy AAC2 либо Enhanced5.
+func audioWirePrefixSize(format core.AudioFormat) uint64 {
+	if format.Codec != core.CodecAAC || format.Channels > 2 {
+		return 5
+	}
+	return 2
 }

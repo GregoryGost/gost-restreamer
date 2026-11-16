@@ -12,7 +12,7 @@ import (
 
 // av1ProbeJSON содержит управляемые метаданные AV1 128×128/30 и стереофонического AAC 48 кГц с петлёй
 // 1,6 с.
-const av1ProbeJSON = `{"streams":[{"codec_type":"video","codec_name":"av1","profile":"Main","width":128,"height":128,"avg_frame_rate":"30/1","pix_fmt":"yuv420p","level":0,"color_range":"tv","color_primaries":"bt709","color_transfer":"bt709","color_space":"bt709"},{"codec_type":"audio","codec_name":"aac","profile":"LC","sample_rate":"48000","channels":2,"channel_layout":"stereo"}],"format":{"format_name":"mov,mp4,m4a,3gp,3g2,mj2","duration":"1.600000"}}`
+const av1ProbeJSON = `{"streams":[{"codec_type":"video","codec_name":"av1","profile":"Main","width":128,"height":128,"avg_frame_rate":"30/1","pix_fmt":"yuv420p","level":0,"color_range":"tv","color_primaries":"bt709","color_transfer":"bt709","color_space":"bt709","extradata":"\n00000000: 81000c000a0e0200000499bfff00be04  .\n00000010: 04040410  .\n","extradata_size":20},{"codec_type":"audio","codec_name":"aac","profile":"LC","sample_rate":"48000","channels":2,"channel_layout":"stereo"}],"format":{"format_name":"mov,mp4,m4a,3gp,3g2,mj2","duration":"1.600000"}}`
 
 // Создаёт временный fMP4 с заданным числом AV1- и AAC-пакетов, устаревшим av1C и начальным
 // AAC-пакетом; badTU удаляет заголовок последовательности из TU.

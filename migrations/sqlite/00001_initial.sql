@@ -1,9 +1,9 @@
 -- +goose Up
 
 -- storage_format хранит единственный маркер совместимости данных. singleton=1 задаёт ключ этой строки,
--- version=2 — поддерживаемый формат управления, проверяемый отдельно от версии Goose.
+-- version=4 — поддерживаемый формат управления, проверяемый отдельно от версии Goose.
 CREATE TABLE storage_format (singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL);
-INSERT INTO storage_format(singleton,version) VALUES(1,2);
+INSERT INTO storage_format(singleton,version) VALUES(1,4);
 
 -- fallback_assets хранит стабильные объекты заглушек и выбор текущего либо подготавливаемого поколения.
 -- Составные внешние ключи связывают оба указателя с той же заглушкой, а текущему и ожидающему поколениям
@@ -90,7 +90,7 @@ CREATE TABLE streams (
     asset_id TEXT REFERENCES fallback_assets(id) ON DELETE RESTRICT
 );
 
--- profiles хранит полные версионированные профили преобразования. Настройки кодирования и медиаформат
+-- profiles хранит полные текущие профили преобразования. Настройки кодирования и медиаформат
 -- находятся в payload.
 CREATE TABLE profiles (
     -- id идентифицирует сохраняемую доменную запись.

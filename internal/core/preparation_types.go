@@ -60,8 +60,6 @@ func (s PreparationState) Terminal() bool {
 
 // RequiredProfile фиксирует полный профиль и принадлежащие поколению пути требуемого варианта.
 type RequiredProfile struct {
-	// RequiresRebuild отмечает требование, собственный профиль которого заменён миграцией.
-	RequiresRebuild bool `json:",omitempty"`
 	// Profile содержит полный выходной профиль требуемого варианта.
 	Profile GroupProfile
 	// ProfileKey содержит ключ канонической идентичности требуемого профиля.
@@ -118,8 +116,8 @@ type FallbackGeneration struct {
 }
 
 // Validate проверяет владельца g, состояние, идентичности профилей и уникальные ID/пути внутри каталога.
-// Исторические аннулированные требования могут совпадать по canonical; пригодное требование на каждый
-// canonical единственно. PUBLISHED требует непустого источника, а Issued — положительной попытки.
+// Каждый канонический профиль, ID варианта и путь единственны. PUBLISHED требует непустого источника,
+// а Issued — положительной попытки.
 func (g FallbackGeneration) Validate() error {
 	// err содержит причину отказа проверки идентификатора заглушки.
 	if err := g.AssetID.Validate(); err != nil {
@@ -148,9 +146,9 @@ func (g FallbackGeneration) Validate() error {
 			return ErrInvalid
 		}
 	}
-	// seen отмечает неаннулированные канонические профили; исторические требования сохраняются при коллизии.
+	// seen запрещает повтор любых канонических профилей в поколении.
 	seen := map[string]bool{}
-	// ids запрещает повтор идентификатора варианта независимо от аннулирования профиля.
+	// ids запрещает повтор идентификатора варианта в поколении.
 	ids := map[ID]bool{}
 	// paths запрещает повтор любого зарезервированного пути, включая пути оригинала.
 	paths := map[string]bool{g.OriginalPath: true, g.StagingPath: true}
@@ -165,12 +163,10 @@ func (g FallbackGeneration) Validate() error {
 		if e != nil {
 			return e
 		}
-		if k != p.ProfileKey || !bytes.Equal(b, p.CanonicalProfile) || !p.RequiresRebuild && seen[string(b)] || p.VariantID.Validate() != nil || ids[p.VariantID] {
+		if k != p.ProfileKey || !bytes.Equal(b, p.CanonicalProfile) || seen[string(b)] || p.VariantID.Validate() != nil || ids[p.VariantID] {
 			return ErrInvalid
 		}
-		if !p.RequiresRebuild {
-			seen[string(b)] = true
-		}
+		seen[string(b)] = true
 		ids[p.VariantID] = true
 		// path содержит очередной окончательный или промежуточный путь варианта.
 		for _, path := range []string{p.ManagedPath, p.StagingPath} {
@@ -200,18 +196,6 @@ func (g FallbackGeneration) Validate() error {
 		return ErrInvalid
 	}
 	return nil
-}
-
-// RequiresProfileRebuild сообщает, содержит ли g хотя бы одно аннулированное требование.
-// Историческое поколение остаётся читаемым, но такой комплект нельзя исполнять или публиковать заново.
-func (g FallbackGeneration) RequiresProfileRebuild() bool {
-	// required содержит очередное сохранённое требование поколения.
-	for _, required := range g.RequiredProfiles {
-		if required.RequiresRebuild {
-			return true
-		}
-	}
-	return false
 }
 
 // GenerationDirectory строит относительный каталог fallback для указанного поколения без проверки ID.

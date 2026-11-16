@@ -48,7 +48,7 @@ curl --fail-with-body -H 'Content-Type: application/json' \
 | `transcode` | H.264 2560×1440, 60 FPS | SDR BT.709, AAC LC 48 kHz stereo |
 | `transcode` | H.264 1920×1080, 60 FPS | SDR BT.709, AAC LC 48 kHz stereo |
 
-Полный профиль включает `format.video`, `format.audio`, `video_encoding`, `audio_encoding`, независимый `live_audio_mode` и блок `encoding` версии 2; битрейты, GOP, профиль кодека, формат пикселей и цвет задаются явно. Новый профиль по умолчанию копирует LIVE-аудио OBS даже при преобразовании видео. Для явного AAC-перекодирования укажите `live_audio_mode: "transcode"` в H.264-группе. Параметры не выбираются автоматически по названию площадки. [Поля, значения по умолчанию и ограничения](api-contracts.md#полный-профиль-кодирования) описаны в контракте API.
+Полный профиль включает `format.video`, `format.audio`, `video_encoding`, `audio_encoding`, независимый `live_audio_mode` и единый блок `encoding` без поля версии; битрейты, GOP, профиль кодека, формат пикселей и цвет задаются явно. Новый профиль по умолчанию копирует LIVE-аудио OBS даже при преобразовании видео. Для явного AAC-перекодирования укажите `live_audio_mode: "transcode"` в H.264-группе. Параметры не выбираются автоматически по названию площадки. [Поля, значения по умолчанию и ограничения](api-contracts.md#полный-профиль-кодирования) описаны в контракте API.
 
 ### Профили кодирования в Postman
 
@@ -78,7 +78,7 @@ curl --fail-with-body -H 'Content-Type: application/json' \
     },
     "audio_encoding": {"bitrate_bps": 192000},
     "encoding": {
-      "version": 2, "video_encoder": "h264_nvenc", "audio_encoder": "aac",
+      "video_encoder": "h264_nvenc", "audio_encoder": "aac",
       "rate_control": "cbr", "rescale_output": true,
       "nvenc": {
         "preset": "p4", "tuning": "hq", "multipass": "disabled", "lookahead_frames": 0,
@@ -114,7 +114,7 @@ curl --fail-with-body -H 'Content-Type: application/json' \
     },
     "audio_encoding": {"bitrate_bps": 192000},
     "encoding": {
-      "version": 2, "video_encoder": "h264_nvenc", "rate_control": "vbr",
+      "video_encoder": "h264_nvenc", "rate_control": "vbr",
       "nvenc": {"preset": "p5", "multipass": "qres", "lookahead_frames": 16, "enable_spatial_aq": true},
       "video_custom": "nonref_p=1 strict_gop=1"
     }
@@ -146,7 +146,7 @@ curl --fail-with-body -H 'Content-Type: application/json' \
     },
     "audio_encoding": {"bitrate_bps": 192000},
     "encoding": {
-      "version": 2, "video_encoder": "libsvtav1", "audio_encoder": "aac",
+      "video_encoder": "libsvtav1", "audio_encoder": "aac",
       "rate_control": "vbr", "rescale_output": false,
       "svt_av1": {"preset": 8, "tuning": "psnr", "aq_mode": 2, "lookahead_frames": -1},
       "video_custom": "lp=2", "audio_custom": ""
@@ -159,7 +159,7 @@ curl --fail-with-body -H 'Content-Type: application/json' \
 
 Во всех трёх примерах LIVE AAC сохраняется исходным. Указанные аудиобитрейт и `audio_custom` управляют подготовкой беззвучной заглушки. Для перекодирования звука в одном из H.264-профилей явно замените корневой `live_audio_mode` на `"transcode"`: тогда те же аудиопараметры применятся и к LIVE. При копировании фактический профиль AAC, частота, число и расположение каналов OBS должны совпадать с `format.audio`; неподходящий LIVE оставляет группу на заглушке с причиной в журнале.
 
-Редактирование выполняется через `PATCH /transcode-profiles/PROFILE_ID`: передайте текущий `expected_revision` и **полный** объект `profile`, например скопированный из GET с нужными изменениями. Не отправляйте частичный `profile` только с `rate_control` или `live_audio_mode`. Чтобы включить копирование звука у прежнего профиля, добавьте `live_audio_mode: "copy"` в полный профиль; существующий `encoding: null` можно сохранить, не меняя видеорецепт. Для расширенных видеонастроек явно добавьте блок `encoding` версии 2. У уже явного профиля полная замена требует `live_audio_mode`; имя без `profile` сохраняет прежний режим. Текущий эфир использует свой снимок; после изменения потребуется подготовить заглушки до нового запуска.
+Редактирование выполняется через PATCH /transcode-profiles/PROFILE_ID: передайте текущий expected_revision и полный profile, например из GET с нужными изменениями. Частичный profile только с rate_control или live_audio_mode не допускается. Полная замена требует явного live_audio_mode; PATCH одного имени без profile сохраняет настройки. Все ответы содержат полный encoding без версии. Отсутствующий/null encoding при создании немедленно материализуется для H.264/transcode → NVENC/VBR либо AV1/copy → SVT/CBR; для других кодеков задайте выбор явно. Текущий эфир использует собственный снимок, после изменения профиля подготовьте заглушки до нового запуска.
 
 Проверка понятного конфликта: добавление `rc=vbr` в `video_custom` первого профиля должно дать `422` с `code`, `field` и подготовленным объяснением. Значение typed-поля не переопределяется, профиль не сохраняется.
 
@@ -207,7 +207,7 @@ GET /api/v1/fallback-assets/ASSET_ID/generations/GENERATION_ID
 
 Читайте этот ресурс до `status=ready` либо `status=error`. Состояния `queued` и `preparing` промежуточные. Прежняя рабочая заглушка сохраняется при неудачной замене. После изменения полных профилей потребуется новая подготовка; upload и rebuild выполняются до эфира, включая запрет во время ручной паузы.
 
-Заглушки всегда подготавливаются с AAC-тишиной, в том числе из видео со звуком. После обновления со старого генератора выполните `POST /fallback-assets/ASSET_ID/rebuild` с числовым `expected_revision`, например `{"expected_revision":12}`. Вместо 12 передайте текущую ревизию заглушки из GET. Сохранённый оригинал используется повторно, передавать его заново не нужно. Ответ `202` и результат поколения проверяются так же, как при upload. Старый READY не даёт допуск воспроизведения; прежние снимки сохраняются, новый вариант не подставляется в уже прикреплённый Output автоматически. Ошибка rebuild сохраняет прежний текущий комплект, но его устаревшая версия остаётся непригодной до успешной подготовки.
+Заглушки подготавливаются с цифровой тишиной выбранного AAC, Opus, FLAC, MP3 или AC-3; исходный звук не используется. Rebuild запускается через POST /fallback-assets/ASSET_ID/rebuild с текущим expected_revision, например {"expected_revision":12}. Оригинал используется повторно, передавать его заново не нужно. Ответ 202 и результат поколения проверяются как при upload. Пригодность требует соответствующего полного профиля, фактического формата и текущего генератора. Свежий вариант не подставляется в закреплённый Output автоматически; ошибка новой подготовки сохраняет прежний current.
 
 Подготовленный файл и его повторы полностью беззвучны. Только непосредственно при LIVE → fallback допускается короткий остаток прежнего звука декодера получателя; он не является звуком исходного файла заглушки. Универсальный предел длительности для всех плееров не заявляется.
 

@@ -19,7 +19,7 @@ func TestRegistryRejectsInvalidatedArtifactBeforeIO(t *testing.T) {
 	// opens считает обращения к файловому порту; отказ исключает запуск проигрывателя.
 	var opens atomic.Uint64
 	fixture.config.Runtime.OpenFile = func(context.Context, core.ArtifactManifest) (*os.File, error) {
-		// Callback учитывает открытие, возвращая отсутствие файла до создания процесса.
+		// Обработчик учитывает открытие, возвращая отсутствие файла до создания процесса.
 		opens.Add(1)
 		return nil, os.ErrNotExist
 	}
@@ -31,7 +31,7 @@ func TestRegistryRejectsInvalidatedArtifactBeforeIO(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		// Callback закрывает созданные группы; closeErr сообщает об ошибке очистки.
+		// Обработчик закрывает созданные группы; closeErr сообщает об ошибке очистки.
 		if closeErr := registry.Close(ctx); closeErr != nil {
 			t.Error(closeErr)
 		}
@@ -42,16 +42,16 @@ func TestRegistryRejectsInvalidatedArtifactBeforeIO(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		// Callback освобождает изолированный Router; closeErr сообщает об ошибке очистки.
+		// Обработчик освобождает изолированный Router; closeErr сообщает об ошибке очистки.
 		if closeErr := live.Close(); closeErr != nil {
 			t.Error(closeErr)
 		}
 	})
-	// invalid сохраняет все прежние факты, добавляя только аннулирование доказательства.
+	// invalid сохраняет структуру снимка, но неподдержанный генератор запрещает его исполнение.
 	invalid := fixture.snapshot
-	invalid.Artifact.RequiresRebuild = true
+	invalid.Artifact.GeneratorVersion = "unsupported-generator"
 	if err = invalid.Validate(); err != nil {
-		t.Fatal("Исторический снимок должен оставаться читаемым", err)
+		t.Fatal("Структура снимка должна оставаться корректной", err)
 	}
 	// reference не должен появиться для нового непригодного снимка;
 	// err должен сообщить о неготовности до обращения к файловому порту.

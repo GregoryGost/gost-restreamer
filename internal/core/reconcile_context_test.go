@@ -460,12 +460,15 @@ func (r reconcilePreparationRuntime) Outputs(context.Context, ListQuery) ([]Sess
 
 // Проверяет единый срок сверки подготовки и допусков исполнения: время первого чтения уменьшает бюджет
 // второго, а истечение отзывает непроверенных владельцев.
+// t сообщает об ошибках проверяемого сценария.
 func TestReconcileSharesOneBudgetAcrossPreparationsAndLeases(t *testing.T) {
 	// owned выбирает обычную запись либо запись под точным OutputObserver.
 	for _, owned := range []bool{false, true} {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run(map[bool]string{false: "write", true: "owned"}[owned], func(t *testing.T) {
 			// Проверяет единый бюджет сверки подготовки и допусков для выбранного способа защиты записи.
 
+			// t сообщает об ошибках проверяемого сценария.
 			synctest.Test(t, func(t *testing.T) {
 				// В изолированном времени расходует общий срок на два последовательных чтения и проверяет отзыв
 				// владельцев после истечения срока.
@@ -477,7 +480,7 @@ func TestReconcileSharesOneBudgetAcrossPreparationsAndLeases(t *testing.T) {
 				base.repository.RuntimeRepository = reconcilePreparationRuntime{repository: &base.repository}
 				// artifacts предоставляет выданное поколение подготовки для проверки
 				// единого срока сверки.
-				artifacts := &reconcilePreparationArtifacts{generation: FallbackGeneration{Record: Record{ID: "old-generation"}, AssetID: "asset", Incarnation: "owner", AttemptToken: "attempt", Attempt: 1, State: PreparationIssued, Issued: true}}
+				artifacts := &reconcilePreparationArtifacts{generation: FallbackGeneration{Record: Record{ID: "old-generation"}, AssetID: "asset", Kind: AssetVideo, GeneratorVersion: CurrentFallbackGeneratorVersion, OriginalPath: "fallback/old-generation/original", StagingPath: "fallback/old-generation/original.stage", Incarnation: "owner", AttemptToken: "attempt", Attempt: 1, State: PreparationIssued, Issued: true}}
 				// u добавляет перехват контекстов чтения к исходному тестовому
 				// UnitOfWork.
 				u := &reconcileContextUOW{observationAcceptanceUOW: base, artifacts: artifacts}
@@ -515,6 +518,7 @@ func TestReconcileSharesOneBudgetAcrossPreparationsAndLeases(t *testing.T) {
 				u.contexts = nil
 				// timedOut отмечает истечение единого срока на втором чтении сверки.
 				var timedOut bool
+				// ctx передаёт общий срок сверки, n задаёт порядковый номер чтения для выбора задержки.
 				u.beforeView = func(ctx context.Context, n int) error {
 					// Задерживает первое и второе чтения на разные доли общего срока и фиксирует DeadlineExceeded без
 					// продления бюджета.

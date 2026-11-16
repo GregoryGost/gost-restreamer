@@ -238,8 +238,15 @@ func TestAcceptanceMuxWireRetainsSignedCTSAndAV1OmitsCTS(t *testing.T) {
 			// сценария.
 			headers := init.Video.Headers()
 			if codec == core.CodecAV1 {
-				info.Video.CodecProfile = "Main"
-				headers = []byte{0x81, 0, 0, 0}
+				info.Video.CodecProfile = "main"
+				info.Video.Width, info.Video.Height = 128, 128
+				info.Video.Color = core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}
+				// decodeErr сообщает об ошибке записи нормативного av1C-эталона.
+				var decodeErr error
+				headers, decodeErr = hex.DecodeString("81000c000a0e0200000499bfff00be0404040410")
+				if decodeErr != nil {
+					t.Fatal(decodeErr)
+				}
 			}
 			// err принимает ошибку создания конфигурации выбранного видеокодека.
 			var err error

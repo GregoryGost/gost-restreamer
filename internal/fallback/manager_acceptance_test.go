@@ -77,6 +77,7 @@ func acceptanceManagerConfig() Config {
 
 // Открывает временную SQLite, создаёт Service, Asset и Stream с тремя группами на двух различных
 // профилях; хранилище закрывается после теста.
+// t сообщает об ошибках проверяемого сценария.
 func acceptanceManagerService(t *testing.T) (*core.Service, *storage.Store, core.FallbackAsset, core.Stream) {
 	t.Helper()
 	// ctx задаёт контекст создания изолированных доменных данных.
@@ -113,7 +114,7 @@ func acceptanceManagerService(t *testing.T) (*core.Service, *storage.Store, core
 	}
 	// profile содержит исходный профиль AV1/AAC, от которого строятся три группы с двумя различными
 	// форматами.
-	profile := core.GroupProfile{Mode: core.ModeCopy, Format: core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecAV1, Width: 640, Height: 360, FrameRate: core.FrameRate{Numerator: 30, Denominator: 1}, CodecProfile: "main", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 300000, MaxBitrateBPS: 400000, BufferBits: 600000, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 64000}}
+	profile := core.GroupProfile{Mode: core.ModeCopy, LiveAudioMode: core.LiveAudioCopy, Encoding: core.DefaultEncoding(core.ModeCopy, core.VideoEncoderSVTAV1, core.RateControlVBR), Format: core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecAV1, Width: 640, Height: 360, FrameRate: core.FrameRate{Numerator: 30, Denominator: 1}, CodecProfile: "main", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 300000, MaxBitrateBPS: 0, BufferBits: 0, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 64000}}
 	// i задаёт номер одной из трёх создаваемых групп.
 	for i := range 3 {
 		// p содержит копию профиля, заменяемую на H.264 transcode для третьей группы.
@@ -122,6 +123,8 @@ func acceptanceManagerService(t *testing.T) (*core.Service, *storage.Store, core
 			p.Mode = core.ModeTranscode
 			p.Format.Video.Codec = core.CodecH264
 			p.Format.Video.CodecProfile = "high"
+			p.Encoding = core.DefaultEncoding(p.Mode, core.VideoEncoderNVENC, core.RateControlVBR)
+			p.VideoEncoding.MaxBitrateBPS, p.VideoEncoding.BufferBits = 400000, 600000
 		}
 		// saved содержит сохранённый профиль текущей группы. err сообщает об отказе его
 		// создания.

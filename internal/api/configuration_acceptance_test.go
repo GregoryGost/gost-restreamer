@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -153,10 +152,10 @@ func apiAcceptanceDecodeJSON(data []byte, target any) error {
 	return nil
 }
 
-// apiAcceptanceProfile создаёт прежний полный профиль с большими точными целыми и несокращённой дробью
-// FPS для проверки сохранности представления.
+// apiAcceptanceProfile создаёт полный текущий AV1-профиль с несокращённой дробью
+// FPS и допустимыми нативными битрейтами для проверки точного представления.
 func apiAcceptanceProfile() core.GroupProfile {
-	return core.GroupProfile{Mode: core.ModeCopy, Format: core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecAV1, Width: 640, Height: 360, FrameRate: core.FrameRate{Numerator: 60000, Denominator: 2002}, CodecProfile: "main", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: math.MaxUint64 - 1, MaxBitrateBPS: math.MaxUint64, BufferBits: math.MaxUint64, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 9007199254740993}}
+	return core.GroupProfile{Mode: core.ModeCopy, LiveAudioMode: core.LiveAudioCopy, Encoding: core.DefaultEncoding(core.ModeCopy, core.VideoEncoderSVTAV1, core.RateControlCBR), Format: core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecAV1, Width: 640, Height: 360, FrameRate: core.FrameRate{Numerator: 60000, Denominator: 2002}, CodecProfile: "main", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 4000000, MaxBitrateBPS: 4000000, BufferBits: 8000000, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 128000}}
 }
 
 // apiAcceptanceSeedConfiguration создаёт связанные Stream, Profile, Group и Destination с
@@ -188,9 +187,9 @@ func apiAcceptanceSeedConfiguration(t *testing.T, f *apiAcceptanceFixture) (core
 	return s, p, g, d
 }
 
-// apiAcceptanceInsertLegacyProfile сохраняет прежний профиль напрямую в тестовое хранилище, обходя
-// правила создания нового HTTP-профиля.
-func apiAcceptanceInsertLegacyProfile(t *testing.T, f *apiAcceptanceFixture, profile core.GroupProfile) core.TranscodeProfile {
+// apiAcceptanceInsertProfile сохраняет полный profile напрямую в хранилище f; t
+// сообщает ошибку вставки без прохождения HTTP и назначения значений по умолчанию.
+func apiAcceptanceInsertProfile(t *testing.T, f *apiAcceptanceFixture, profile core.GroupProfile) core.TranscodeProfile {
 	t.Helper()
 	// now задаёт UTC-времена прежнего профиля с микросекундной точностью SQLite.
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -198,6 +197,7 @@ func apiAcceptanceInsertLegacyProfile(t *testing.T, f *apiAcceptanceFixture, pro
 	// нового HTTP-профиля.
 	p := core.TranscodeProfile{ID: "legacy-profile", Revision: 1, CreatedAt: now, UpdatedAt: now, Name: "Прежний", Profile: profile}
 	// err содержит отказ прямой вставки прежнего профиля в тестовую БД.
+	// r предоставляет репозитории текущей операции хранилища.
 	if err := f.store.Write(context.Background(), func(r core.Repositories) error {
 		// Вставляет прежний профиль напрямую, сохраняя его исходное представление без значений по умолчанию
 		// сервиса.
@@ -380,6 +380,7 @@ func TestAcceptanceFallbackPolicyCASPreservesStreamAndSupportsExplicitClear(t *t
 
 // Проверяет сохранение полных uint64, исходной дроби FPS и допустимых строк профиля через GET, POST
 // и полную замену PATCH.
+// t сообщает об ошибках проверяемого сценария.
 func TestAcceptanceProfileRoundTripPreservesFullIntegersFPSAndStrings(t *testing.T) {
 	// f содержит API сценария точного полного цикла профиля.
 	f := newAPIAcceptanceFixture(t, nil)
@@ -401,7 +402,7 @@ func TestAcceptanceProfileRoundTripPreservesFullIntegersFPSAndStrings(t *testing
 	profile := v["profile"].(map[string]any)
 	// video содержит общие видеонастройки с проверяемыми точными uint64.
 	video := profile["video_encoding"].(map[string]any)
-	if video["max_bitrate_bps"] != json.Number("18446744073709551615") || video["target_bitrate_bps"] != json.Number("18446744073709551614") || profile["audio_encoding"].(map[string]any)["bitrate_bps"] != json.Number("9007199254740993") {
+	if video["max_bitrate_bps"] != json.Number("4000000") || video["target_bitrate_bps"] != json.Number("4000000") || profile["audio_encoding"].(map[string]any)["bitrate_bps"] != json.Number("128000") {
 		t.Fatalf("целые потеряли точность: %s", w.Body)
 	}
 	// format содержит полное публичное описание обеих дорожек.
@@ -431,14 +432,14 @@ func TestAcceptanceProfileRoundTripPreservesFullIntegersFPSAndStrings(t *testing
 	copyPath := "/transcode-profiles/" + created["id"].(string)
 	apiAcceptanceRequest(t, f.api, "PATCH", copyPath, `{"expected_revision":1,"profile":{"mode":"copy"}}`, 422)
 	apiAcceptanceRequest(t, f.api, "PATCH", copyPath, `{"expected_revision":1,"profile":null}`, 422)
-	video["closed_gop"] = false
+	video["gop_frames"] = json.Number("60")
 	body, err = json.Marshal(map[string]any{"expected_revision": json.Number("1"), "profile": profile})
 	if err != nil {
 		t.Fatal(err)
 	}
 	apiAcceptanceRequest(t, f.api, "PATCH", copyPath, string(body), 200)
 	copy, err = f.service.GetProfile(context.Background(), copy.ID)
-	p.VideoEncoding.ClosedGOP = false
+	p.VideoEncoding.GOPFrames = 60
 	if err != nil || !reflect.DeepEqual(copy.Profile, p) {
 		t.Fatal("полная замена профиля потеряла поля или false", copy, err)
 	}

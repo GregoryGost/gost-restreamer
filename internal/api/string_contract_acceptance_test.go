@@ -16,14 +16,14 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
-// strictWireProfile строит самостоятельный legacy JSON с точными большими числами.
+// strictWireProfile строит самостоятельный текущий JSON с точными числовыми полями.
 // t сообщает о повреждении встроенного допустимого примера.
 func strictWireProfile(t *testing.T) map[string]any {
 	t.Helper()
 	// profile принимает строки и точные числовые лексемы без преобразования в float64.
 	var profile map[string]any
 	// err сообщает об ошибке чтения полного примера без блока encoding.
-	if err := apiAcceptanceDecodeJSON([]byte(`{"mode":"copy","format":{"video":{"codec":"av1","width":641,"height":359,"frame_rate":{"numerator":60000,"denominator":2002},"codec_profile":"main","level":"7.3","tier":"main","pixel_format":"yuv420p","bit_depth":8,"color":{"range":"pc","primaries":"bt709","transfer":"bt709","matrix":"bt709"}},"audio":{"codec":"aac","codec_profile":"LC","sample_rate_hz":12345,"channels":2,"channel_layout":"stereo"}},"video_encoding":{"target_bitrate_bps":18446744073709551614,"max_bitrate_bps":18446744073709551615,"buffer_bits":18446744073709551615,"gop_frames":17,"max_b_frames":19,"closed_gop":false},"audio_encoding":{"bitrate_bps":9007199254740993}}`), &profile); err != nil {
+	if err := apiAcceptanceDecodeJSON([]byte(`{"mode":"copy","format":{"video":{"codec":"av1","width":640,"height":360,"frame_rate":{"numerator":60000,"denominator":2002},"codec_profile":"main","level":"7.3","tier":"main","pixel_format":"yuv420p","bit_depth":8,"color":{"range":"pc","primaries":"bt709","transfer":"bt709","matrix":"bt709"}},"audio":{"codec":"aac","codec_profile":"LC","sample_rate_hz":48000,"channels":2,"channel_layout":"stereo"}},"video_encoding":{"target_bitrate_bps":4000000,"max_bitrate_bps":4000000,"buffer_bits":8000000,"gop_frames":17,"max_b_frames":0,"closed_gop":true},"audio_encoding":{"bitrate_bps":128000}}`), &profile); err != nil {
 		t.Fatal(err)
 	}
 	return profile
@@ -78,7 +78,8 @@ func TestMeasuredVariantHTTPPreservesKnownAndClosesUnknownStrings(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	// fixture регистрирует настоящий API с изолированным каталогом наблюдений вместо диска.
+	// fixture регистрирует настоящий API с изолированным каталогом наблюдений вместо диска;
+	// callback config заменяет только доменный источник GET-маршрута измерений.
 	fixture := newAPIAcceptanceFixture(t, func(config *api.Config) {
 		// Callback заменяет только доменный источник GET-маршрута измерений.
 		config.Core = service
@@ -92,9 +93,12 @@ func TestMeasuredVariantHTTPPreservesKnownAndClosesUnknownStrings(t *testing.T) 
 	}{
 		{"empty", core.MediaFormat{}, map[string]any{"video.codec": "", "video.level": "", "audio.codec": ""}},
 		{"recognized", core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecH264, CodecProfile: "high422", Level: "25.5", PixelFormat: "yuv422p12le", Color: core.ColorInfo{Range: "unspecified", Primaries: "bt2020", Transfer: "smpte2084", Matrix: "bt2020nc"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", ChannelLayout: "mono"}}, map[string]any{"video.codec": "h264", "video.codec_profile": "high422", "video.level": "25.5", "video.tier": "", "video.pixel_format": "yuv422p12le", "video.color.range": "unspecified", "video.color.primaries": "bt2020", "video.color.transfer": "smpte2084", "video.color.matrix": "bt2020nc", "audio.codec_profile": "LC", "audio.channel_layout": "mono"}},
-		{"unknown", core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecAV1, CodecProfile: "high", Level: "25.5", Tier: "other", PixelFormat: "ffprobe-other", Color: core.ColorInfo{Primaries: string([]byte{0xff}), Transfer: "cicp:255", Matrix: "iso-255"}}, Audio: core.AudioFormat{Codec: "opus", CodecProfile: "HE", ChannelLayout: "5.1"}}, map[string]any{"video.codec": "av1", "video.codec_profile": "UNKNOWN", "video.level": "UNKNOWN", "video.tier": "UNKNOWN", "video.pixel_format": "UNKNOWN", "video.color.range": "", "video.color.primaries": "UNKNOWN", "video.color.transfer": "UNKNOWN", "video.color.matrix": "UNKNOWN", "audio.codec": "UNKNOWN", "audio.codec_profile": "UNKNOWN", "audio.channel_layout": "UNKNOWN"}},
+		{"multichannel", core.MediaFormat{Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", Channels: 6, ChannelLayout: "5.1"}}, map[string]any{"audio.channel_layout": "5.1"}},
+		{"wide", core.MediaFormat{Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", Channels: 8, ChannelLayout: "7.1(wide-back)"}}, map[string]any{"audio.channel_layout": "7.1(wide-back)"}},
+		{"unknown", core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecAV1, CodecProfile: "high", Level: "25.5", Tier: "other", PixelFormat: "ffprobe-other", Color: core.ColorInfo{Primaries: string([]byte{0xff}), Transfer: "cicp:255", Matrix: "iso-255"}}, Audio: core.AudioFormat{Codec: "unknown-audio-codec", CodecProfile: "HE", ChannelLayout: "9.1"}}, map[string]any{"video.codec": "av1", "video.codec_profile": "high", "video.level": "UNKNOWN", "video.tier": "UNKNOWN", "video.pixel_format": "UNKNOWN", "video.color.range": "", "video.color.primaries": "UNKNOWN", "video.color.transfer": "UNKNOWN", "video.color.matrix": "UNKNOWN", "audio.codec": "UNKNOWN", "audio.codec_profile": "UNKNOWN", "audio.channel_layout": "UNKNOWN"}},
 	} {
-		// callback проверяет один законченный HTTP-запрос без параллельной смены репозитория.
+		// t.Run проверяет один законченный HTTP-запрос без параллельной смены репозитория;
+		// t сообщает об ошибках конкретной проекции.
 		t.Run(scenario.name, func(t *testing.T) {
 			repository.variant = core.FallbackVariant{Record: core.Record{ID: "variant"}, AssetID: "asset", GenerationID: "generation", State: core.VariantFailed, Profile: apiAcceptanceProfile(), VerifiedFormat: scenario.raw}
 			if scenario.name == "empty" {
@@ -227,17 +231,17 @@ func TestProfileWireRejectsMalformedUTF8WithoutReplacement(t *testing.T) {
 	}
 }
 
-// TestProfileWirePreservesLegacyPrecisionAndStringAliases проверяет реальные
+// TestProfileWirePreservesPrecisionAndStringAliases проверяет реальные
 // POST→GET→PATCH без изменения несокращённой дроби и полного диапазона uint64.
-// t сообщает о потере чисел, псевдонимов или прежнего рецепта.
-func TestProfileWirePreservesLegacyPrecisionAndStringAliases(t *testing.T) {
+// t сообщает о потере чисел, строковых значений или текущих настроек.
+func TestProfileWirePreservesPrecisionAndStringAliases(t *testing.T) {
 	// fixture содержит независимый API для допустимого полного цикла.
 	fixture := newAPIAcceptanceFixture(t, nil)
 	// input сохраняет точные исходные JSON-значения профиля.
 	input := strictWireProfile(t)
 	// created содержит фактическую форму сохранённого профиля.
 	created := encodingCreate(t, fixture, input)
-	input["encoding"], input["live_audio_mode"] = nil, "copy"
+	input["encoding"], input["live_audio_mode"] = created["profile"].(map[string]any)["encoding"], "copy"
 	if !reflect.DeepEqual(created["profile"], input) {
 		t.Fatal("Создание изменило legacy-параметры", created["profile"], input)
 	}
@@ -292,17 +296,17 @@ func TestPublicSchemasCloseDesiredAndHistoricalStrings(t *testing.T) {
 	// expectations задаёт независимые точные строковые множества из публичного контракта.
 	expectations := map[string]string{
 		"GroupProfileInput.mode":         "copy,transcode",
-		"VideoFormatDTO.codec":           "av1,h264",
-		"VideoFormatDTO.codec_profile":   "main,baseline,high",
-		"VideoFormatDTO.tier":            ",main",
-		"VideoFormatDTO.pixel_format":    "yuv420p",
+		"VideoFormatDTO.codec":           "av1,h264,hevc,vp9",
+		"VideoFormatDTO.codec_profile":   "main,baseline,high,constrained-baseline,high10,high422,high444,professional,main10,profile0,profile2",
+		"VideoFormatDTO.tier":            ",main,high",
+		"VideoFormatDTO.pixel_format":    "yuv420p,yuv420p10le,yuv422p,yuv422p10le,yuv444p,yuv444p10le,gray",
 		"ColorDTO.range":                 "limited,full,tv,pc",
-		"ColorDTO.primaries":             "bt709",
-		"ColorDTO.transfer":              "bt709",
-		"ColorDTO.matrix":                "bt709",
-		"AudioFormatDTO.codec":           "aac",
-		"AudioFormatDTO.codec_profile":   "LC",
-		"AudioFormatDTO.channel_layout":  "mono,stereo",
+		"ColorDTO.primaries":             "bt709,bt470m,bt470bg,smpte170m,smpte240m,film,bt2020",
+		"ColorDTO.transfer":              "bt709,gamma22,gamma28,smpte170m,smpte240m,linear,iec61966-2-1,bt2020-10,bt2020-12,smpte2084,arib-std-b67",
+		"ColorDTO.matrix":                "bt709,fcc,bt470bg,smpte170m,smpte240m,bt2020nc,bt2020c",
+		"AudioFormatDTO.codec":           "aac,opus,flac,mp3,ac3",
+		"AudioFormatDTO.codec_profile":   "LC,celt,s16,mpeg1-layer3,ac3",
+		"AudioFormatDTO.channel_layout":  "mono,stereo,2.1,3.0,4.0,5.0,5.1,7.1",
 		"SessionDTO.state":               "STARTING,RUNNING,STOPPING,STOPPED,FAILED,INTERRUPTED",
 		"ReceiptDTO.kind":                "start_session,stop_session,pause_session,resume_session,add_output,start_output,stop_output,detach_output",
 		"ReceiptDTO.status":              "PENDING,CLAIMED,ISSUED,SUCCEEDED,FAILED,INTERRUPTED",
@@ -323,13 +327,15 @@ func TestPublicSchemasCloseDesiredAndHistoricalStrings(t *testing.T) {
 		"CapabilityDTO.status":           "available,unavailable,unverified",
 		"CapabilityDTO.reason":           "not_configured,executable_unavailable,executable_resolved,hardware_not_verified,unsupported_platform",
 		"HealthDTO.reason":               "",
-		"MeasuredVideoDTO.codec":         ",UNKNOWN,av1,h264",
-		"MeasuredVideoDTO.codec_profile": ",UNKNOWN,baseline,constrained-baseline,main,extended,high,high10,high422,high444",
-		"MeasuredAudioDTO.codec":         ",UNKNOWN,aac",
+		"MeasuredVideoDTO.codec":         ",UNKNOWN,av1,h264,hevc,vp9",
+		"MeasuredVideoDTO.codec_profile": ",UNKNOWN,baseline,constrained-baseline,main,extended,high,high10,high422,high444,professional,main10,profile0,profile1,profile2,profile3",
+		"MeasuredAudioDTO.codec":         ",UNKNOWN,aac,opus,flac,mp3,ac3",
+		"MeasuredAudioDTO.codec_profile": ",UNKNOWN,LC,celt,s16,mpeg1-layer3,ac3",
+		"ObservedFormatDTO.audio_codec":  ",UNKNOWN,aac,opus,flac,mp3,ac3",
 		"MeasuredColorDTO.range":         ",UNKNOWN,limited,full,tv,pc,unspecified",
-		"SessionDTO.groups.items.profile.profile.format.audio.channel_layout": "mono,stereo",
-		"OutputDTO.profile.profile.format.video.pixel_format":                 "yuv420p",
-		"VariantDTO.profile.format.video.color.matrix":                        "bt709",
+		"SessionDTO.groups.items.profile.profile.format.audio.channel_layout": "mono,stereo,2.1,3.0,4.0,5.0,5.1,7.1",
+		"OutputDTO.profile.profile.format.video.pixel_format":                 "yuv420p,yuv420p10le,yuv422p,yuv422p10le,yuv444p,yuv444p10le,gray",
+		"VariantDTO.profile.format.video.color.matrix":                        "bt709,fcc,bt470bg,smpte170m,smpte240m,bt2020nc,bt2020c",
 	}
 	// path называет публичный узел; values содержит ожидаемые строки без зависимости от их порядка.
 	for path, values := range expectations {

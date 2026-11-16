@@ -73,11 +73,17 @@ type MeasuredFormatDTO struct {
 func observedValues(field string) []string {
 	switch field {
 	case "video.codec":
-		return []string{"av1", "h264"}
+		return []string{"av1", "h264", "hevc", "vp9"}
 	case "audio.codec":
-		return []string{"aac"}
-	case "video.codec_profile":
+		return []string{"aac", "opus", "flac", "mp3", "ac3"}
+	case "video.codec_profile.h264":
 		return []string{"baseline", "constrained-baseline", "main", "extended", "high", "high10", "high422", "high444"}
+	case "video.codec_profile.hevc":
+		return []string{"main", "main10"}
+	case "video.codec_profile.vp9":
+		return []string{"profile0", "profile1", "profile2", "profile3"}
+	case "video.codec_profile":
+		return []string{"baseline", "constrained-baseline", "main", "extended", "high", "high10", "high422", "high444", "professional", "main10", "profile0", "profile1", "profile2", "profile3"}
 	case "video.level.h264":
 		// values содержит все уровни, выдаваемые uint8-парсером, и прежние известные алиасы.
 		values := []string{"1", "1b", "1.0b", "2", "3", "4", "5"}
@@ -86,6 +92,10 @@ func observedValues(field string) []string {
 			values = append(values, strconv.Itoa(number/10)+"."+strconv.Itoa(number%10))
 		}
 		return values
+	case "video.level.hevc":
+		return []string{"1.0", "2.0", "2.1", "3.0", "3.1", "4.0", "4.1", "5.0", "5.1", "5.2", "6.0", "6.1", "6.2", "6.3", "7.0", "7.1", "7.2", "8.5"}
+	case "video.level.vp9":
+		return []string{"unspecified", "1.0", "1.1", "2.0", "2.1", "3.0", "3.1", "4.0", "4.1", "5.0", "5.1", "5.2", "6.0", "6.1", "6.2"}
 	case "video.level.av1":
 		// values содержит уровни AV1 и явное отсутствие ограничения производителя.
 		values := []string{"unspecified"}
@@ -112,15 +122,25 @@ func observedValues(field string) []string {
 	case "video.color.range":
 		return []string{"limited", "full", "tv", "pc", "unspecified"}
 	case "video.color.primaries":
-		return []string{"bt709", "unspecified", "bt470bg", "smpte170m", "bt2020"}
+		return []string{"bt709", "unspecified", "bt470m", "bt470bg", "smpte170m", "smpte240m", "film", "bt2020"}
 	case "video.color.transfer":
-		return []string{"bt709", "unspecified", "smpte170m", "linear", "iec61966-2-1", "bt2020-10", "bt2020-12", "smpte2084", "arib-std-b67"}
+		return []string{"bt709", "unspecified", "gamma22", "gamma28", "smpte170m", "smpte240m", "linear", "iec61966-2-1", "bt2020-10", "bt2020-12", "smpte2084", "arib-std-b67"}
 	case "video.color.matrix":
-		return []string{"gbr", "bt709", "unspecified", "bt470bg", "smpte170m", "bt2020nc", "bt2020c"}
+		return []string{"gbr", "bt709", "unspecified", "fcc", "bt470bg", "smpte170m", "smpte240m", "bt2020nc", "bt2020c"}
 	case "audio.codec_profile":
+		return []string{"LC", "celt", "s16", "mpeg1-layer3", "ac3"}
+	case "audio.codec_profile.aac":
 		return []string{"LC"}
+	case "audio.codec_profile.opus":
+		return []string{"celt"}
+	case "audio.codec_profile.flac":
+		return []string{"s16"}
+	case "audio.codec_profile.mp3":
+		return []string{"mpeg1-layer3"}
+	case "audio.codec_profile.ac3":
+		return []string{"ac3"}
 	case "audio.channel_layout":
-		return []string{"mono", "stereo"}
+		return []string{"mono", "stereo", "2.1", "3.0", "4.0", "5.0", "5.1", "7.1", "7.1(wide-back)"}
 	}
 	return nil
 }
@@ -142,7 +162,13 @@ func (MeasuredColorDTO) TransformSchema(_ huma.Registry, schema *huma.Schema) *h
 // TransformSchema задаёт конечные измеренные видеопараметры в схеме schema, объединяя уровни кодеков.
 func (MeasuredVideoDTO) TransformSchema(_ huma.Registry, schema *huma.Schema) *huma.Schema {
 	measuredEnums(schema, map[string]string{"codec": "video.codec", "codec_profile": "video.codec_profile", "tier": "video.tier", "pixel_format": "video.pixel_format"})
-	stringEnum(schema, "level", append(append([]string{"", "UNKNOWN"}, observedValues("video.level.h264")...), observedValues("video.level.av1")...))
+	// levels объединяет реальные каталоги производителей; stringEnum удаляет совпадающие обозначения.
+	levels := append([]string{"", "UNKNOWN"}, observedValues("video.level.h264")...)
+	// codec выбирает дополнительные каталоги уровней без расширения желаемых настроек.
+	for _, codec := range []string{"av1", "hevc", "vp9"} {
+		levels = append(levels, observedValues("video.level."+codec)...)
+	}
+	stringEnum(schema, "level", levels)
 	return schema
 }
 
@@ -160,12 +186,19 @@ func measuredFormatDTO(format core.MediaFormat) MeasuredFormatDTO {
 	var profiles, levels, tiers []string
 	switch video.Codec {
 	case core.CodecH264:
-		profiles = observedValues("video.codec_profile")
+		profiles = observedValues("video.codec_profile.h264")
 		levels = observedValues("video.level.h264")
+	case core.CodecHEVC:
+		profiles = observedValues("video.codec_profile.hevc")
+		levels = observedValues("video.level.hevc")
+		tiers = observedValues("video.tier")
+	case core.CodecVP9:
+		profiles = observedValues("video.codec_profile.vp9")
+		levels = observedValues("video.level.vp9")
 	case core.CodecAV1:
-		profiles = []string{"main"}
+		profiles = []string{"main", "high", "professional"}
 		levels = observedValues("video.level.av1")
 		tiers = observedValues("video.tier")
 	}
-	return MeasuredFormatDTO{MeasuredVideoDTO{knownObserved(string(video.Codec), observedValues("video.codec")), video.Width, video.Height, FrameRateDTO{video.FrameRate.Numerator, video.FrameRate.Denominator}, knownObserved(video.CodecProfile, profiles), knownObserved(video.Level, levels), knownObserved(video.Tier, tiers), knownObserved(video.PixelFormat, observedValues("video.pixel_format")), video.BitDepth, MeasuredColorDTO{knownObserved(video.Color.Range, observedValues("video.color.range")), knownObserved(video.Color.Primaries, observedValues("video.color.primaries")), knownObserved(video.Color.Transfer, observedValues("video.color.transfer")), knownObserved(video.Color.Matrix, observedValues("video.color.matrix"))}}, MeasuredAudioDTO{knownObserved(string(audio.Codec), observedValues("audio.codec")), knownObserved(audio.CodecProfile, observedValues("audio.codec_profile")), audio.SampleRateHz, audio.Channels, knownObserved(audio.ChannelLayout, observedValues("audio.channel_layout"))}}
+	return MeasuredFormatDTO{MeasuredVideoDTO{knownObserved(string(video.Codec), observedValues("video.codec")), video.Width, video.Height, FrameRateDTO{video.FrameRate.Numerator, video.FrameRate.Denominator}, knownObserved(video.CodecProfile, profiles), knownObserved(video.Level, levels), knownObserved(video.Tier, tiers), knownObserved(video.PixelFormat, observedValues("video.pixel_format")), video.BitDepth, MeasuredColorDTO{knownObserved(video.Color.Range, observedValues("video.color.range")), knownObserved(video.Color.Primaries, observedValues("video.color.primaries")), knownObserved(video.Color.Transfer, observedValues("video.color.transfer")), knownObserved(video.Color.Matrix, observedValues("video.color.matrix"))}}, MeasuredAudioDTO{knownObserved(string(audio.Codec), observedValues("audio.codec")), knownObserved(audio.CodecProfile, observedValues("audio.codec_profile."+string(audio.Codec))), audio.SampleRateHz, audio.Channels, knownObserved(audio.ChannelLayout, observedValues("audio.channel_layout"))}}
 }

@@ -33,8 +33,13 @@ type CodecConfigInfo struct {
 	TimeBase TimeBase
 	// Video описывает формат видеодорожки; для аудиодорожки должно быть нулевым.
 	Video core.VideoFormat
+	// HDR сохраняет статические сведения HDR видео во время выполнения; для аудио значение нулевое.
+	HDR HDRMetadata
 	// Audio описывает формат аудиодорожки; для видеодорожки должно быть нулевым.
 	Audio core.AudioFormat
+	// FLACOwned подтверждает локальную попытку кодировщика либо выбранный проверенный FLAC-файл.
+	// Признак существует только во время выполнения; внешние заголовки его не устанавливают.
+	FLACOwned bool
 }
 
 // CodecConfig хранит неизменяемый снимок описания дорожки и её заголовков.
@@ -72,8 +77,12 @@ func (c CodecConfig) StoredBytes() uint64 {
 	return uint64(len(c.headers))
 }
 
-// Validate проверяет описание и наличие заголовков без разбора битового потока.
+// Validate проверяет описание c и наличие заголовков без разбора битового потока.
+// FLACOwned допускается только у FLAC audio и не назначается этим методом.
 func (c CodecConfig) Validate() error {
+	if c.info.FLACOwned && (c.info.Track != TrackAudio || c.info.Audio.Codec != core.CodecFLAC) {
+		return fmt.Errorf("%w: FLACOwned допустим только для audio FLAC", ErrInvalidConfig)
+	}
 	if c.info.SourceEpoch == 0 {
 		return fmt.Errorf("%w: CodecConfig.SourceEpoch должен быть положительным", ErrInvalidConfig)
 	}
@@ -86,6 +95,10 @@ func (c CodecConfig) Validate() error {
 	}
 	switch c.info.Track {
 	case TrackVideo:
+		// err сообщает о некорректных значениях HDR или происхождении внешнего цвета.
+		if err := c.info.HDR.Validate(); err != nil {
+			return fmt.Errorf("%w: HDR: %w", ErrInvalidConfig, err)
+		}
 		if c.info.Audio != (core.AudioFormat{}) {
 			return fmt.Errorf("%w: CodecConfig.Audio должен быть нулевым для video", ErrInvalidConfig)
 		}
@@ -94,7 +107,7 @@ func (c CodecConfig) Validate() error {
 			return fmt.Errorf("%w: CodecConfig.Video: %w", ErrInvalidConfig, err)
 		}
 	case TrackAudio:
-		if c.info.Video != (core.VideoFormat{}) {
+		if c.info.Video != (core.VideoFormat{}) || c.info.HDR != (HDRMetadata{}) {
 			return fmt.Errorf("%w: CodecConfig.Video должен быть нулевым для audio", ErrInvalidConfig)
 		}
 		// err сообщает о некорректном формате аудиодорожки.

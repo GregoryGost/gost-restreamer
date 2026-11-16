@@ -133,7 +133,7 @@ func TestManagerPublishesOnlyCompleteNormalizedBundle(t *testing.T) {
 					return Command{Binary: "controlled"}, nil
 				},
 				Runner: runner,
-				Normalize: func(ctx context.Context, input *os.File, out io.Writer) error {
+				NormalizeForProfile: func(ctx context.Context, input *os.File, out io.Writer, profile core.GroupProfile) error {
 					// Проверяет предварительную регистрацию нормализованного файла и исходные байты, затем записывает
 					// результат профиля либо вводит выбранный отказ второго варианта.
 
@@ -149,6 +149,9 @@ func TestManagerPublishesOnlyCompleteNormalizedBundle(t *testing.T) {
 					// p содержит требуемый профиль, соответствующий номеру текущей
 					// нормализации.
 					p := g.RequiredProfiles[normalized]
+					if profile != p.Profile {
+						return errors.New("нормализатор получил другой профиль свежего варианта")
+					}
 					// ledger содержит реестр файлов поколения для проверки
 					// предварительной регистрации normalized.
 					ledger, err := svc.ListGenerationFiles(ctx, core.PageRequest{Query: core.ListQuery{Limit: 100, GenerationID: g.ID}})

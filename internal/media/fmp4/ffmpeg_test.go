@@ -184,7 +184,7 @@ func observedConfig(t *testing.T, streams []probeStream, desc TrackDescription) 
 				}
 				return s
 			}
-			info.Video = core.VideoFormat{Codec: desc.Codec, Width: s.Width, Height: s.Height, FrameRate: core.FrameRate{Numerator: fps.Numerator, Denominator: fps.Denominator}, CodecProfile: s.Profile, PixelFormat: s.PixelFormat, BitDepth: 8, Color: core.ColorInfo{Range: color(s.ColorRange), Primaries: color(s.ColorPrimaries), Transfer: color(s.ColorTransfer), Matrix: color(s.ColorSpace)}}
+			info.Video = core.VideoFormat{Codec: desc.Codec, Width: s.Width, Height: s.Height, FrameRate: core.FrameRate{Numerator: fps.Numerator, Denominator: fps.Denominator}, CodecProfile: strings.ToLower(s.Profile), PixelFormat: s.PixelFormat, BitDepth: 8, Color: core.ColorInfo{Range: color(s.ColorRange), Primaries: color(s.ColorPrimaries), Transfer: color(s.ColorTransfer), Matrix: color(s.ColorSpace)}}
 		} else {
 			// rate содержит частоту дискретизации аудио в герцах; err сообщает об отказе её
 			// разбора из строки ffprobe.
@@ -239,7 +239,7 @@ func TestFFmpegCPUFragmentedRoundTrip(t *testing.T) {
 			}
 			// args накапливает аргументы синтетических источников, сдвига времени,
 			// кодирования и фрагментированного вывода.
-			args := []string{"-hide_banner", "-loglevel", "warning", "-xerror", "-copyts", "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=30:duration=0.4", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=0.4", "-map", "0:v", "-map", "1:a", "-vf", "setpts=PTS" + sign + "15", "-af", "asetpts=PTS" + sign + "6000", "-fps_mode", "passthrough"}
+			args := []string{"-hide_banner", "-loglevel", "warning", "-xerror", "-copyts", "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=30:duration=0.4", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=0.4", "-map", "0:v", "-map", "1:a", "-vf", "setpts=PTS" + sign + "15,setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709", "-af", "asetpts=PTS" + sign + "6000", "-fps_mode", "passthrough"}
 			args = append(args, encoder...)
 			args = append(args, "-c:a", "aac", "-f", "mp4", "-movflags", "delay_moov+default_base_moof+frag_every_frame", "-min_frag_duration", "1", "-use_editlist", "1", "-movie_timescale", "48000", "-avoid_negative_ts", "disabled", "pipe:1")
 			// source содержит исходный fMP4 с видео и AAC, созданный выбранным сценарием

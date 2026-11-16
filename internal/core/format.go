@@ -18,8 +18,20 @@ const (
 	CodecAV1 Codec = "av1"
 	// CodecH264 обозначает кодек H.264 для видеодорожки.
 	CodecH264 Codec = "h264"
+	// CodecHEVC обозначает кодек HEVC для видеодорожки.
+	CodecHEVC Codec = "hevc"
+	// CodecVP9 обозначает кодек VP9 для видеодорожки.
+	CodecVP9 Codec = "vp9"
 	// CodecAAC обозначает кодек AAC для аудиодорожки.
 	CodecAAC Codec = "aac"
+	// CodecOpus обозначает аудиокодек Opus.
+	CodecOpus Codec = "opus"
+	// CodecFLAC обозначает аудиокодек FLAC.
+	CodecFLAC Codec = "flac"
+	// CodecMP3 обозначает MPEG Layer III.
+	CodecMP3 Codec = "mp3"
+	// CodecAC3 обозначает аудиокодек AC-3.
+	CodecAC3 Codec = "ac3"
 )
 
 // FrameRate задаёт число кадров в секунду положительной дробью.
@@ -109,8 +121,8 @@ type VideoFormat struct {
 
 // Validate проверяет структуру формата без проверки возможностей кодека.
 func (f VideoFormat) Validate() error {
-	if f.Codec != CodecAV1 && f.Codec != CodecH264 {
-		return fmt.Errorf("%w: VideoFormat.Codec должен быть av1 или h264", ErrInvalidFormat)
+	if f.Codec != CodecAV1 && f.Codec != CodecH264 && f.Codec != CodecHEVC && f.Codec != CodecVP9 {
+		return fmt.Errorf("%w: VideoFormat.Codec должен быть av1, h264, hevc или vp9", ErrInvalidFormat)
 	}
 	if f.Width == 0 {
 		return fmt.Errorf("%w: VideoFormat.Width должен быть положительным", ErrInvalidFormat)
@@ -152,10 +164,10 @@ type AudioFormat struct {
 	ChannelLayout string
 }
 
-// Validate проверяет наличие обязательных параметров аудио AAC.
+// Validate проверяет структуру поддержанного аудиокодека f без каталога желаемых настроек.
 func (f AudioFormat) Validate() error {
-	if f.Codec != CodecAAC {
-		return fmt.Errorf("%w: AudioFormat.Codec должен быть aac", ErrInvalidFormat)
+	if f.Codec != CodecAAC && f.Codec != CodecOpus && f.Codec != CodecFLAC && f.Codec != CodecMP3 && f.Codec != CodecAC3 {
+		return fmt.Errorf("%w: AudioFormat.Codec должен быть aac, opus, flac, mp3 или ac3", ErrInvalidFormat)
 	}
 	if strings.TrimSpace(f.CodecProfile) == "" {
 		return fmt.Errorf("%w: AudioFormat.CodecProfile должен быть задан", ErrInvalidFormat)
@@ -203,44 +215,4 @@ func (f MediaFormat) Equal(other MediaFormat) bool {
 	}
 	other.Video.FrameRate = f.Video.FrameRate
 	return f == other
-}
-
-// CompatibleFormat сверяет измеренные параметры с заданными ограничениями профиля.
-// Незаданные level/tier не требуют совпадения конкретного значения кодера.
-func CompatibleFormat(actual, desired MediaFormat) error {
-	if actual.Validate() != nil || desired.Validate() != nil {
-		return ErrInvalidFormat
-	}
-	// a содержит копию фактических параметров видео, а d — копию требуемых параметров для
-	// нормализации допустимых различий.
-	a, d := actual.Video, desired.Video
-	if !a.FrameRate.Equal(d.FrameRate) {
-		return ErrInvalidFormat
-	}
-	a.FrameRate = d.FrameRate
-	// normalize приводит псевдонимы tv и pc к сопоставимым обозначениям диапазона цвета.
-	normalize := func(c ColorInfo) ColorInfo {
-		// Приводит только псевдонимы диапазона tv и pc к limited и full в копии ColorInfo для сравнения
-		// измеренного и заданного форматов.
-
-		switch c.Range {
-		case "tv":
-			c.Range = "limited"
-		case "pc":
-			c.Range = "full"
-		}
-		return c
-	}
-	a.Color = normalize(a.Color)
-	d.Color = normalize(d.Color)
-	if d.Level == "" || d.Level == "auto" {
-		a.Level = d.Level
-	}
-	if d.Tier == "" {
-		a.Tier = ""
-	}
-	if a != d || actual.Audio != desired.Audio || a.PixelFormat != "yuv420p" || a.BitDepth != 8 || a.Color.Transfer == "smpte2084" || a.Color.Transfer == "arib-std-b67" {
-		return ErrInvalidFormat
-	}
-	return nil
 }

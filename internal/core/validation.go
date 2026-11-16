@@ -84,7 +84,7 @@ func (s SessionSnapshot) Validate() error {
 }
 
 // Validate сверяет исторические идентичности, строгий профиль, структурный измеренный формат,
-// размер, хеши, версию генератора и путь m. RequiresRebuild отменяет только утверждение совместимости.
+// размер, хеши, версию генератора и путь m. Совместимость полного профиля обязательна.
 func (m ArtifactManifest) Validate() error {
 	// err сообщает об ошибке проверки идентификатора поколения manifest.
 	if err := m.GenerationID.Validate(); err != nil {
@@ -93,9 +93,6 @@ func (m ArtifactManifest) Validate() error {
 	// err сообщает об ошибке проверки фактического формата файла manifest.
 	if err := m.VerifiedFormat.Validate(); err != nil {
 		return err
-	}
-	if !m.RequiresRebuild && CompatibleFormat(m.VerifiedFormat, m.Profile.Format) != nil {
-		return ErrInvalid
 	}
 	// err сообщает об ошибке проверки идентификатора варианта manifest.
 	if err := m.VariantID.Validate(); err != nil {
@@ -108,6 +105,9 @@ func (m ArtifactManifest) Validate() error {
 	// err сообщает об ошибке проверки полного профиля manifest.
 	if err := m.Profile.Validate(); err != nil {
 		return err
+	}
+	if CompatibleProfileFormat(m.VerifiedFormat, m.Profile) != nil {
+		return ErrInvalid
 	}
 	// key содержит ключ полного профиля, content — его канонические байты, а err — результат
 	// вычисления идентичности.

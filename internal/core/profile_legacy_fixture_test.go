@@ -45,98 +45,38 @@ func frozenProfileCases(t *testing.T) []frozenProfileCase {
 	return cases
 }
 
-// Проверяет неизменность байтов и ключей корректных прежних профилей и отказ для прежнего
-// эталона с неподдержанными строками; отдельные числовые границы проверяются независимо.
-func TestFrozenLegacyProfilesPreserveBytesIdentityAndAcceptance(t *testing.T) {
-	// fixture содержит очередной закреплённый эталон прежнего профиля.
+// TestStoredProfileRejectsArchivedShapes проверяет отказ старой сохраняемой формы без изменения получателя.
+// Архивные fixture-файлы читаются только для доказательства отсутствия старого читателя.
+// t сообщает об ошибках проверяемого сценария.
+func TestStoredProfileRejectsArchivedShapes(t *testing.T) {
+	// fixture содержит каждый неизменённый архивный профиль.
 	for _, fixture := range frozenProfileCases(t) {
-		t.Run(fixture.Name, func(t *testing.T) {
-			// Сверяет выбранный прежний профиль с независимым эталоном байтов, ключей и канонического содержания,
-			// включая несокращённый FPS и точные строковые байты.
-
-			// p содержит отдельный полный профиль текущего сценария проверки. err сообщает
-			// об ошибке чтения и проверки сохранённого профиля.
-			p, err := core.DecodeProfile(fixture.Payload)
-			if fixture.Name == "exact-bytes" {
-				if !errors.Is(err, core.ErrInvalidProfile) {
-					t.Fatalf("неподдержанные настройки прежнего профиля приняты: %v", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if p.Encoding != (core.EncodingSettings{}) {
-				t.Fatalf("Старому профилю добавлены настройки: %+v", p.Encoding)
-			}
-			if err = p.Validate(); err != nil {
-				t.Fatal(err)
-			}
-			if p.Format.Video.FrameRate != (core.FrameRate{Numerator: 60000, Denominator: 2002}) {
-				t.Fatal("Сохранённая дробь FPS изменилась")
-			}
-			// got содержит повторно закодированные байты для точного сравнения с эталоном.
-			got, err := core.EncodeProfile(p)
-			if err != nil || !bytes.Equal(got, fixture.Payload) {
-				t.Fatalf("Изменились байты v1: %s, %v", got, err)
-			}
-			// key содержит вычисленный ключ полного профиля. canonical содержит канонические
-			// байты полного профиля.
-			key, canonical, err := core.ProfileIdentity(p)
-			if err != nil || key != fixture.ProfileKey || !bytes.Equal(canonical, fixture.Canonical) {
-				t.Fatalf("Изменилась прежняя идентичность: %q, %v", key, err)
-			}
-			// variant содержит идентичность варианта исходного профиля и фиксированного
-			// генератора.
-			variant, err := core.VariantIdentity("frozen-source", p, "generator-v1")
-			if err != nil || variant != fixture.VariantKey {
-				t.Fatalf("Изменилась идентичность варианта: %q, %v", variant, err)
-			}
-			// reduced содержит копию профиля с сокращённой эквивалентной частотой кадров.
-			reduced := p
-			reduced.Format.Video.FrameRate = core.FrameRate{Numerator: 30000, Denominator: 1001}
-			if !p.Equal(reduced) {
-				t.Fatal("Математически равные FPS перестали совпадать")
-			}
-			// reducedKey содержит ключ прежнего профиля с сокращённой эквивалентной
-			// частотой.
-			reducedKey, _, err := core.ProfileIdentity(reduced)
-			if err != nil || reducedKey != fixture.ProfileKey {
-				t.Fatal("Канонизация FPS изменилась")
-			}
-		})
+		// receiver сохраняет текущий профиль при отказе чтения несовместимых байтов.
+		receiver := validProfile()
+		// before сохраняет все поля до вызова читателя, err сообщает его отказ.
+		before := receiver
+		err := receiver.UnmarshalJSON(fixture.Payload)
+		if !errors.Is(err, core.ErrInvalidMetadata) || receiver != before {
+			t.Fatal("Архивная форма принята либо изменила получателя", fixture.Name, err)
+		}
 	}
 }
 
-// Строит проверенный профиль с явным Encoding из закреплённого эталона H.264 либо AV1, согласуя
-// ограничения VBR.
+// explicitFixtureProfile создаёт текущий полный профиль encoder для проверок пределов и идентичности.
+// t сообщает об ошибке фикстуры; дополнительные NVENC B-кадры и AQ нужны соответствующим сценариям.
 func explicitFixtureProfile(t *testing.T, encoder string) core.GroupProfile {
 	t.Helper()
-	// f содержит очередной закреплённый эталон для выбора исходного кодека.
-	for _, f := range frozenProfileCases(t) {
-		if f.Name == "h264" && encoder == "h264_nvenc" || f.Name == "av1" && encoder == "libsvtav1" {
-			// p содержит отдельный полный профиль текущего сценария проверки. err сообщает
-			// об ошибке чтения и проверки сохранённого профиля.
-			p, err := core.DecodeProfile(f.Payload)
-			if err != nil {
-				t.Fatal(err)
-			}
-			p.Encoding = core.DefaultEncoding(p.Mode, encoder, "vbr")
-			if encoder == "libsvtav1" {
-				p.VideoEncoding.MaxBitrateBPS = 0
-				p.VideoEncoding.BufferBits = 0
-			} else {
-				p.VideoEncoding.MaxBitrateBPS = p.VideoEncoding.TargetBitrateBPS
-				p.Encoding.NVENC.EnableSpatialAQ = true
-			}
-			if err = p.Validate(); err != nil {
-				t.Fatal(err)
-			}
-			return p
-		}
+	// p содержит независимые настройки выбранного кодировщика в VBR.
+	p := encodedProfile(encoder, core.RateControlVBR)
+	if encoder == core.VideoEncoderNVENC {
+		p.VideoEncoding.MaxBFrames = 2
+		p.Encoding.NVENC.EnableSpatialAQ = true
 	}
-	t.Fatal("Не найден исходный профиль")
-	return core.GroupProfile{}
+	// err сообщает об ошибке построения проверяемой фикстуры.
+	if err := p.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 // Проверяет по эталонным профилям влияние явных настроек кодирования на равенство, оба ключа и точное
@@ -298,8 +238,9 @@ func TestExplicitEncodingFieldsChangeFullIdentity(t *testing.T) {
 	}
 }
 
-// Проверяет отказ при удалении любого обязательного поля сохранённого Encoding v2 вместо подстановки
+// Проверяет отказ при удалении любого обязательного поля сохранённого Encoding вместо подстановки
 // исходных настроек.
+// t сообщает об ошибках проверяемого сценария.
 func TestExplicitStoredEncodingRejectsIncompleteValuesWithoutDefaults(t *testing.T) {
 	// p содержит отдельный полный профиль текущего сценария проверки.
 	p := explicitFixtureProfile(t, "h264_nvenc")
@@ -314,8 +255,8 @@ func TestExplicitStoredEncodingRejectsIncompleteValuesWithoutDefaults(t *testing
 	if err = json.Unmarshal(payload, &fields); err != nil {
 		t.Fatal(err)
 	}
-	if string(fields["Version"]) != "2" {
-		t.Fatalf("Нужен отдельный профильный discriminator v2: %s", payload)
+	if len(fields["Version"]) != 0 {
+		t.Fatalf("Корень профиля не должен выбирать версию возможностей: %s", payload)
 	}
 	// encoding предоставляет поля сохраняемого блока Encoding для проверки полноты.
 	var encoding map[string]json.RawMessage
@@ -323,7 +264,8 @@ func TestExplicitStoredEncodingRejectsIncompleteValuesWithoutDefaults(t *testing
 		t.Fatal(err)
 	}
 	// field выбирает обязательное поле сохраняемого представления для проверки.
-	for _, field := range []string{"Version", "VideoEncoder", "AudioEncoder", "RateControl", "RescaleOutput", "VideoCustom", "AudioCustom", "NVENC", "SVTAV1"} {
+	for _, field := range []string{"VideoEncoder", "AudioEncoder", "RateControl", "RescaleOutput", "VideoCustom", "AudioCustom", "NVENC", "SVTAV1"} {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run(field, func(t *testing.T) {
 			// Удаляет выбранное обязательное поле Encoding и проверяет ErrInvalidMetadata вместо подстановки
 			// значений по умолчанию.
@@ -350,7 +292,7 @@ func TestExplicitStoredEncodingRejectsIncompleteValuesWithoutDefaults(t *testing
 				t.Fatal(err)
 			}
 			if _, err = core.DecodeProfile(b); !errors.Is(err, core.ErrInvalidMetadata) {
-				t.Fatalf("Частичный stored v2 получил defaults вместо отказа: %v", err)
+				t.Fatalf("Частичный сохранённый профиль получил defaults вместо отказа: %v", err)
 			}
 		})
 	}
@@ -358,6 +300,7 @@ func TestExplicitStoredEncodingRejectsIncompleteValuesWithoutDefaults(t *testing
 
 // Проверяет принятие точных допустимых границ кодировщиков и типизированный отказ за ними, включая
 // расчёты буфера и неприменимые настройки.
+// t сообщает об ошибках проверяемого сценария.
 func TestExplicitEncodingCheckedBoundaries(t *testing.T) {
 	// tests перечисляет допустимые границы и нарушения конкретных кодировщиков.
 	tests := []struct {
@@ -365,6 +308,7 @@ func TestExplicitEncodingCheckedBoundaries(t *testing.T) {
 		// видеокодировщик.
 		name, encoder string
 		// change вносит выбранное изменение параметра в копию исходного профиля.
+		// Параметр p каждого обработчика change указывает на отдельную изменяемую копию проверяемого профиля.
 		change func(*core.GroupProfile)
 		// valid задаёт ожидаемую допустимость граничного сочетания параметров.
 		valid bool
@@ -521,13 +465,14 @@ func TestExplicitEncodingCheckedBoundaries(t *testing.T) {
 			// Добавляет настройки SVTAV1 к профилю NVENC.
 			p.Encoding.SVTAV1.Preset = 8
 		}, false},
-		{"partial_legacy_block", "h264_nvenc", func(p *core.GroupProfile) {
-			// Создаёт неполный блок EncodingSettings с одним RateControl без версии.
+		{"partial_encoding_block", "h264_nvenc", func(p *core.GroupProfile) {
+			// Создаёт неполный EncodingSettings с одним RateControl без кодировщиков.
 			p.Encoding = core.EncodingSettings{RateControl: "vbr"}
 		}, false},
 	}
 	// tt содержит очередной граничный сценарий кодировщика и ожидаемую допустимость.
 	for _, tt := range tests {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run(tt.name, func(t *testing.T) {
 			// Проверяет принятие допустимой границы либо содержательный типизированный ErrInvalidProfile для
 			// выбранного нарушения.

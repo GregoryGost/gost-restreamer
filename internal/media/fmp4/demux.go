@@ -3,6 +3,7 @@ package fmp4
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -11,11 +12,26 @@ import (
 
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/media"
+	"github.com/GregoryGost/gost-restreamer/internal/media/codec"
 )
 
 // trackState связывает описание и конфигурацию дорожки с её сдвигом, значениями trex и последним
 // разобранным временем декодирования.
 type trackState struct {
+	// audioClaim сохраняет только формат и идентичность UUID для сверки с фактической AU.
+	// Эти сведения не назначают FLACOwned и не заменяют стандартные заголовки.
+	audioClaim *media.CodecConfigInfo
+	// opusSkipped отмечает единственную потреблённую целую начальную AU этой аудиопоследовательности.
+	opusSkipped bool
+	// containerHDR сохраняет исходные прочитанные блоки до разрешённой коррекции свежего результата.
+	// Descriptions возвращает это доказательство исходной проекции, config — выбранный авторитетный источник.
+	containerHDR media.HDRMetadata
+
+	// incomplete разрешает предварительное чтение только для нового восстановителя без достаточных фактических сведений.
+	incomplete bool
+	// inspector подтверждает геометрию сжатого видео и CFR новых единиц доступа после инициализации.
+	inspector codec.Inspector
+
 	// description хранит идентификатор, шкалу и параметры дорожки, извлечённые из заголовков MP4.
 	description TrackDescription
 	// config содержит восстановленную полную конфигурацию, к которой относятся выдаваемые пакеты
@@ -50,6 +66,9 @@ type sample struct {
 
 // Demuxer читает только текущий ограниченный init/moof и одну единицу доступа.
 type Demuxer struct {
+	// prefix сохраняет ограниченный набор предварительно прочитанных единиц доступа без потери порядка и времён.
+	prefix []bufferedSample
+
 	// r предоставляет входные байты; отменой чтения и закрытием Reader управляет вызывающий код.
 	r io.Reader
 	// options сохраняет пределы разбора, запрошенную идентичность конфигураций и необязательный
@@ -83,6 +102,11 @@ func NewDemuxer(r io.Reader, options DemuxOptions) (*Demuxer, error) {
 		return nil, err
 	}
 	// d хранит создаваемый последовательный разборщик до завершения инициализации обеих дорожек.
+	if options.FreshHDRSource != nil { // snapshot отделяет срок действия опций от изменяемого объекта вызывающего.
+		snapshot := *options.FreshHDRSource
+		options.FreshHDRSource = &snapshot
+	}
+	// d читает последовательный контейнер с собственной копией разрешённых опций.
 	d := &Demuxer{r: r, options: options, tracks: make(map[uint32]*trackState)}
 	// total накапливает объявленные размеры блоков инициализации для проверки общего бюджета до
 	// чтения каждого тела.
@@ -121,6 +145,9 @@ func NewDemuxer(r io.Reader, options DemuxOptions) (*Demuxer, error) {
 			if err = d.parseInit(b.data); err != nil {
 				return nil, err
 			}
+			if err = d.completeActual(); err != nil {
+				return nil, err
+			}
 			return d, nil
 		}
 	}
@@ -139,7 +166,10 @@ func (d *Demuxer) Descriptions() []TrackDescription {
 		// desc содержит копию описания с отдельно клонируемыми заголовками, чтобы результат не
 		// изменял внутреннюю дорожку.
 		desc := t.description
+		desc.HDR = t.containerHDR
 		desc.Headers = bytes.Clone(desc.Headers)
+		desc.Color = bytes.Clone(desc.Color)
+		desc.FirstSample = bytes.Clone(desc.FirstSample)
 		result = append(result, desc)
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -211,12 +241,12 @@ func (d *Demuxer) Next() (media.Packet, error) {
 
 // Читает очередной ограниченный moof и проверяет все диапазоны единиц доступа внутри следующего mdat
 // до чтения их нагрузки; данные выдаёт по физическим смещениям.
-func (d *Demuxer) next() (media.Packet, error) {
+func (d *Demuxer) readSample() (sample, []byte, error) {
 	for len(d.samples) == 0 {
 		if d.mdatEnd > d.position {
 			// err сообщает об отказе пропуска непрочитанного хвоста предыдущего mdat.
 			if err := d.skip(d.mdatEnd - d.position); err != nil {
-				return media.Packet{}, err
+				return sample{}, nil, err
 			}
 		}
 		d.mdatEnd = 0
@@ -227,41 +257,41 @@ func (d *Demuxer) next() (media.Packet, error) {
 		// чтения.
 		b, err := d.header()
 		if err != nil {
-			return media.Packet{}, err
+			return sample{}, nil, err
 		}
 		if b.kind == "mfra" || b.kind == "sidx" || b.kind == "styp" || b.kind == "free" {
 			if b.size > d.options.Limits.MaxBoxBytes {
-				return media.Packet{}, ErrLimit
+				return sample{}, nil, ErrLimit
 			}
 			if err = d.skip(b.size - b.header); err != nil {
-				return media.Packet{}, err
+				return sample{}, nil, err
 			}
 			continue
 		}
 		if b.kind != "moof" {
-			return media.Packet{}, fmt.Errorf("%w: ожидался moof, получен %s", ErrInvalid, b.kind)
+			return sample{}, nil, fmt.Errorf("%w: ожидался moof, получен %s", ErrInvalid, b.kind)
 		}
 		b, err = d.body(b, d.options.Limits.MaxMoofBytes)
 		if err != nil {
-			return media.Packet{}, err
+			return sample{}, nil, err
 		}
 		if err = d.parseMoof(b.data, start); err != nil {
-			return media.Packet{}, err
+			return sample{}, nil, err
 		}
 		// mdat содержит заголовок блока данных, который должен непосредственно следовать
 		// разобранному moof.
 		mdat, err := d.header()
 		if err != nil {
-			return media.Packet{}, err
+			return sample{}, nil, err
 		}
 		if mdat.kind != "mdat" {
-			return media.Packet{}, ErrInvalid
+			return sample{}, nil, ErrInvalid
 		}
 		if mdat.size > d.options.Limits.MaxMdatBytes || mdat.size > d.options.Limits.MaxBoxBytes {
-			return media.Packet{}, ErrLimit
+			return sample{}, nil, ErrLimit
 		}
 		if d.position > math.MaxUint64-(mdat.size-mdat.header) {
-			return media.Packet{}, ErrLimit
+			return sample{}, nil, ErrLimit
 		}
 		d.mdatEnd = d.position + mdat.size - mdat.header
 		sort.Slice(d.samples, func(i, j int) bool {
@@ -275,7 +305,7 @@ func (d *Demuxer) next() (media.Packet, error) {
 		// помещаться в mdat без перекрытий.
 		for _, s := range d.samples {
 			if s.offset < end || s.offset > d.mdatEnd || uint64(s.size) > d.mdatEnd-s.offset {
-				return media.Packet{}, fmt.Errorf("%w: sample за пределами mdat", ErrInvalid)
+				return sample{}, nil, fmt.Errorf("%w: sample за пределами mdat", ErrInvalid)
 			}
 			end = s.offset + uint64(s.size)
 		}
@@ -287,22 +317,22 @@ func (d *Demuxer) next() (media.Packet, error) {
 	if s.offset > d.position {
 		// err сообщает об отказе пропуска промежутка до нагрузки выбранной единицы доступа.
 		if err := d.skip(s.offset - d.position); err != nil {
-			return media.Packet{}, err
+			return sample{}, nil, err
 		}
 	}
 	// payload принимает ровно объявленное число байтов сжатой единицы доступа.
 	payload := make([]byte, int(s.size))
 	// err сообщает об усечении либо отказе чтения нагрузки выбранной единицы доступа.
 	if _, err := io.ReadFull(d.r, payload); err != nil {
-		return media.Packet{}, err
+		return sample{}, nil, err
 	}
 	d.position += uint64(s.size)
-	return media.NewPacket(s.info, s.track.config, payload)
+	return s, payload, nil
 }
 
 // Разбирает обе дорожки и значения trex, восстанавливая конфигурации из собственных метаданных,
 // ResolveConfig либо заголовков. Явные идентичности DemuxOptions применяются до итоговой проверки
-// согласованности A/V.
+// согласованности A/V. data содержит полное тело moov без внешнего заголовка блока.
 func (d *Demuxer) parseInit(data []byte) error {
 	// boxes содержит дочерние блоки moov; err сообщает о нарушении их обрамления.
 	boxes, err := children(data)
@@ -417,6 +447,36 @@ func (d *Demuxer) parseInit(data []byte) error {
 	}
 	// t обозначает очередную дорожку, для которой восстанавливается полная конфигурация кодека.
 	for _, t := range d.tracks {
+		if d.options.NormalizeHeaders != nil {
+			// desc содержит отдельную копию прочитанного описания для разрешённой нормализации.
+			desc := t.description
+			desc.Headers = bytes.Clone(desc.Headers)
+			desc.Color = bytes.Clone(desc.Color)
+			desc.FirstSample = bytes.Clone(desc.FirstSample)
+			// headers содержит результат нормализации; normalizeErr сохраняет её фактический отказ.
+			headers, normalizeErr := d.options.NormalizeHeaders(desc)
+			if normalizeErr != nil {
+				return normalizeErr
+			}
+			if len(headers) == 0 && t.description.Codec != core.CodecMP3 || uint64(len(headers)) > d.options.Limits.MaxExtradataBytes {
+				return ErrLimit
+			}
+			t.description.Headers = bytes.Clone(headers)
+		}
+		if d.options.FreshHDRSource != nil && t.description.Track == media.TrackVideo {
+			if err = normalizeFreshHDRDescription(&t.description, *d.options.FreshHDRSource); err != nil {
+				return err
+			}
+		}
+		if newAudioCodec(t.description.Codec) {
+			t.incomplete = true
+			if metadata != nil {
+				// claim хранит отдельное значение UUID; фактический audio будет проверен до публикации Init.
+				claim := metadata.info(media.TrackAudio)
+				t.audioClaim = &claim
+			}
+			continue
+		}
 		// c накапливает восстановленную конфигурацию текущей дорожки до её проверки и установки
 		// в Init.
 		var c media.CodecConfig
@@ -431,8 +491,14 @@ func (d *Demuxer) parseInit(data []byte) error {
 			// фактических заголовков.
 			desc := t.description
 			desc.Headers = bytes.Clone(desc.Headers)
+			desc.Color = bytes.Clone(desc.Color)
+			desc.FirstSample = bytes.Clone(desc.FirstSample)
 			c, err = d.options.ResolveConfig(desc)
 			if err == nil {
+				c, err = reconstructHDR(c, t.description)
+				if err != nil {
+					return err
+				}
 				if err = validateWireConfig(c, t.description); err != nil {
 					return err
 				}
@@ -452,6 +518,26 @@ func (d *Demuxer) parseInit(data []byte) error {
 			c, err = ResolveCodecConfig(t.description, d.options.SourceEpoch, revision)
 		}
 		if err != nil {
+			if errors.Is(err, ErrMetadataUnavailable) && (t.description.Codec == core.CodecHEVC || t.description.Codec == core.CodecVP9) {
+				// Проверка записи до предварительного чтения отделяет отсутствие фактических сведений от повреждённого синтаксиса.
+				if t.description.Codec == core.CodecVP9 {
+					// parseErr сообщает о повреждённом vpcC до чтения префикса.
+					if _, parseErr := codec.ParseVP9Config(t.description.Headers); parseErr != nil {
+						return translateCodecError(parseErr)
+					}
+				} else {
+					// parseErr отделяет допустимо неполные HEVC-заголовки от повреждённого синтаксиса.
+					if _, parseErr := codec.ParseHEVCConfig(t.description.Headers); parseErr != nil && !errors.Is(parseErr, codec.ErrUnready) {
+						return translateCodecError(parseErr)
+					}
+				}
+				t.incomplete = true
+				continue
+			}
+			return err
+		}
+		c, err = reconstructHDR(c, t.description)
+		if err != nil {
 			return err
 		}
 		if err = validateWireConfig(c, t.description); err != nil {
@@ -470,7 +556,7 @@ func (d *Demuxer) parseInit(data []byte) error {
 			d.init.Audio = c
 		}
 	}
-	if d.init.Video.Info().SourceEpoch != d.init.Audio.Info().SourceEpoch {
+	if d.init.Video.Validate() == nil && d.init.Audio.Validate() == nil && d.init.Video.Info().SourceEpoch != d.init.Audio.Info().SourceEpoch {
 		return ErrInvalid
 	}
 	return nil
@@ -490,7 +576,8 @@ func applyIdentity(info *media.CodecConfigInfo, o DemuxOptions) {
 }
 
 // Извлекает идентификатор, шкалу, формат и заголовки одной поддержанной дорожки; сверяет hdlr и
-// преобразует поддержанный elst в знаковое смещение.
+// преобразует поддержанный elst в знаковое смещение. data содержит тело trak,
+// movieScale задаёт частоту общей временной шкалы фильма для разбора списка правок.
 func (d *Demuxer) parseTrack(data []byte, movieScale uint32) (*trackState, error) {
 	// tkhd содержит заголовок дорожки; err сообщает об отсутствии, повторе либо нарушенном
 	// обрамлении блока.
@@ -517,6 +604,7 @@ func (d *Demuxer) parseTrack(data []byte, movieScale uint32) (*trackState, error
 		return nil, ErrInvalid
 	}
 	// mdia содержит блок медиаданных описания дорожки для извлечения шкалы и формата.
+	// err сообщает об отсутствии или повторе обязательного блока mdhd.
 	mdia, err := find(data, "mdia")
 	if err != nil {
 		return nil, err
@@ -545,6 +633,7 @@ func (d *Demuxer) parseTrack(data []byte, movieScale uint32) (*trackState, error
 		return nil, ErrInvalid
 	}
 	// minf содержит описание медиадорожки, в котором ищется таблица сжатых данных.
+	// err сообщает о повреждении таблицы форматов stsd.
 	minf, err := find(mdia.data, "minf")
 	if err != nil {
 		return nil, err
@@ -563,6 +652,7 @@ func (d *Demuxer) parseTrack(data []byte, movieScale uint32) (*trackState, error
 		return nil, ErrInvalid
 	}
 	// entries содержит разобранные записи stsd; допустима только одна запись поддерживаемого кодека.
+	// err сообщает о некорректном обрамлении единственной записи stsd.
 	entries, err := children(stsd.data[8:])
 	if err != nil || len(entries) != 1 {
 		return nil, ErrInvalid
@@ -577,17 +667,26 @@ func (d *Demuxer) parseTrack(data []byte, movieScale uint32) (*trackState, error
 	// extra принимает найденный блок avcC, av1C либо esds с заголовками кодека.
 	var extra rawBox
 	switch entry.kind {
-	case "avc1", "av01":
+	case "avc1", "av01", "hvc1", "hev1", "vp09":
 		if len(entry.data) < 78 {
 			return nil, ErrInvalid
 		}
 		desc.Track = media.TrackVideo
+		desc.SampleEntry = entry.kind
 		desc.Codec = core.CodecH264
 		// kind выбирает обязательный блок конфигурации видео: avcC для avc1 либо av1C для av01.
 		kind := "avcC"
 		if entry.kind == "av01" {
 			desc.Codec = core.CodecAV1
 			kind = "av1C"
+		}
+		switch entry.kind {
+		case "hvc1", "hev1":
+			desc.Codec = core.CodecHEVC
+			kind = "hvcC"
+		case "vp09":
+			desc.Codec = core.CodecVP9
+			kind = "vpcC"
 		}
 		desc.Width = uint32(be.Uint16(entry.data[24:26]))
 		desc.Height = uint32(be.Uint16(entry.data[26:28]))
@@ -599,32 +698,51 @@ func (d *Demuxer) parseTrack(data []byte, movieScale uint32) (*trackState, error
 			return nil, ErrLimit
 		}
 		desc.Headers = bytes.Clone(extra.data)
-	case "mp4a":
-		if len(entry.data) < 28 || be.Uint16(entry.data[8:10]) != 0 {
-			return nil, ErrInvalid
+		if desc.Codec == core.CodecVP9 {
+			if len(desc.Headers) < 4 || be.Uint32(desc.Headers) != 0x01000000 {
+				return nil, ErrInvalid
+			}
+			desc.Headers = bytes.Clone(desc.Headers[4:])
 		}
-		desc.Track = media.TrackAudio
-		desc.Codec = core.CodecAAC
-		desc.Channels = be.Uint16(entry.data[16:18])
-		desc.SampleRateHz = be.Uint32(entry.data[24:28]) >> 16
-		extra, err = find(entry.data[28:], "esds")
+		desc.HDR, err = parseHDRBoxes(entry.data[78:], desc.Codec == core.CodecVP9, d.options.FreshHDRSource != nil)
 		if err != nil {
 			return nil, err
 		}
-		if len(extra.data) < 4 {
-			return nil, ErrInvalid
+		t.containerHDR = desc.HDR
+		if entry.kind == "hvc1" {
+			// hevc содержит проверенные arrays, полнота обязательна именно для hvc1.
+			// parseErr сообщает о повреждённом либо неполном hvcC записи hvc1.
+			hevc, parseErr := codec.ParseHEVCConfig(desc.Headers)
+			if parseErr != nil {
+				return nil, translateCodecError(parseErr)
+			}
+			if !hevc.Complete {
+				return nil, ErrInvalid
+			}
 		}
-		desc.Headers, err = parseASC(extra.data[4:], d.options.Limits.MaxExtradataBytes)
+		// err сообщает о повторном, усечённом либо неподдержанном цветовом дескрипторе.
+		desc.Color, err = readColor(entry.data[78:])
 		if err != nil {
 			return nil, err
+		}
+		if desc.Color != nil && (desc.Codec == core.CodecHEVC || desc.Codec == core.CodecVP9 || be.Uint16(desc.Color[6:]) == 16 || be.Uint16(desc.Color[6:]) == 18) {
+			desc.HDR.ColorConfig = media.ColorConfigProvenance{Source: media.HDRSourceContainer, Primaries: true, Transfer: true, Matrix: true}
+			t.containerHDR = desc.HDR
+		}
+	case "mp4a", "Opus", "fLaC", "ac-3":
+		// audioErr сообщает об ошибке стандартной записи аудиокодека до actual completion.
+		audioErr := parseAudioEntry(entry, desc, d.options.Limits)
+		if audioErr != nil {
+			return nil, audioErr
 		}
 	default:
 		return nil, fmt.Errorf("%w: codec %s", ErrInvalid, entry.kind)
 	}
-	if len(desc.Headers) == 0 {
+	if len(desc.Headers) == 0 && desc.Codec != core.CodecMP3 {
 		return nil, ErrInvalid
 	}
 	// hdlr содержит объявленную роль обработчика дорожки для сверки с фактической записью формата.
+	// err сообщает об отсутствии либо повторе обработчика дорожки.
 	hdlr, err := find(mdia.data, "hdlr")
 	if err != nil {
 		return nil, err
@@ -641,6 +759,7 @@ func (d *Demuxer) parseTrack(data []byte, movieScale uint32) (*trackState, error
 		return nil, fmt.Errorf("%w: hdlr противоречит sample entry", ErrInvalid)
 	}
 	// edts содержит необязательные правки временной шкалы; при наличии из него извлекается elst.
+	// err сообщает об отсутствии необязательного edts либо нарушении его обрамления.
 	edts, err := find(data, "edts")
 	if err == nil {
 		// elst содержит список правок дорожки; err сообщает о его отсутствии, повторе либо
@@ -839,8 +958,9 @@ func (d *Demuxer) parseMoof(data []byte, start uint64) error {
 }
 
 // Разбирает tfhd/tfdt/trun с явным базовым смещением данных, ограничивает число и размеры единиц
-// доступа и точно восстанавливает знаковые PTS/DTS. Уменьшение DTS дорожки и наличие композиционного
-// смещения у AV1 отклоняются.
+// доступа и точно восстанавливает знаковые PTS/DTS. Уменьшение DTS дорожки, поле композиционного
+// смещения у AV1 и ненулевое композиционное смещение у VP9 отклоняются.
+// data содержит тело traf, start — абсолютное начало его moof для разрешения смещений нагрузки.
 func (d *Demuxer) parseTraf(data []byte, start uint64) error {
 	// tfhd содержит заголовок текущего фрагмента дорожки; err сообщает об отсутствии, повторе либо
 	// неверной структуре.
@@ -917,6 +1037,7 @@ func (d *Demuxer) parseTraf(data []byte, start uint64) error {
 		return ErrInvalid
 	}
 	// boxes содержит дочерние блоки traf для последовательного разбора всех trun.
+	// err сохраняет отказ чтения version/flags очередного trun.
 	boxes, err := children(data)
 	if err != nil {
 		return err
@@ -1020,6 +1141,9 @@ func (d *Demuxer) parseTraf(data []byte, start uint64) error {
 					cts = int64(int32(value))
 				}
 			}
+			if t.description.Codec == core.CodecVP9 && cts != 0 {
+				return fmt.Errorf("%w: ненулевое композиционное смещение VP9", ErrUnsupportedTiming)
+			}
 			if n == 0 || uint64(n) > d.options.Limits.MaxSampleBytes {
 				return ErrLimit
 			}
@@ -1041,6 +1165,9 @@ func (d *Demuxer) parseTraf(data []byte, start uint64) error {
 			// target задаёт шкалу полной конфигурации, в которой должны выдаваться временные
 			// метки Packet.
 			target := t.config.Info().TimeBase
+			if t.incomplete {
+				target = timeBase
+			}
 			// dt содержит точно пересчитанный DTS; err сообщает о непредставимости временной
 			// метки в шкале конфигурации.
 			dt, err := rescale(dts.Int64(), timeBase, target)

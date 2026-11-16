@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"errors"
-	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -11,15 +10,17 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
-// Создаёт допустимый прежний профиль AV1/AAC без Encoding для тестов постоянного хранения.
+// storageProfile создаёт полный текущий профиль AV1/AAC для тестов постоянного хранения.
 func storageProfile() core.GroupProfile {
 	return core.GroupProfile{
-		Mode: core.ModeCopy,
+		Mode:          core.ModeCopy,
+		LiveAudioMode: core.LiveAudioCopy,
+		Encoding:      core.DefaultEncoding(core.ModeCopy, core.VideoEncoderSVTAV1, core.RateControlCBR),
 		Format: core.MediaFormat{
 			Video: core.VideoFormat{Codec: core.CodecAV1, Width: 2560, Height: 1440, FrameRate: core.FrameRate{Numerator: 60, Denominator: 1}, CodecProfile: "main", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}},
 			Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"},
 		},
-		VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 6000000, MaxBitrateBPS: 8000000, BufferBits: 12000000, GOPFrames: 120, ClosedGOP: true},
+		VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 6000000, MaxBitrateBPS: 6000000, BufferBits: 12000000, GOPFrames: 120, ClosedGOP: true},
 		AudioEncoding: core.AudioEncoding{BitrateBPS: 192000},
 	}
 }
@@ -206,16 +207,17 @@ func TestConfigurationConstraintsAndRollbackAreRealSQLite(t *testing.T) {
 	}
 }
 
-// Проверяет точное сохранение прежнего профиля в SQLite, включая исходную дробь FPS, строгие строковые настройки и
-// MaxUint64.
-func TestStoredProfilePreservesBytesRationalAndMaxUint64(t *testing.T) {
+// TestStoredProfilePreservesBytesRationalAndNativeBounds проверяет полный текущий профиль,
+// исходную несокращённую дробь FPS и верхние допустимые параметры кодировщика.
+// t сообщает об ошибках проверяемого сценария.
+func TestStoredProfilePreservesBytesRationalAndNativeBounds(t *testing.T) {
 	// f объединяет временный Store, Service, поток и опубликованную заглушку проверяемого сценария.
 	f := newDomainFixture(t, 0)
 	// p содержит полный именованный профиль для проверяемого изменения.
 	p := f.profile
 	p.Profile.Format.Video.FrameRate = core.FrameRate{Numerator: 60000, Denominator: 2002}
-	p.Profile.VideoEncoding.TargetBitrateBPS, p.Profile.VideoEncoding.MaxBitrateBPS = math.MaxUint64, math.MaxUint64
-	p.Profile.VideoEncoding.BufferBits, p.Profile.AudioEncoding.BitrateBPS = math.MaxUint64, math.MaxUint64
+	p.Profile.VideoEncoding.TargetBitrateBPS, p.Profile.VideoEncoding.MaxBitrateBPS = 100000000, 100000000
+	p.Profile.VideoEncoding.BufferBits = 1000000000
 	p.Profile.Format.Video.Level = "4.1"
 	// updated содержит результат условного сохранения изменённой конфигурации. err сообщает об
 	// ошибке условного изменения полного профиля.
@@ -224,9 +226,10 @@ func TestStoredProfilePreservesBytesRationalAndMaxUint64(t *testing.T) {
 		t.Fatal(err)
 	}
 	// err сообщает об ошибке чтения сохранённого полного профиля.
+	// r предоставляет репозитории согласованного чтения сохранённого профиля.
 	if err := f.store.View(context.Background(), func(r core.Repositories) error {
 		// Сверяет прочитанный профиль с сохранённым, включая строгие строки, несокращённый FPS и
-		// math.MaxUint64.
+		// предельные параметры SVT.
 
 		// got содержит прочитанное сохраняемое значение для проверки результата операции. err
 		// сообщает об ошибке чтения сохранённого полного профиля.

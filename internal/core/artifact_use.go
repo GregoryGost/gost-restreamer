@@ -1,16 +1,17 @@
 package core
 
-// CurrentFallbackGeneratorVersion обозначает действующий формат генератора с беззвучной AAC-дорожкой.
+// CurrentFallbackGeneratorVersion обозначает действующий формат генератора с беззвучной аудиодорожкой.
+// Кодек тишины определяется выбранной аудиопривязкой полного профиля.
 const CurrentFallbackGeneratorVersion = "fallback-fmp4-silent-v2"
 
 // ValidateUsable требует пригодности m для нового использования без открытия файла.
-// Исторические аннулированные манифесты и результаты прежнего генератора требуют ручного rebuild.
+// Несовместимый проверенный формат и другой генератор не дают нового допуска к файлу.
 func (m ArtifactManifest) ValidateUsable() error {
 	// err сохраняет повреждение исторического контракта отдельно от предметной неготовности.
 	if err := m.Validate(); err != nil {
 		return err
 	}
-	if m.RequiresRebuild || m.GeneratorVersion != CurrentFallbackGeneratorVersion || CompatibleFormat(m.VerifiedFormat, m.Profile.Format) != nil {
+	if m.GeneratorVersion != CurrentFallbackGeneratorVersion || CompatibleProfileFormat(m.VerifiedFormat, m.Profile) != nil {
 		return ErrNotReady
 	}
 	return nil
