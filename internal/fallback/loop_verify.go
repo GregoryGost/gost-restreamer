@@ -29,7 +29,7 @@ func (p Prober) VerifyLoopDuration(ctx context.Context, file *os.File, expected 
 		return err
 	}
 	// d читает обе дорожки fMP4 с конфигурациями на основе фактического формата.
-	d, err := fmp4.NewDemuxer(contextReader{ctx, file}, fmp4.DemuxOptions{Limits: p.Limits.Container, SourceEpoch: 1, VideoRevision: 1, AudioRevision: 1, ResolveConfig: func(desc fmp4.TrackDescription) (media.CodecConfig, error) {
+	d, err := fmp4.NewDemuxer(contextReader{ctx, file}, fmp4.DemuxOptions{Limits: p.Limits.Container, SourceEpoch: 1, VideoRevision: 1, AudioRevision: 1, NormalizeHeaders: preparedHeaders, ResolveConfig: func(desc fmp4.TrackDescription) (media.CodecConfig, error) {
 		// Соединяет фактический формат ffprobe с заголовками и шкалой дорожки fMP4, назначая SourceEpoch и
 		// Revision равными 1 для проверки файла.
 
@@ -37,6 +37,7 @@ func (p Prober) VerifyLoopDuration(ctx context.Context, file *os.File, expected 
 		info := media.CodecConfigInfo{Track: desc.Track, SourceEpoch: 1, Revision: 1, TimeBase: desc.TimeBase}
 		if desc.Track == media.TrackVideo {
 			info.Video = actual.Video
+			info.HDR = desc.HDR
 		} else {
 			info.Audio = actual.Audio
 		}

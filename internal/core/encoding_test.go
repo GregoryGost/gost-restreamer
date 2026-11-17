@@ -35,15 +35,17 @@ func encodedProfile(encoder, rc string) core.GroupProfile {
 	return p
 }
 
-// Проверяет исходные настройки кодировщиков, сохранение профиля v2 и одинаковые ключи сокращённых FPS
+// Проверяет исходные настройки кодировщиков, сохранение полного профиля и одинаковые ключи сокращённых FPS
 // без изменения входа.
+// t сообщает об ошибках проверяемого сценария.
 func TestEncodingDefaultsAndImmutableRoundTrip(t *testing.T) {
 	// encoder выбирает проверяемый видеокодировщик.
 	for _, encoder := range []string{core.VideoEncoderNVENC, core.VideoEncoderSVTAV1} {
 		// rc выбирает проверяемый режим видеобитрейта CBR или VBR.
 		for _, rc := range []string{core.RateControlCBR, core.RateControlVBR} {
+			// t сообщает об ошибках проверяемого сценария.
 			t.Run(encoder+"/"+rc, func(t *testing.T) {
-				// Проверяет точное сохранение настроек выбранного кодировщика и режима, версию 2 и одинаковую
+				// Проверяет точное сохранение настроек выбранного кодировщика и режима и одинаковую
 				// идентичность равных дробей FPS без изменения исходника.
 
 				// p содержит отдельный полный профиль текущего сценария проверки.
@@ -66,13 +68,12 @@ func TestEncodingDefaultsAndImmutableRoundTrip(t *testing.T) {
 				if err != nil || got != p {
 					t.Fatalf("Профиль изменился после хранения: %v", err)
 				}
-				// header принимает версию сохранённого профиля для проверки независимых
-				// версий.
-				var header struct { /* Version содержит версию сохраняемого представления профиля. */
+				// header обнаруживает ненулевой корневой селектор версии в проверяемом JSON.
+				var header struct { /* Version служит индикатором ненулевого корневого селектора, запрещённого текущей формой. */
 					Version int
 				}
 				// err сообщает об ошибке разбора JSON проверяемого представления.
-				if err := json.Unmarshal(data, &header); err != nil || header.Version != 2 || core.MetadataVersion != 1 {
+				if err := json.Unmarshal(data, &header); err != nil || header.Version != 0 || core.MetadataVersion != 1 {
 					t.Fatalf("Версии форматов изменены: %s", data)
 				}
 				// key содержит вычисленный ключ полного профиля. canonical содержит
@@ -101,6 +102,7 @@ func TestEncodingDefaultsAndImmutableRoundTrip(t *testing.T) {
 
 // Проверяет отказ неподдерживаемых сочетаний кодирования с типизированным путём поля и без изменения
 // профиля.
+// t сообщает об ошибках проверяемого сценария.
 func TestEncodingValidationRejectsUnsupportedRequests(t *testing.T) {
 	// cases перечисляет сценарии проверки допустимости или различимости полей профиля.
 	cases := []struct {
@@ -108,16 +110,12 @@ func TestEncodingValidationRejectsUnsupportedRequests(t *testing.T) {
 		// видеокодировщик. rc выбирает проверяемый режим видеобитрейта CBR или VBR.
 		name, encoder, rc string
 		// change вносит выбранное изменение параметра в копию исходного профиля.
+		// Параметр p каждого обработчика change указывает на отдельную изменяемую копию проверяемого профиля.
 		change func(*core.GroupProfile)
 	}{
-		{"partial_legacy", core.VideoEncoderNVENC, "vbr", func(p *core.GroupProfile) {
-			// Обнуляет Encoding.Version при заполненных настройках, проверяя отказ для неполного блока
-			// кодирования.
-			p.Encoding.Version = 0
-		}},
-		{"unknown_version", core.VideoEncoderNVENC, "vbr", func(p *core.GroupProfile) {
-			// Задаёт неподдерживаемую Encoding.Version 3.
-			p.Encoding.Version = 3
+		{"absent_encoding", core.VideoEncoderNVENC, "vbr", func(p *core.GroupProfile) {
+			// Обнуляет обязательный полный блок без назначения значений по умолчанию.
+			p.Encoding = core.EncodingSettings{}
 		}},
 		{"mode", core.VideoEncoderNVENC, "vbr", func(p *core.GroupProfile) {
 			// Подставляет неизвестный режим other.
@@ -132,7 +130,7 @@ func TestEncodingValidationRejectsUnsupportedRequests(t *testing.T) {
 			p.Encoding.AudioEncoder = "opus"
 		}},
 		{"video_encoder", core.VideoEncoderNVENC, "vbr", func(p *core.GroupProfile) {
-			// Подставляет неподдерживаемый видеокодировщик libx264.
+			// Подставляет libx264 с неприменимым ненулевым блоком NVENC.
 			p.Encoding.VideoEncoder = "libx264"
 		}},
 		{"codec", core.VideoEncoderNVENC, "vbr", func(p *core.GroupProfile) {
@@ -210,8 +208,8 @@ func TestEncodingValidationRejectsUnsupportedRequests(t *testing.T) {
 			p.Format.Video.Tier = "main"
 		}},
 		{"level", core.VideoEncoderNVENC, "vbr", func(p *core.GroupProfile) {
-			// Задаёт неподдерживаемый Level 6.0 для H.264.
-			p.Format.Video.Level = "6.0"
+			// Задаёт неподдерживаемый Level 6.3 для H.264.
+			p.Format.Video.Level = "6.3"
 		}},
 		{"target_zero", core.VideoEncoderNVENC, "vbr", func(p *core.GroupProfile) {
 			// Обнуляет целевой видеобитрейт.
@@ -402,6 +400,7 @@ func TestEncodingValidationRejectsUnsupportedRequests(t *testing.T) {
 	}
 	// tc содержит параметры и ожидаемый результат текущего сценария.
 	for _, tc := range cases {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run(tc.name, func(t *testing.T) {
 			// Проверяет типизированный ErrInvalidProfile для выбранного нарушения, наличие пути и описания поля,
 			// отсутствие мутации и неравенство некорректного профиля самому себе.
@@ -567,35 +566,6 @@ func TestEncodingFrameRatePreparedDurationBounds(t *testing.T) {
 	}
 }
 
-// Проверяет, что новое ограничение длительности кадра не меняет допустимость и точные байты прежнего
-// профиля без Encoding.
-func TestLegacyProfilePreservesLongFrameDuration(t *testing.T) {
-	// p содержит отдельный полный профиль текущего сценария проверки.
-	p := encodedProfile(core.VideoEncoderNVENC, core.RateControlVBR)
-	p.Encoding = core.EncodingSettings{}
-	p.Format.Video.FrameRate = core.FrameRate{Numerator: 1, Denominator: 44740}
-	// err сообщает об ошибке проверки допустимости профиля.
-	if err := p.Validate(); err != nil {
-		t.Fatalf("Прежняя допустимость профиля изменилась: %v", err)
-	}
-	// raw содержит сохраняемое представление проверяемого профиля. err сообщает об ошибке
-	// кодирования проверенного профиля.
-	raw, err := core.EncodeProfile(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// got содержит профиль, восстановленный из проверяемого представления.
-	got, err := core.DecodeProfile(raw)
-	if err != nil || got != p {
-		t.Fatalf("Прежний профиль изменился после хранения: %v", err)
-	}
-	// again содержит повторно полученное представление для проверки идемпотентности.
-	again, err := core.EncodeProfile(got)
-	if err != nil || !bytes.Equal(raw, again) {
-		t.Fatalf("Байты прежнего профиля изменились: %v", err)
-	}
-}
-
 // Проверяет идемпотентную нормализацию разрешённых параметров, категории конфликтов и отказов и
 // отсутствие чувствительного значения в объяснении.
 func TestCustomNormalizationAndSafeErrors(t *testing.T) {
@@ -672,6 +642,7 @@ func TestCustomNormalizationAndSafeErrors(t *testing.T) {
 
 // Проверяет влияние применимых настроек Encoding на равенство, канонические байты и ключ варианта без
 // изменения входного профиля.
+// t сообщает об ошибках проверяемого сценария.
 func TestEveryEncodingSettingParticipatesInIdentity(t *testing.T) {
 	// cases перечисляет сценарии проверки допустимости или различимости полей профиля.
 	cases := []struct {
@@ -679,6 +650,7 @@ func TestEveryEncodingSettingParticipatesInIdentity(t *testing.T) {
 		// видеокодировщик.
 		name, encoder string
 		// change вносит выбранное изменение параметра в копию исходного профиля.
+		// Параметр p каждого обработчика change указывает на отдельную изменяемую копию проверяемого профиля.
 		change func(*core.GroupProfile)
 	}{
 		{"rc", core.VideoEncoderNVENC, func(p *core.GroupProfile) {
@@ -741,13 +713,10 @@ func TestEveryEncodingSettingParticipatesInIdentity(t *testing.T) {
 			// Задаёт VideoCustom lp=1 для проверки различимости профилей SVTAV1.
 			p.Encoding.VideoCustom = "lp=1"
 		}},
-		{"version", core.VideoEncoderNVENC, func(p *core.GroupProfile) {
-			// Убирает EncodingSettings целиком для сравнения идентичности явных и прежних настроек.
-			p.Encoding = core.EncodingSettings{}
-		}},
 	}
 	// tc содержит параметры и ожидаемый результат текущего сценария.
 	for _, tc := range cases {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run(tc.name, func(t *testing.T) {
 			// Проверяет, что выбранная настройка меняет ключи профиля и варианта, канонические байты и Equal,
 			// сохраняя исходное значение.
@@ -792,8 +761,9 @@ func TestEveryEncodingSettingParticipatesInIdentity(t *testing.T) {
 	}
 }
 
-// Проверяет отказ при удалении каждого сохранённого поля v2 и при null вместо материализованных
+// Проверяет отказ при удалении каждого сохранённого поля профиля и при null вместо материализованных
 // нулевых значений без частичной записи получателя.
+// t сообщает об ошибках проверяемого сценария.
 func TestStoredEncodingRequiresEveryMaterializedField(t *testing.T) {
 	// p содержит отдельный полный профиль текущего сценария проверки.
 	p := encodedProfile(core.VideoEncoderSVTAV1, "vbr")
@@ -811,6 +781,7 @@ func TestStoredEncodingRequiresEveryMaterializedField(t *testing.T) {
 	}
 	// visit рекурсивно обходит вложенные поля профиля и запускает проверки их обязательности.
 	var visit func(map[string]json.RawMessage, []string)
+	// values содержит поля текущего JSON-объекта, path — путь к нему от корня профиля.
 	visit = func(values map[string]json.RawMessage, path []string) {
 		// Обходит вложенные объекты сохранённого профиля и для каждого поля запускает проверку обязательности
 		// его присутствия.
@@ -820,6 +791,7 @@ func TestStoredEncodingRequiresEveryMaterializedField(t *testing.T) {
 		for name, value := range values {
 			// key содержит полный путь текущего JSON-поля от корня профиля.
 			key := append(append([]string{}, path...), name)
+			// t сообщает об ошибках проверяемого сценария.
 			t.Run(strings.Join(key, "/"), func(t *testing.T) {
 				// Удаляет выбранное вложенное поле из копии JSON и проверяет ErrInvalidMetadata без частичного
 				// изменения приёмника.
@@ -834,6 +806,7 @@ func TestStoredEncodingRequiresEveryMaterializedField(t *testing.T) {
 				// remove рекурсивно удаляет поле по выбранному пути и перекодирует
 				// родителей.
 				var remove func(map[string]json.RawMessage, []string)
+				// object содержит изменяемый JSON-объект, keys — оставшиеся имена пути удаляемого поля.
 				remove = func(object map[string]json.RawMessage, keys []string) {
 					// Рекурсивно удаляет поле по точному пути и заново кодирует изменённые родительские объекты.
 
@@ -920,18 +893,16 @@ func TestStoredEncodingRequiresEveryMaterializedField(t *testing.T) {
 	}
 }
 
-// Проверяет отсутствие разделяемых указательных полей профиля, запрет понижения v2 и приоритет CAS,
-// сохраняя переименование прежнего профиля и явный переход к v2.
-func TestEncodingValueOwnershipAndServiceTransition(t *testing.T) {
-	// inspect рекурсивно проверяет состав GroupProfile на поля с разделяемым состоянием.
+// TestEncodingValueOwnershipAndServiceReplacement проверяет независимость значений и CAS полной замены.
+// Переименование сохраняет все настройки; другой текущий профиль можно явно назначить без перехода версий.
+// t сообщает об ошибках проверяемого сценария.
+func TestEncodingValueOwnershipAndServiceReplacement(t *testing.T) {
+	// inspect рекурсивно проверяет typ на поля с разделяемым изменяемым состоянием.
 	var inspect func(reflect.Type)
 	inspect = func(typ reflect.Type) {
-		// Рекурсивно проверяет поля GroupProfile и отклоняет указатели, карты, срезы и интерфейсы, способные
-		// удерживать разделяемое состояние.
-
 		switch typ.Kind() {
 		case reflect.Struct:
-			// field содержит очередное отражённое поле структуры для проверки его типа.
+			// field содержит очередное отражённое поле для рекурсивной проверки.
 			for field := range typ.Fields() {
 				inspect(field.Type)
 			}
@@ -940,72 +911,30 @@ func TestEncodingValueOwnershipAndServiceTransition(t *testing.T) {
 		}
 	}
 	inspect(reflect.TypeFor[core.GroupProfile]())
-	// output предоставляет корректный снимок выхода с исходным именованным профилем.
+	// output предоставляет согласованный именованный профиль.
 	_, output := contractSnapshots(t)
-	// stale выбирает актуальную либо заведомо устаревшую ожидаемую ревизию.
-	for _, stale := range []bool{false, true} {
-		// current содержит исходный сохранённый профиль перед попыткой понижения версии.
-		current := output.Profile
-		current.Profile = encodedProfile(core.VideoEncoderNVENC, "vbr")
-		// u предоставляет подменяемый конфигурационный репозиторий и учитывает записи.
-		u := &configContractUOW{repository: configContractRepository{profile: current}}
-		// service предоставляет доменные операции изменения тестового профиля. err сообщает об
-		// ошибке создания доменного сервиса проверяемого профиля.
-		service, err := core.NewService(u, "owner")
-		if err != nil {
-			t.Fatal(err)
-		}
-		// replacement содержит кандидат понижения полного профиля v2 до прежнего представления.
-		replacement := current
-		replacement.Profile = validProfile()
-		// expected задаёт ожидаемую ревизию для проверки приоритета CAS.
-		expected := current.Revision
-		if stale {
-			expected++
-		}
-		_, err = service.UpdateProfile(context.Background(), replacement, expected)
-		if stale {
-			if !errors.Is(err, core.ErrConflict) {
-				t.Fatalf("CAS должен предшествовать проверке перехода: %v", err)
-			}
-		} else {
-			// typed принимает типизированную ошибку профиля для проверки кода, поля и
-			// объяснения.
-			var typed *core.ProfileError
-			if !errors.As(err, &typed) || typed.Field() != "profile.encoding" {
-				t.Fatalf("Downgrade принят: %v", err)
-			}
-		}
-		if u.repository.writes != 0 || u.repository.profile != current {
-			t.Fatal("Отклонённый переход записан")
-		}
-	}
-	// legacy задаёт исходный профиль без явного LIVE-аудиоселектора.
-	legacy := output.Profile
-	legacy.Profile.Format.Video.Width = 1
-	legacy.Profile.VideoEncoding.BufferBits = math.MaxUint64
-	// u предоставляет подменяемый конфигурационный репозиторий и учитывает записи.
-	u := &configContractUOW{repository: configContractRepository{profile: legacy}}
-	// service предоставляет доменные операции изменения тестового профиля. err сообщает об ошибке
-	// создания доменного сервиса проверяемого профиля.
+	// current содержит исходную полную конфигурацию, u учитывает реальные записи сервиса.
+	current := output.Profile
+	current.Profile = encodedProfile(core.VideoEncoderNVENC, "vbr")
+	u := &configContractUOW{repository: configContractRepository{profile: current}}
+	// service выполняет замену через тестовый UnitOfWork, err сообщает об отказе создания.
 	service, err := core.NewService(u, "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// candidate содержит кандидат переименования или явного обновления прежнего профиля.
-	candidate := legacy
-	candidate.Name = "Другое имя"
-	if _, err = service.UpdateProfile(context.Background(), candidate, legacy.Revision); err != nil || u.repository.profile.Profile != legacy.Profile {
-		t.Fatalf("Переименование применило новые ограничения к legacy: %v", err)
+	// replacement содержит другой допустимый полный профиль без старого режима выбора версии.
+	replacement := current
+	replacement.Profile = validProfile()
+	if _, err = service.UpdateProfile(context.Background(), replacement, current.Revision+1); !errors.Is(err, core.ErrConflict) || u.repository.writes != 0 {
+		t.Fatal("Устаревшая замена прошла CAS", err)
 	}
-	candidate = u.repository.profile
-	candidate.Profile = encodedProfile(core.VideoEncoderNVENC, "vbr")
-	if _, err = service.UpdateProfile(context.Background(), candidate, candidate.Revision); err != nil {
-		t.Fatalf("Явное обновление legacy до v2 отклонено: %v", err)
+	if _, err = service.UpdateProfile(context.Background(), replacement, current.Revision); err != nil || u.repository.profile.Profile != replacement.Profile {
+		t.Fatal("Полная замена текущего профиля отклонена", err)
 	}
-	candidate = u.repository.profile
-	candidate.Name = "Профиль с новым именем"
-	if _, err = service.UpdateProfile(context.Background(), candidate, candidate.Revision); err != nil {
-		t.Fatalf("Переименование v2 отклонено: %v", err)
+	// renamed меняет только имя уже сохранённого профиля.
+	renamed := u.repository.profile
+	renamed.Name = "Новое имя"
+	if _, err = service.UpdateProfile(context.Background(), renamed, renamed.Revision); err != nil || u.repository.profile.Profile != replacement.Profile {
+		t.Fatal("Переименование изменило полный профиль", err)
 	}
 }

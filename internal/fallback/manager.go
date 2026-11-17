@@ -81,6 +81,12 @@ type Tools struct {
 	// Normalize при наличии преобразует принадлежащий менеджеру выход генератора перед окончательной
 	// проверкой.
 	Normalize func(context.Context, *os.File, io.Writer) error
+	// NormalizeForProfile получает явный профиль свежего результата генератора до Verify.
+	// При наличии имеет приоритет над прежним Normalize; готовые файлы сюда не передаются.
+	NormalizeForProfile func(context.Context, *os.File, io.Writer, core.GroupProfile) error
+	// NormalizeForSource переносит проверенный runtime HDR только в свежий выход своего генератора.
+	// При наличии получает единый Source поколения и имеет приоритет над прежними callbacks.
+	NormalizeForSource func(context.Context, *os.File, io.Writer, core.GroupProfile, Source) error
 	// VerifyLoopDuration при наличии сверяет фактический период варианта с вычисленной длиной петли.
 	VerifyLoopDuration func(context.Context, *os.File, time.Duration) error
 }
@@ -126,7 +132,7 @@ func NewManager(service *core.Service, files *FileStore, config Config) (*Manage
 	runner := Runner{Limits: config.Runner}
 	// probe использует рабочий ffprobe и те же ограничения для проверки и нормализации файлов.
 	probe := Prober{Binary: config.FFprobe, Runner: runner, Limits: config.Probe}
-	return NewManagerWithTools(service, files, config, Tools{Builder: ProductionBuilder(config.FFmpeg), Inspector: probe, Runner: runner, Normalize: probe.NormalizePrepared, VerifyLoopDuration: probe.VerifyLoopDuration})
+	return NewManagerWithTools(service, files, config, Tools{Builder: ProductionBuilder(config.FFmpeg), Inspector: probe, Runner: runner, NormalizeForProfile: probe.NormalizePreparedForProfile, NormalizeForSource: probe.NormalizePreparedForSource, VerifyLoopDuration: probe.VerifyLoopDuration})
 }
 
 // NewManagerWithTools проверяет зависимости и бюджеты, создавая менеджер с явными портами; при
@@ -583,7 +589,7 @@ func (m *Manager) execute(ctx context.Context, g core.FallbackGeneration, reader
 		runner := Runner{Limits: m.config.Runner, Scope: scope}
 		// probe проверяет и нормализует файлы через управляемый ffprobe текущей попытки.
 		probe := Prober{Binary: m.config.FFprobe, Runner: runner, Limits: m.config.Probe}
-		tools = Tools{Builder: ProductionBuilder(m.config.FFmpeg), Inspector: probe, Runner: runner, Normalize: probe.NormalizePrepared, VerifyLoopDuration: probe.VerifyLoopDuration}
+		tools = Tools{Builder: ProductionBuilder(m.config.FFmpeg), Inspector: probe, Runner: runner, NormalizeForProfile: probe.NormalizePreparedForProfile, NormalizeForSource: probe.NormalizePreparedForSource, VerifyLoopDuration: probe.VerifyLoopDuration}
 	}
 	// publication содержит проверенный исходник и полный комплект подготовленных вариантов.
 	publication, err := m.prepare(work, g, reader, tools, j)
@@ -696,6 +702,9 @@ func (m *Manager) prepare(ctx context.Context, g core.FallbackGeneration, reader
 	}
 	// observed содержит фактически проверенные вид, формат и длительность исходного файла.
 	observed, err := tools.Inspector.Source(ctx, input, g.Kind)
+	if err == nil && needsHDRSource(g.RequiredProfiles) {
+		observed, err = inspectHDRSource(ctx, tools.Inspector, input, observed)
+	}
 	err = errors.Join(err, input.Close())
 	if err != nil {
 		return core.GenerationPublication{}, err
@@ -722,8 +731,8 @@ func (m *Manager) prepare(ctx context.Context, g core.FallbackGeneration, reader
 // Генерирует вариант с полной длиной петли, при наличии порта нормализует его и проверяет содержимое
 // до конечного переименования; возвращает манифест с размером, SHA256 и фактическим форматом.
 func (m *Manager) variant(ctx context.Context, g core.FallbackGeneration, p core.RequiredProfile, source Source, size uint64, hash string, tools Tools) (core.FallbackVariant, error) {
-	// loop содержит длительность варианта на общей сетке видео и AAC. err сообщает о невозможности
-	// уложить её в предел.
+	// loop содержит длительность варианта на общей сетке видеокадров и полных кадров выбранного
+	// аудиокодека; err сообщает о невозможности уложить её в предел.
 	loop, err := EffectiveLoopDuration(source.Duration, p.Profile, m.config.Probe.MaxDuration)
 	if err != nil {
 		return core.FallbackVariant{}, err
@@ -760,8 +769,20 @@ func (m *Manager) variant(ctx context.Context, g core.FallbackGeneration, p core
 	}
 	// staging содержит путь файла, который проходит окончательную проверку и переименование.
 	staging := p.StagingPath
-	// normalize содержит необязательный порт нормализации выхода генератора.
+	// normalize содержит необязательный прежний порт нормализации выхода генератора.
 	normalize := tools.Normalize
+	if tools.NormalizeForProfile != nil {
+		// Обёртка передаёт профиль только для только что завершившегося кодирования этого варианта.
+		normalize = func(ctx context.Context, input *os.File, output io.Writer) error {
+			return tools.NormalizeForProfile(ctx, input, output, p.Profile)
+		}
+	}
+	if tools.NormalizeForSource != nil {
+		// Обёртка передаёт единый проверенный source и профиль только свежему результату этого варианта.
+		normalize = func(ctx context.Context, input *os.File, output io.Writer) error {
+			return tools.NormalizeForSource(ctx, input, output, p.Profile, source)
+		}
+	}
 	if normalize != nil {
 		staging = p.StagingPath + ".normalized"
 		_, err = m.service.RegisterPreparationFile(ctx, core.PreparationFenceFor(g), core.OwnedFile{ManagedPath: staging, Kind: core.OwnedStaging})

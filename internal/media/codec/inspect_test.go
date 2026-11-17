@@ -73,6 +73,7 @@ func TestH264GateRequiresSlicePPSAndActualIDR(t *testing.T) {
 
 // Проверяет приём корректного AAC AU, отказ для ADTS/ADIF и несовпадающего с ASC формата, а также
 // ошибку совместимости пустых форматов.
+// t фиксирует ошибки разбора и сравнения фактических форматов.
 func TestAACBoundariesAndActualConfig(t *testing.T) {
 	// headers содержит ASC стереофонического AAC-LC 48 кГц.
 	headers := []byte{0x11, 0x90}
@@ -103,7 +104,7 @@ func TestAACBoundariesAndActualConfig(t *testing.T) {
 	if _, err = inspector.Inspect(p); !errors.Is(err, ErrCodec) {
 		t.Fatal(err)
 	}
-	if err = Compatible(core.MediaFormat{}, core.MediaFormat{}); !errors.Is(err, ErrCodec) {
+	if err = CompatibleActual(core.MediaFormat{}, core.MediaFormat{}); !errors.Is(err, ErrCodec) {
 		t.Fatal(err)
 	}
 }

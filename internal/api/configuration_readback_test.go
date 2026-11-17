@@ -2,11 +2,13 @@ package api_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +68,25 @@ func readbackFields(t *testing.T, value map[string]any, fields map[string]string
 	}
 }
 
+// readbackNumbers требует числовые JSON-токены и точное uint64 каждого указанного поля.
+// Строка с теми же цифрами считается нарушением публичного контракта.
+func readbackNumbers(t *testing.T, value map[string]any, fields map[string]uint64) {
+	t.Helper()
+	// field задаёт имя числового поля; want содержит точное ожидаемое значение.
+	for field, want := range fields {
+		// token содержит исходную запись числа; ok исключает строку, null и отсутствие поля.
+		token, ok := value[field].(json.Number)
+		if !ok {
+			t.Fatalf("поле %s не является JSON-числом: %#v", field, value[field])
+		}
+		// got содержит точное целое; err выявляет дробь, знак или переполнение uint64.
+		got, err := strconv.ParseUint(token.String(), 10, 64)
+		if err != nil || got != want {
+			t.Fatalf("поле %s: got=%s want=%d err=%v", field, token, want, err)
+		}
+	}
+}
+
 // readbackItems требует массив заданной длины и возвращает его элементы как объекты для последующих
 // проверок.
 func readbackItems(t *testing.T, value map[string]any, count int) []map[string]any {
@@ -110,7 +131,7 @@ func TestAcceptanceConfigurationReturnsExactSavedKeysAndFullEndpoints(t *testing
 		id := s["id"].(string)
 		streams[id] = publicationKey
 		readbackFields(t, s, map[string]string{"publication_key": publicationKey})
-		s = readbackObject(t, f.api, "PATCH", "/streams/"+id, `{"expected_revision":"1","name":"Новое имя"}`, 200)
+		s = readbackObject(t, f.api, "PATCH", "/streams/"+id, `{"expected_revision":1,"name":"Новое имя"}`, 200)
 		readbackFields(t, s, map[string]string{"publication_key": publicationKey, "name": "Новое имя"})
 		// g содержит группу текущего потока и общего профиля; err содержит отказ создания.
 		g, err := f.service.CreateGroup(context.Background(), core.TranscodeGroup{Name: "Группа чтения", StreamID: core.ID(id), ProfileID: p.ID})
@@ -136,7 +157,7 @@ func TestAcceptanceConfigurationReturnsExactSavedKeysAndFullEndpoints(t *testing
 			patchedKey = "synthetic-patched-key/+?exact=%2F"
 		}
 		endpoint += "&patched=true"
-		d = readbackObject(t, f.api, "PATCH", "/destinations/"+destinationID, fmt.Sprintf(`{"expected_revision":"1","endpoint":%q,"stream_key":%q}`, endpoint, patchedKey), 200)
+		d = readbackObject(t, f.api, "PATCH", "/destinations/"+destinationID, fmt.Sprintf(`{"expected_revision":1,"endpoint":%q,"stream_key":%q}`, endpoint, patchedKey), 200)
 		fields = map[string]string{"endpoint": endpoint, "stream_key": patchedKey, "stream_id": id}
 		readbackFields(t, d, fields)
 		destinations[destinationID] = fields
@@ -227,18 +248,20 @@ func readbackHistory(t *testing.T, handler http.Handler, s core.Session, o core.
 	for _, v := range sessions {
 		// stream содержит сохранённый в Session снимок исходных имени, ключа и ревизии Stream.
 		stream := v["stream"].(map[string]any)
-		readbackFields(t, stream, map[string]string{"id": string(s.StreamID), "publication_key": s.Snapshot.Stream.PublicationKey, "name": s.Snapshot.Stream.Name, "revision": fmt.Sprint(s.Snapshot.Stream.Revision)})
+		readbackFields(t, stream, map[string]string{"id": string(s.StreamID), "publication_key": s.Snapshot.Stream.PublicationKey, "name": s.Snapshot.Stream.Name})
 		// policy содержит сохранённую в снимке политику заглушки с исходным AssetID и сроками.
 		policy := stream["fallback"].(map[string]any)
 		readbackFields(t, policy, map[string]string{"asset_id": string(s.Snapshot.Stream.Fallback.AssetID)})
-		readbackFields(t, policy["watchdog"].(map[string]any), map[string]string{"video_timeout_ns": fmt.Sprint(s.Snapshot.Stream.Fallback.Watchdog.VideoTimeout.Nanoseconds())})
+		readbackNumbers(t, stream, map[string]uint64{"revision": s.Snapshot.Stream.Revision})
+		readbackNumbers(t, policy["watchdog"].(map[string]any), map[string]uint64{"video_timeout_ns": uint64(s.Snapshot.Stream.Fallback.Watchdog.VideoTimeout.Nanoseconds())})
 	}
 	// outputs собирает страничное и одиночное представления исторического выхода.
 	outputs := readbackItems(t, readbackObject(t, handler, "GET", sessionPath+"/outputs", "", 200), 1)
 	outputs = append(outputs, readbackObject(t, handler, "GET", sessionPath+"/outputs/"+string(o.ID), "", 200))
 	// v содержит очередное представление Output для проверки самостоятельных назначения и политики.
 	for _, v := range outputs {
-		readbackFields(t, v["destination"].(map[string]any), map[string]string{"id": string(o.Snapshot.Destination.ID), "endpoint": o.Snapshot.Destination.Endpoint, "stream_key": o.Snapshot.Destination.StreamKey, "revision": "1"})
+		readbackFields(t, v["destination"].(map[string]any), map[string]string{"id": string(o.Snapshot.Destination.ID), "endpoint": o.Snapshot.Destination.Endpoint, "stream_key": o.Snapshot.Destination.StreamKey})
+		readbackNumbers(t, v["destination"].(map[string]any), map[string]uint64{"revision": 1})
 		readbackFields(t, v["fallback"].(map[string]any), map[string]string{"asset_id": string(o.Snapshot.Fallback.AssetID)})
 	}
 }
@@ -369,12 +392,14 @@ func TestAcceptanceSavedConfigurationAndHistorySurviveReopenChangesAndDeletion(t
 	unchanged()
 	// changedDestination содержит ответ изменения текущего назначения, которое не должно менять
 	// исторический Output.
-	changedDestination := readbackObject(t, handler, "PATCH", "/destinations/"+string(d.ID), `{"expected_revision":"1","endpoint":"rtmp://localhost/changed?token=new","stream_key":"","name":"Следующее назначение"}`, 200)
-	readbackFields(t, changedDestination, map[string]string{"endpoint": "rtmp://localhost/changed?token=new", "stream_key": "", "name": "Следующее назначение", "revision": "2"})
+	changedDestination := readbackObject(t, handler, "PATCH", "/destinations/"+string(d.ID), `{"expected_revision":1,"endpoint":"rtmp://localhost/changed?token=new","stream_key":"","name":"Следующее назначение"}`, 200)
+	readbackFields(t, changedDestination, map[string]string{"endpoint": "rtmp://localhost/changed?token=new", "stream_key": "", "name": "Следующее назначение"})
+	readbackNumbers(t, changedDestination, map[string]uint64{"revision": 2})
 	// changedStream содержит ответ переименования и очистки текущей политики, которые не должны
 	// менять историческую Session.
-	changedStream := readbackObject(t, handler, "PATCH", "/streams/"+string(s.ID), `{"expected_revision":"2","name":"Следующий поток","fallback":null}`, 200)
-	readbackFields(t, changedStream, map[string]string{"name": "Следующий поток", "publication_key": s.PublicationKey, "revision": "3"})
+	changedStream := readbackObject(t, handler, "PATCH", "/streams/"+string(s.ID), `{"expected_revision":2,"name":"Следующий поток","fallback":null}`, 200)
+	readbackFields(t, changedStream, map[string]string{"name": "Следующий поток", "publication_key": s.PublicationKey})
+	readbackNumbers(t, changedStream, map[string]uint64{"revision": 3})
 	if changedStream["fallback"] != nil {
 		t.Fatal("текущая политика заглушки не очищена", changedStream)
 	}
@@ -433,7 +458,7 @@ func readbackSchemaFields(t *testing.T, schema map[string]any, fields ...string)
 		if field == "stream_key" {
 			// minimum содержит объявленную минимальную длину ключа; ok отмечает наличие
 			// ограничения, которое не должно запрещать пустую строку.
-			if minimum, ok := property["minLength"].(float64); ok && minimum > 0 {
+			if minimum, ok := property["minLength"].(json.Number); ok && minimum != json.Number("0") {
 				t.Fatal("схема запрещает пустой ключ", property)
 			}
 			if property["pattern"] != nil || property["enum"] != nil || property["const"] != nil {

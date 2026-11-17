@@ -238,7 +238,7 @@ func TestEncodingProfilesPreparedManagerFDPlayerGroupLoops(t *testing.T) {
 			probe := fallback.Prober{Binary: filepath.Join(filepath.Dir(binary), "ffprobe"), Runner: actualRunner, Limits: probeLimits}
 			// config задаёт версию генератора и бюджеты загрузки, подготовки и завершения
 			// менеджера заглушек.
-			config := fallback.Config{ReconcileLimit: 10, GeneratorVersion: "cpu-integration", FFmpeg: binary, FFprobe: probe.Binary, MaxUploadBytes: 1 << 20, MaxOutputBytes: 8 << 20, PrepareTimeout: 15 * time.Second, ShutdownTimeout: 3 * time.Second, QueueInterval: time.Millisecond, Runner: runner.Limits, Probe: probeLimits}
+			config := fallback.Config{ReconcileLimit: 10, GeneratorVersion: core.CurrentFallbackGeneratorVersion, FFmpeg: binary, FFprobe: probe.Binary, MaxUploadBytes: 1 << 20, MaxOutputBytes: 8 << 20, PrepareTimeout: 15 * time.Second, ShutdownTimeout: 3 * time.Second, QueueInterval: time.Millisecond, Runner: runner.Limits, Probe: probeLimits}
 			// builder строит CPU-команды, сохраняя штатные параметры AV1 и заменяя NVENC для
 			// H.264.
 			builder := encodingPipelineCPUBuilder(binary)

@@ -78,11 +78,11 @@ type managerFixture struct {
 }
 
 // fixtureProfile создаёт согласованные конфигурации AV1 и AAC и профиль копирования для проверочных
-// пакетов и подготовленного варианта.
+// пакетов и подготовленного варианта. t сообщает об ошибке разбора синтетических заголовков.
 func fixtureProfile(t testing.TB) (core.GroupProfile, media.CodecConfig, media.CodecConfig) {
 	t.Helper()
 	// headers задаёт AV1-конфигурацию для проверяемых медиапакетов.
-	headers := []byte{0x81, 8, 0x0c, 0, 0x0a, 11, 0, 0, 0, 66, 167, 191, 228, 96, 13, 0, 64}
+	headers := []byte{0x81, 8, 0x0c, 0, 0x0a, 14, 0, 0, 0, 66, 167, 191, 228, 96, 13, 16, 16, 16, 16, 64}
 	// payload объединяет заголовок последовательности AV1 и независимый кадр для определения
 	// формата.
 	payload := append(append([]byte(nil), headers[4:]...), 0x1a, 1, 0x10)
@@ -111,7 +111,7 @@ func fixtureProfile(t testing.TB) (core.GroupProfile, media.CodecConfig, media.C
 	}
 	// profile задаёт режим копирования, проверенные форматы и параметры кодирования подготовленной
 	// группы.
-	profile := core.GroupProfile{Mode: core.ModeCopy, Format: core.MediaFormat{Video: video, Audio: audio}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 1000, MaxBitrateBPS: 1000, BufferBits: 1000, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 128000}}
+	profile := core.GroupProfile{Mode: core.ModeCopy, LiveAudioMode: core.LiveAudioCopy, Encoding: core.DefaultEncoding(core.ModeCopy, core.VideoEncoderSVTAV1, core.RateControlCBR), Format: core.MediaFormat{Video: video, Audio: audio}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 1000, MaxBitrateBPS: 1000, BufferBits: 1000, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 128000}}
 	return profile, v, a
 }
 
@@ -191,7 +191,7 @@ func newManagerFixture(t *testing.T, enabled bool, modify func(*Config)) manager
 		t.Fatal(err)
 	}
 	// generation содержит зарезервированное поколение подготовки и требуемые файлы профилей.
-	generation, err := service.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: "test-generator"})
+	generation, err := service.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: core.CurrentFallbackGeneratorVersion})
 	if err != nil {
 		t.Fatal(err)
 	}

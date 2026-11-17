@@ -10,18 +10,18 @@ import (
 // RateDTO передаёт доступность оконной скорости, её значение и фактические границы измерения.
 type RateDTO struct {
 	// Status сообщает доступность скорости, включая прогрев, устаревание и сброс счётчика.
-	Status string `json:"status"`
+	Status string `json:"status" enum:"available,warming_up,unavailable,stale,saturated,counter_reset,unsupported"`
 	// Reason объясняет причину текущей доступности скорости.
-	Reason string `json:"reason"`
+	Reason string `json:"reason" enum:",unsupported_platform,library_unavailable,driver_unavailable,not_supported,not_found,collection_failed,source_absent,disconnected,invalid_sample,counter_regression,counter_saturated,observation_failed,cgo_disabled,permission_denied,device_lost,provider_error,budget_exceeded,busy,stale,warming_up"`
 	// Value содержит измеренную скорость только при available; null сохраняет отличие недоступности
 	// от нуля.
-	Value *float64 `json:"value"`
+	Value *float64 `json:"value" minimum:"0"`
 	// WindowStart содержит начало фактического окна в UTC либо null при неизвестном времени.
 	WindowStart *time.Time `json:"window_start"`
 	// WindowEnd содержит конец фактического окна в UTC либо null при неизвестном времени.
 	WindowEnd *time.Time `json:"window_end"`
 	// DurationNS содержит точную длительность фактического окна в наносекундах.
-	DurationNS Decimal `json:"duration_ns"`
+	DurationNS Decimal `json:"duration_ns" maximum:"9223372036854775807"`
 }
 
 // rateDTO раскрывает численное значение только доступного измерения и сохраняет причину и границы
@@ -58,9 +58,9 @@ type RatesDTO struct {
 // ObservedFormatDTO передаёт фактически наблюдаемые кодеки, размеры видео и параметры аудио.
 type ObservedFormatDTO struct {
 	// VideoCodec содержит идентификатор наблюдаемого видеокодека.
-	VideoCodec string `json:"video_codec"`
+	VideoCodec string `json:"video_codec" enum:",UNKNOWN,av1,h264,hevc,vp9"`
 	// AudioCodec содержит идентификатор наблюдаемого аудиокодека.
-	AudioCodec string `json:"audio_codec"`
+	AudioCodec string `json:"audio_codec" enum:",UNKNOWN,aac,opus,flac,mp3,ac3"`
 	// Width содержит наблюдаемую ширину видеокадра в пикселях.
 	Width uint32 `json:"width"`
 	// Height содержит наблюдаемую высоту видеокадра в пикселях.
@@ -98,7 +98,7 @@ type MediaMetricsDTO struct {
 func mediaDTO(m core.MediaMetrics) MediaMetricsDTO {
 	// f содержит описание формата производителя для переноса точных параметров в DTO.
 	f := m.Format
-	return MediaMetricsDTO{timestamp(m.SampledAt), Decimal(m.VideoFrames), Decimal(m.PayloadBytes), Decimal(m.WrittenBytes), Decimal(m.AudioUnits), m.Saturated, timestamp(m.LastFrame), RatesDTO{rateDTO(m.Rates.FPS), rateDTO(m.Rates.PayloadBitrate), rateDTO(m.Rates.WrittenBitrate)}, ObservedFormatDTO{string(f.VideoCodec), string(f.AudioCodec), f.Width, f.Height, f.SampleRateHz, f.Channels}}
+	return MediaMetricsDTO{timestamp(m.SampledAt), Decimal(m.VideoFrames), Decimal(m.PayloadBytes), Decimal(m.WrittenBytes), Decimal(m.AudioUnits), m.Saturated, timestamp(m.LastFrame), RatesDTO{rateDTO(m.Rates.FPS), rateDTO(m.Rates.PayloadBitrate), rateDTO(m.Rates.WrittenBitrate)}, ObservedFormatDTO{knownObserved(string(f.VideoCodec), observedValues("video.codec")), knownObserved(string(f.AudioCodec), observedValues("audio.codec")), f.Width, f.Height, f.SampleRateHz, f.Channels}}
 }
 
 // InputMetricsDTO дополняет медиасчётчики входа точной эпохой его источника.
@@ -199,14 +199,13 @@ type FFmpegProgressDTO struct {
 	// DropFrames содержит число отброшенных кадров либо null.
 	DropFrames *Decimal `json:"drop_frames"`
 	// FPS содержит сообщённую FFmpeg частоту кадров либо null.
-	FPS *float64 `json:"fps"`
+	FPS *float64 `json:"fps" minimum:"0"`
 	// BitrateBPS содержит сообщённый FFmpeg битрейт в битах за секунду либо null.
-	BitrateBPS *float64 `json:"bitrate_bps"`
+	BitrateBPS *float64 `json:"bitrate_bps" minimum:"0"`
 	// Speed содержит сообщённую скорость обработки относительно реального времени либо null.
-	Speed *float64 `json:"speed"`
-	// OutTimeUS содержит знаковое время выхода FFmpeg в микросекундах как точную десятичную строку
-	// либо null.
-	OutTimeUS *string `json:"out_time_us"`
+	Speed *float64 `json:"speed" minimum:"0"`
+	// OutTimeUS содержит точное знаковое время выхода FFmpeg в микросекундах либо null.
+	OutTimeUS *int64 `json:"out_time_us"`
 	// End показывает завершающий отчёт progress FFmpeg.
 	End bool `json:"end"`
 }
@@ -235,9 +234,9 @@ func optionalFloat(v core.OptionalFloat64) *float64 {
 // FFmpegMetricsDTO передаёт доступность отчёта FFmpeg, времена и точные потери диагностики.
 type FFmpegMetricsDTO struct {
 	// Status сообщает доступность текущего отчёта FFmpeg.
-	Status string `json:"status"`
+	Status string `json:"status" enum:"available,warming_up,unavailable,stale,saturated,counter_reset,unsupported"`
 	// Reason объясняет прогрев, устаревание или иную недоступность FFmpeg-измерения.
-	Reason string `json:"reason"`
+	Reason string `json:"reason" enum:",unsupported_platform,library_unavailable,driver_unavailable,not_supported,not_found,collection_failed,source_absent,disconnected,invalid_sample,counter_regression,counter_saturated,observation_failed,cgo_disabled,permission_denied,device_lost,provider_error,budget_exceeded,busy,stale,warming_up"`
 	// SampledAt содержит время снимка работника FFmpeg в UTC либо null.
 	SampledAt *time.Time `json:"sampled_at"`
 	// LastProgressAt содержит время последнего принятого отчёта progress в UTC либо null.
@@ -251,8 +250,8 @@ type FFmpegMetricsDTO struct {
 }
 
 // ffmpegMetricsDTO сохраняет статусы, времена и потери FFmpeg и добавляет Progress только при
-// MetricAvailable и HasProgress. Отсутствующие поля отчёта остаются nil, а знаковое время передаётся
-// десятичной строкой.
+// MetricAvailable и HasProgress. Отсутствующие поля отчёта остаются nil, а знаковое время
+// сохраняет полный диапазон int64 в микросекундах.
 func ffmpegMetricsDTO(m *core.FFmpegMetrics) *FFmpegMetricsDTO {
 	if m == nil {
 		return nil
@@ -270,11 +269,11 @@ func ffmpegMetricsDTO(m *core.FFmpegMetrics) *FFmpegMetricsDTO {
 		// p содержит исходный присутствующий отчёт FFmpeg для преобразования необязательных
 		// полей.
 		p := m.Progress
-		// out содержит знаковое время отчёта как строку либо nil при отсутствии OutTimeUS.
-		var out *string
+		// out содержит знаковое время отчёта либо nil при отсутствии OutTimeUS.
+		var out *int64
 		if p.OutTimeUS.Present {
-			// x содержит точную десятичную запись знакового времени выхода в микросекундах.
-			x := strconv.FormatInt(p.OutTimeUS.Value, 10)
+			// x содержит отдельную точную копию времени выхода в микросекундах.
+			x := p.OutTimeUS.Value
 			out = &x
 		}
 		v.Progress = &FFmpegProgressDTO{optionalUint(p.Frame), optionalUint(p.TotalSizeBytes), optionalUint(p.DupFrames), optionalUint(p.DropFrames), optionalFloat(p.FPS), optionalFloat(p.BitrateBitsPerSecond), optionalFloat(p.Speed), out, p.End}
@@ -285,9 +284,9 @@ func ffmpegMetricsDTO(m *core.FFmpegMetrics) *FFmpegMetricsDTO {
 // GPUMetricDTO передаёт точное значение GPU только при доступности, сохраняя времена и причину отказа.
 type GPUMetricDTO struct {
 	// Status сообщает текущую доступность отдельного GPU-показателя.
-	Status string `json:"status"`
+	Status string `json:"status" enum:"available,warming_up,unavailable,stale,saturated,counter_reset,unsupported"`
 	// Reason объясняет текущую недоступность или успешное состояние GPU-показателя.
-	Reason string `json:"reason"`
+	Reason string `json:"reason" enum:",unsupported_platform,library_unavailable,driver_unavailable,not_supported,not_found,collection_failed,source_absent,disconnected,invalid_sample,counter_regression,counter_saturated,observation_failed,cgo_disabled,permission_denied,device_lost,provider_error,budget_exceeded,busy,stale,warming_up"`
 	// Value содержит точные проценты или байты согласно показателю только при available; иначе null.
 	Value *Decimal `json:"value"`
 	// SampledAt содержит UTC-время снимка показателя либо null.
@@ -334,13 +333,13 @@ type GPUDeviceDTO struct {
 // GPUDTO возвращает системный снимок GPU независимо от отдельных медиасессий.
 type GPUDTO struct {
 	// Status сообщает общую доступность источника GPU.
-	Status string `json:"status"`
+	Status string `json:"status" enum:"available,warming_up,unavailable,stale,saturated,counter_reset,unsupported"`
 	// Reason объясняет общий итог источника GPU.
-	Reason string `json:"reason"`
+	Reason string `json:"reason" enum:",unsupported_platform,library_unavailable,driver_unavailable,not_supported,not_found,collection_failed,source_absent,disconnected,invalid_sample,counter_regression,counter_saturated,observation_failed,cgo_disabled,permission_denied,device_lost,provider_error,budget_exceeded,busy,stale,warming_up"`
 	// SampledAt содержит UTC-время последнего общего опроса либо null.
 	SampledAt *time.Time `json:"sampled_at"`
 	// StaleAfterNS содержит точный срок свежести GPU-полей в наносекундах.
-	StaleAfterNS Decimal `json:"stale_after_ns"`
+	StaleAfterNS Decimal `json:"stale_after_ns" minimum:"1" maximum:"9223372036854775807"`
 	// Devices содержит текущие устройства с независимыми статусами показателей.
 	Devices []GPUDeviceDTO `json:"devices"`
 }
@@ -372,7 +371,7 @@ type ObservationDTO struct {
 	// ObservedAt содержит UTC-время последнего наблюдения либо null.
 	ObservedAt *time.Time `json:"observed_at"`
 	// State содержит наблюдаемое состояние владельца, отдельно от сохранённой истории.
-	State string `json:"state"`
+	State string `json:"state" enum:"UNKNOWN,STARTING,READY,RETRYING,FAILED,STOPPED"`
 	// Failure содержит безопасное обозначение ошибки наблюдения либо null.
 	Failure *FailureDTO `json:"failure"`
 }
@@ -406,7 +405,7 @@ type RuntimeGroupDTO struct {
 	// ProfileID указывает конфигурационный профиль текущего экземпляра группы.
 	ProfileID string `json:"profile_id"`
 	// Source содержит наблюдаемый выбранный источник группы.
-	Source string `json:"source"`
+	Source string `json:"source" enum:"NONE,LIVE,FALLBACK"`
 	// SourceRevision содержит точную ревизию выбора источника группы.
 	SourceRevision Decimal `json:"source_revision"`
 	// Metrics содержит независимые измерения двух входов и общего выхода группы либо null.
@@ -430,7 +429,7 @@ type RuntimeFFmpegDTO struct {
 	// GroupInstanceID связывает работника с публичным текущим экземпляром медиагруппы.
 	GroupInstanceID string `json:"group_instance_id"`
 	// Role содержит роль FFmpeg в группе.
-	Role string `json:"role"`
+	Role string `json:"role" enum:",live_transcode,fallback_player"`
 	// Metrics содержит доступность и поля progress работника либо null.
 	Metrics *FFmpegMetricsDTO `json:"metrics"`
 }
@@ -529,11 +528,19 @@ type AnchorDTO struct {
 // SessionMetricsDTO явно разделяет доступный текущий снимок и причину его отсутствия.
 type SessionMetricsDTO struct {
 	// Availability содержит available или unavailable для текущего исполнения Session.
-	Availability string `json:"availability"`
+	Availability string `json:"availability" enum:"available,unavailable"`
 	// Reason объясняет отсутствие текущего наблюдения либо терминальную Session.
-	Reason string `json:"reason"`
+	Reason string `json:"reason" enum:",not_observed,session_terminal"`
 	// Snapshot содержит текущий оперативный снимок только при available; иначе null.
 	Snapshot *RuntimeSessionDTO `json:"snapshot"`
+}
+
+// ResyncRequiredDTO сообщает, почему SSE-подписчику нужен новый атомарный снимок.
+type ResyncRequiredDTO struct {
+	// Reason сообщает о пропуске событий, смене эпохи либо превышении размера кадра.
+	Reason string `json:"reason" enum:"gap,reset,frame_limit,source_unavailable"`
+	// SnapshotURL указывает маршрут получения нового снимка и позиции подписки.
+	SnapshotURL string `json:"snapshot_url"`
 }
 
 // RuntimeEventDTO передаёт безопасные типизированные данные одного события RAM-потока.
@@ -541,9 +548,9 @@ type RuntimeEventDTO struct {
 	// Cursor содержит публичную позицию этого события для продолжения подписки.
 	Cursor string `json:"cursor"`
 	// Kind содержит вид изменения оперативного состояния.
-	Kind string `json:"kind"`
+	Kind string `json:"kind" enum:"state,metrics,input,gpu,removed,attempt"`
 	// Owner содержит вид владельца, к которому относится событие.
-	Owner string `json:"owner"`
+	Owner string `json:"owner" enum:"session,group,output,ffmpeg,system"`
 	// SessionID указывает Session события, если оно относится к медиасессии.
 	SessionID string `json:"session_id"`
 	// OutputID указывает выход события, если оно относится к исходящему исполнению.
@@ -553,19 +560,19 @@ type RuntimeEventDTO struct {
 	// ProfileID указывает конфигурационный профиль события.
 	ProfileID string `json:"profile_id"`
 	// Observation содержит публичную идентичность и состояние точного наблюдателя события.
-	Observation ObservationDTO `json:"observation"`
+	Observation EventObservationDTO `json:"observation"`
 	// GroupInstanceID связывает событие работника с публичным экземпляром группы.
 	GroupInstanceID string `json:"group_instance_id"`
 	// Source содержит наблюдаемый источник группы в событии.
-	Source string `json:"source"`
+	Source string `json:"source" enum:",NONE,LIVE,FALLBACK"`
 	// SourceRevision содержит точную ревизию выбора источника в событии.
 	SourceRevision Decimal `json:"source_revision"`
 	// Role содержит роль FFmpeg, если событие относится к работнику.
-	Role string `json:"role"`
+	Role string `json:"role" enum:",live_transcode,fallback_player"`
 	// AttemptActive сообщает активность наблюдаемой попытки в событии.
 	AttemptActive bool `json:"attempt_active"`
 	// Reason содержит ограниченную причину изменения или недоступности события.
-	Reason string `json:"reason"`
+	Reason string `json:"reason" enum:",unsupported_platform,library_unavailable,driver_unavailable,not_supported,not_found,collection_failed,source_absent,disconnected,invalid_sample,counter_regression,counter_saturated,observation_failed,cgo_disabled,permission_denied,device_lost,provider_error,budget_exceeded,busy,stale,warming_up"`
 	// Input содержит типизированный снимок входа, если он приложен к событию.
 	Input *InputDTO `json:"input"`
 	// Group содержит измерения группы, если они приложены к событию.
@@ -587,5 +594,5 @@ func runtimeEventDTO(e core.RuntimeEvent) RuntimeEventDTO {
 	if e.OutputState != "" {
 		state = string(e.OutputState)
 	}
-	return RuntimeEventDTO{encodeCursor(e.Cursor), string(e.Kind), string(e.Owner), string(e.Session.SessionID), string(e.Execution.OutputID), string(e.ConfigGroupID), string(e.ConfigProfileID), observationDTO(e.Cursor.Epoch, e.Stamp, state, e.Reason == core.ReasonObservationFailed), publicInstance(e.Cursor.Epoch, e.GroupInstanceID), string(e.Source), Decimal(e.SourceRevision), string(e.Role), e.AttemptActive, string(e.Reason), inputDTO(e.Input), groupMetricsDTO(e.Group), outputMetricsDTO(e.Output), ffmpegMetricsDTO(e.FFmpeg), gpuDTO(e.GPU)}
+	return RuntimeEventDTO{encodeCursor(e.Cursor), string(e.Kind), string(e.Owner), string(e.Session.SessionID), string(e.Execution.OutputID), string(e.ConfigGroupID), string(e.ConfigProfileID), EventObservationDTO(observationDTO(e.Cursor.Epoch, e.Stamp, state, e.Reason == core.ReasonObservationFailed)), publicInstance(e.Cursor.Epoch, e.GroupInstanceID), string(e.Source), Decimal(e.SourceRevision), string(e.Role), e.AttemptActive, string(e.Reason), inputDTO(e.Input), groupMetricsDTO(e.Group), outputMetricsDTO(e.Output), ffmpegMetricsDTO(e.FFmpeg), gpuDTO(e.GPU)}
 }

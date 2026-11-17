@@ -149,6 +149,7 @@ func normalize(value any) (any, error) {
 		return v, nil
 	case core.Session:
 		v.Record = record
+		v.FailureReason = core.CloneFailureReason(v.FailureReason)
 		if v.EndedAt != nil {
 			// t содержит нормализованное время завершения сессии, а e — результат проверки
 			// его представимости.
@@ -164,7 +165,8 @@ func normalize(value any) (any, error) {
 		return v, v.Validate()
 	case core.CommandReceipt:
 		v.Record = record
-		return v, nil
+		v.FailureReason = core.CloneFailureReason(v.FailureReason)
+		return v, v.ValidateFailureReason()
 	case core.CleanupIntent:
 		v.Record = record
 		if err = v.Validate(); err != nil {
@@ -369,7 +371,7 @@ func updateValue(ctx context.Context, r *repositories, table string, value any, 
 		return err
 	}
 	if rec.Revision != next {
-		return core.ErrConflict
+		return core.WithFailureReason(core.ErrConflict, core.FailureReason{Code: core.FailureRevisionConflict, Field: core.FailureFieldRevision})
 	}
 	// old принимает прежнюю строку для проверки ревизии и неизменяемых метаданных.
 	var old metadataRow
@@ -377,7 +379,7 @@ func updateValue(ctx context.Context, r *repositories, table string, value any, 
 		return translate(err)
 	}
 	if old.Revision != decimal(expected) {
-		return core.ErrConflict
+		return core.WithFailureReason(core.ErrConflict, core.FailureReason{Code: core.FailureRevisionConflict, Field: core.FailureFieldRevision, Context: storedFailureContext(table, old.ID)})
 	}
 	if old.CreatedAt != rec.CreatedAt.UnixMicro() {
 		return core.ErrConflict
@@ -399,7 +401,7 @@ func updateValue(ctx context.Context, r *repositories, table string, value any, 
 		return translate(result.Error)
 	}
 	if result.RowsAffected != 1 {
-		return core.ErrConflict
+		return core.WithFailureReason(core.ErrConflict, core.FailureReason{Code: core.FailureRevisionConflict, Field: core.FailureFieldRevision, Context: storedFailureContext(table, old.ID)})
 	}
 	return nil
 }
@@ -415,7 +417,7 @@ func deleteValue(ctx context.Context, r *repositories, table string, id core.ID,
 	// result содержит результат условного DELETE для различения успеха и конфликта.
 	result := db.Table(table).Where("id = ? AND revision = ?", id, decimal(expected)).Delete(map[string]any{})
 	if result.Error != nil {
-		return translate(result.Error)
+		return deletionFailure(ctx, r, table, id, result.Error)
 	}
 	if result.RowsAffected != 1 {
 		// row принимает оставшуюся строку для различения отсутствия ID и неверной ревизии.
@@ -423,7 +425,7 @@ func deleteValue(ctx context.Context, r *repositories, table string, id core.ID,
 		if err = db.Table(table).Where("id = ?", id).Take(&row).Error; err != nil {
 			return translate(err)
 		}
-		return core.ErrConflict
+		return core.WithFailureReason(core.ErrConflict, core.FailureReason{Code: core.FailureRevisionConflict, Field: core.FailureFieldRevision, Context: storedFailureContext(table, row.ID)})
 	}
 	return nil
 }
@@ -510,6 +512,9 @@ func immutable(data []byte, value any) error {
 			return errors.Join(core.ErrCorrupt, err)
 		}
 		bad = old.StreamID != v.StreamID || old.Incarnation != v.Incarnation || !same(old.Snapshot, v.Snapshot)
+		if old.State.Terminal() {
+			bad = bad || !same(old.FailureReason, v.FailureReason)
+		}
 	case core.SessionOutput:
 		// old принимает прежнее значение выхода для сравнения сохраняемых полей.
 		var old core.SessionOutput
@@ -526,6 +531,9 @@ func immutable(data []byte, value any) error {
 			return errors.Join(core.ErrCorrupt, err)
 		}
 		bad = old.RequestID != v.RequestID || old.Kind != v.Kind || old.TargetID != v.TargetID || old.Fingerprint != v.Fingerprint || !bytes.Equal(old.Identity, v.Identity) || old.SessionID != v.SessionID || old.OutputID != v.OutputID || old.Incarnation != v.Incarnation
+		if old.Status.Terminal() {
+			bad = bad || !same(old.FailureReason, v.FailureReason)
+		}
 	case core.CleanupIntent:
 		// old принимает прежнее значение намерения очистки для сравнения сохраняемых полей.
 		var old core.CleanupIntent

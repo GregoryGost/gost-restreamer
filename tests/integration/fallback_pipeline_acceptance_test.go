@@ -30,6 +30,7 @@ import (
 
 // Задаёт профиль заглушки 128×128, 30 FPS и стереофонический AAC 48 kHz; AV1 использует copy, H.264 —
 // transcode.
+// codec выбирает AV1 либо H.264 для выходного видеопрофиля.
 func fallbackPipelineProfile(codec core.Codec) core.GroupProfile {
 	// mode выбирает copy для AV1 либо transcode для H.264, а profile задаёт соответствующий профиль
 	// кодека main или high.
@@ -37,11 +38,19 @@ func fallbackPipelineProfile(codec core.Codec) core.GroupProfile {
 	if codec == core.CodecH264 {
 		mode, profile = core.ModeTranscode, "high"
 	}
-	return core.GroupProfile{Mode: mode, Format: core.MediaFormat{Video: core.VideoFormat{Codec: codec, Width: 128, Height: 128, FrameRate: core.FrameRate{Numerator: 30, Denominator: 1}, CodecProfile: profile, PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 200000, MaxBitrateBPS: 200000, BufferBits: 400000, GOPFrames: 15, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 64000}}
+	// p содержит полный текущий профиль с выбранной обработкой видео.
+	p := core.GroupProfile{Mode: mode, LiveAudioMode: core.LiveAudioCopy, Format: core.MediaFormat{Video: core.VideoFormat{Codec: codec, Width: 128, Height: 128, FrameRate: core.FrameRate{Numerator: 30, Denominator: 1}, CodecProfile: profile, PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 200000, MaxBitrateBPS: 200000, BufferBits: 400000, GOPFrames: 15, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 64000}}
+	p.Encoding = core.DefaultEncoding(mode, core.VideoEncoderNVENC, core.RateControlVBR)
+	if codec == core.CodecAV1 {
+		p.Encoding = core.DefaultEncoding(mode, core.VideoEncoderSVTAV1, core.RateControlCBR)
+	}
+	return p
 }
 
 // Подстановка кодировщика принадлежит только CPU-тесту; остальные аргументы формирует ProductionBuilder.
+// binary задаёт путь разрешённого FFmpeg для построения команды CPU-проверки.
 func fallbackPipelineCPUBuilder(binary string) fallback.CommandBuilder {
+	// request содержит проверенный источник, полный выходной профиль и длительность подготавливаемой петли.
 	return func(request fallback.GenerateRequest) (fallback.Command, error) {
 		// Подменяет рабочий рецепт генерации командами libx264 и libaom-av1 для CPU-проверки с совместимыми
 		// параметрами кодировщиков.
@@ -60,7 +69,7 @@ func fallbackPipelineCPUBuilder(binary string) fallback.CommandBuilder {
 			// arg содержит текущий аргумент после необходимой замены аппаратного кодировщика
 			// на CPU-кодировщик.
 			arg := c.Args[i]
-			if arg == "-svtav1-params" || arg == "-preset" || arg == "-no-scenecut" || arg == "-forced-idr" {
+			if arg == "-svtav1-params" || arg == "-preset" || arg == "-no-scenecut" || arg == "-forced-idr" || arg == "-rc" || arg == "-tune" || arg == "-multipass" || arg == "-rc-lookahead" || arg == "-spatial-aq" || arg == "-temporal-aq" || arg == "-aq-strength" || arg == "-nonref_p" || arg == "-strict_gop" {
 				i++
 				continue
 			}
@@ -719,7 +728,7 @@ func TestFallbackPipelineCPUGenerationFDLoopsAndDecode(t *testing.T) {
 			probe := fallback.Prober{Binary: filepath.Join(filepath.Dir(binary), "ffprobe"), Runner: actualRunner, Limits: probeLimits}
 			// config задаёт версию генератора и бюджеты загрузки, подготовки и завершения
 			// менеджера.
-			config := fallback.Config{ReconcileLimit: 10, GeneratorVersion: "cpu-integration", FFmpeg: binary, FFprobe: probe.Binary, MaxUploadBytes: 1 << 20, MaxOutputBytes: 8 << 20, PrepareTimeout: 15 * time.Second, ShutdownTimeout: 3 * time.Second, QueueInterval: time.Millisecond, Runner: runner.Limits, Probe: probeLimits}
+			config := fallback.Config{ReconcileLimit: 10, GeneratorVersion: core.CurrentFallbackGeneratorVersion, FFmpeg: binary, FFprobe: probe.Binary, MaxUploadBytes: 1 << 20, MaxOutputBytes: 8 << 20, PrepareTimeout: 15 * time.Second, ShutdownTimeout: 3 * time.Second, QueueInterval: time.Millisecond, Runner: runner.Limits, Probe: probeLimits}
 			// builder выбирает CPU-подстановку либо штатный рецепт генерации для текущего
 			// сценария.
 			builder := fallbackPipelineCPUBuilder(binary)

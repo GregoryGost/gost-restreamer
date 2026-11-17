@@ -8,7 +8,7 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
-// EffectiveLoopDuration округляет длину вверх до общей сетки полных кадров видео и AAC.
+// EffectiveLoopDuration округляет длину вверх до общей сетки полных кадров видео и единиц выбранного аудиокодека.
 // Сетка также точно представима в микросекундах FFmpeg CLI; исходная длина не изменяется.
 func EffectiveLoopDuration(source time.Duration, profile core.GroupProfile, maximum time.Duration) (time.Duration, error) {
 	if source <= 0 || maximum <= 0 || source > maximum || profile.Validate() != nil {
@@ -20,11 +20,11 @@ func EffectiveLoopDuration(source time.Duration, profile core.GroupProfile, maxi
 	vn := uint64(time.Second/time.Microsecond) * uint64(fps.Denominator)
 	// video задаёт минимальный целый интервал в микросекундах, содержащий полное число видеокадров.
 	video := vn / gcd(vn, uint64(fps.Numerator))
-	// an содержит числитель длительности AAC-единицы из 1024 сэмплов в микросекундах.
-	an := uint64(1024) * uint64(time.Second/time.Microsecond)
-	// audio задаёт минимальный целый интервал в микросекундах, содержащий полное число AAC-единиц.
+	// an содержит числитель длительности полной аудиоединицы в микросекундах.
+	an := uint64(preparedAudioSamples(profile.Format.Audio.Codec)) * uint64(time.Second/time.Microsecond)
+	// audio задаёт минимальный целый интервал в микросекундах, содержащий полное число аудиоединиц.
 	audio := an / gcd(an, uint64(profile.Format.Audio.SampleRateHz))
-	// grid вычисляет общий период видео, AAC и микросекундной сетки, затем переводится в
+	// grid вычисляет общий период видео, аудио и микросекундной сетки, затем переводится в
 	// наносекунды.
 	grid := new(big.Int).SetUint64(video / gcd(video, audio))
 	grid.Mul(grid, new(big.Int).SetUint64(audio))

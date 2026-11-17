@@ -44,11 +44,13 @@ func openTestStore(t *testing.T) *Store {
 	return s
 }
 
-// Проверяет повторный запуск рабочих миграций без изменения схемы, движка и параметров сборки SQLite и
-// без закрытия общего пула.
+// TestProductionMigrationsRepeatWithoutClosingPool проверяет начальную историю Goose 0/1,
+// повторный запуск миграций без изменения заполненной БД и повторное открытие с Recover.
+// t сообщает об ошибках; исходные payload конфигураций и снимки должны сохраниться.
 func TestProductionMigrationsRepeatWithoutClosingPool(t *testing.T) {
-	// s владеет временным Store проверяемого сценария.
-	s := openTestStore(t)
+	// s владеет заполненной временной БД; state хранит эталоны payload и снимков,
+	// path нужен для повторного открытия после освобождения первоначального владельца.
+	s, _, state, path := openCurrentEncodingState(t)
 	// ctx задаёт контекст доменных операций проверяемого сценария SQLite.
 	ctx := context.Background()
 	// before сохраняет измеренные свойства движка и схемы до повторного запуска миграций. err
@@ -57,6 +59,16 @@ func TestProductionMigrationsRepeatWithoutClosingPool(t *testing.T) {
 	if err != nil || before.SchemaVersion != 1 || before.SQLiteVersion == "" || len(before.CompileOptions) == 0 {
 		t.Fatalf("диагностика production-миграций: %+v, %v", before, err)
 	}
+	// total считает все записи Goose, zero и initial — применённые версии 0 и 1.
+	var total, zero, initial int
+	if err = s.sqlDB.QueryRowContext(ctx, `SELECT count(*),
+        coalesce(sum(CASE WHEN version_id=0 AND is_applied=1 THEN 1 ELSE 0 END),0),
+        coalesce(sum(CASE WHEN version_id=1 AND is_applied=1 THEN 1 ELSE 0 END),0)
+        FROM goose_db_version`).Scan(&total, &zero, &initial); err != nil || total != 2 || zero != 1 || initial != 1 {
+		t.Fatalf("начальная история Goose: total=%d zero=%d initial=%d, %v", total, zero, initial, err)
+	}
+	// rows сохраняет все строки заполненной БД, включая payload и историю Goose, до повторного Migrate.
+	rows := captureSQLRows(t, s.sqlDB)
 	// err сообщает об ошибке применения встроенной истории схемы.
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatalf("повторный runner: %v", err)
@@ -70,6 +82,36 @@ func TestProductionMigrationsRepeatWithoutClosingPool(t *testing.T) {
 	if err := s.sqlDB.PingContext(ctx); err != nil {
 		t.Fatalf("runner закрыл общий пул: %v", err)
 	}
+	if !reflect.DeepEqual(rows, captureSQLRows(t, s.sqlDB)) {
+		t.Fatal("повторный runner изменил заполненную БД")
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// reopened получает ту же заполненную БД и выполняет штатный Recover прежнего запуска.
+	reopened, err := Open(ctx, path, testOptions())
+	if err != nil {
+		t.Fatalf("повторное открытие заполненной начальной схемы: %v", err)
+	}
+	// Очистка закрывает reopened также при раннем отказе последующих проверок.
+	t.Cleanup(func() {
+		// closeErr сообщает об отказе освобождения повторно открытого пула и блокировки.
+		if closeErr := reopened.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	})
+	// service читает исходные снимки после Recover; err сообщает об отказе создания сервиса.
+	service, err := core.NewService(reopened, reopened.Incarnation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCurrentEncodingRows(t, reopened, state)
+	assertCurrentEncodingSnapshots(t, service, state)
+	if err = reopened.Migrate(ctx); err != nil {
+		t.Fatalf("повторный runner после открытия: %v", err)
+	}
+	assertCurrentEncodingRows(t, reopened, state)
+	assertCurrentEncodingSnapshots(t, service, state)
 	t.Logf("SQLite %s, schema %d, compile options %v", after.SQLiteVersion, after.SchemaVersion, after.CompileOptions)
 }
 
@@ -166,6 +208,7 @@ func TestEveryPhysicalConnectionEnforcesPragmas(t *testing.T) {
 
 // Проверяет откат частичной схемы и истории версии при ошибке добавочной миграции через рабочий
 // исполнитель Goose без потери соединений.
+// t сообщает об ошибках проверяемого сценария.
 func TestFailedMigrationRollsBackSchemaAndVersionThroughProductionRunner(t *testing.T) {
 	// s владеет временным Store проверяемого сценария.
 	s := openTestStore(t)

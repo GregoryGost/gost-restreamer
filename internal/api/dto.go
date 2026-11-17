@@ -2,32 +2,29 @@ package api
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"reflect"
 	"strconv"
 	"time"
-	"unicode/utf8"
 
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/danielgtaylor/huma/v2"
 )
 
-// Decimal передаёт uint64 десятичной JSON-строкой для сохранения точности счётчиков и ревизий.
+// Decimal передаёт точное беззнаковое целое JSON-числом без промежуточного float64.
 type Decimal uint64
 
-// MarshalJSON передаёт uint64 десятичной JSON-строкой без преобразования в неточное число JavaScript.
+// MarshalJSON записывает все разряды uint64 непосредственно в числовую лексему JSON.
 func (d Decimal) MarshalJSON() ([]byte, error) {
-	return json.Marshal(strconv.FormatUint(uint64(d), 10))
+	return []byte(strconv.FormatUint(uint64(d), 10)), nil
 }
 
-// UnmarshalJSON принимает только каноническую десятичную строку uint64 и изменяет Decimal после
-// успешной проверки.
+// UnmarshalJSON принимает только математически целое JSON-число без минуса в диапазоне
+// uint64 и изменяет Decimal после успешной проверки всех разрядов.
 func (d *Decimal) UnmarshalJSON(b []byte) error {
-	// s принимает строковое JSON-представление точного беззнакового числа.
-	var s string
-	// err содержит отказ чтения Decimal из JSON-строки.
-	if err := json.Unmarshal(b, &s); err != nil {
+	// s содержит точную целую запись; whole подтверждает целочисленность и машинный диапазон.
+	s, whole := exactIntegerToken(string(bytes.TrimSpace(b)))
+	if !whole || s[0] == '-' {
 		return core.ErrInvalid
 	}
 	// n содержит проверенное значение uint64; err содержит отказ канонической десятичной записи.
@@ -39,10 +36,10 @@ func (d *Decimal) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// Schema описывает Decimal как десятичную строку; фактическую границу uint64 дополнительно проверяет
-// UnmarshalJSON.
+// Schema описывает точный полный диапазон uint64 через числовые ограничения Extensions,
+// поскольку стандартные поля Huma Minimum/Maximum имеют тип float64.
 func (Decimal) Schema(huma.Registry) *huma.Schema {
-	return &huma.Schema{Type: "string", Pattern: "^(0|[1-9][0-9]{0,19})$", Description: "Точное беззнаковое целое в десятичной записи."}
+	return &huma.Schema{Type: huma.TypeInteger, Format: "uint64", Extensions: map[string]any{"minimum": json.Number("0"), "maximum": json.Number("18446744073709551615")}, Description: "Точное беззнаковое целое."}
 }
 
 // parseDecimal разбирает uint64 из ASCII-цифр без знака и ведущих нулей; пустота и переполнение
@@ -71,68 +68,9 @@ func revision(s string) (uint64, error) {
 	// нуля.
 	v, err := parseDecimal(s)
 	if err != nil || v == 0 {
-		return 0, core.ErrInvalid
+		return 0, reasonError(core.ErrInvalid, "invalid_field", "expected_revision")
 	}
 	return v, nil
-}
-
-// ProfileText сохраняет точные байты строковых параметров профиля, используя base64 для недопустимого
-// UTF-8.
-type ProfileText string
-
-// MarshalJSON передаёт корректный UTF-8 строкой, а остальные байты ProfileText — объектом с base64 без
-// изменения содержимого.
-func (p ProfileText) MarshalJSON() ([]byte, error) {
-	// s содержит точные байты ProfileText как строку для выбора UTF-8 или base64-представления.
-	s := string(p)
-	if utf8.ValidString(s) {
-		return json.Marshal(s)
-	}
-	return json.Marshal(struct {
-		// Encoding обозначает base64 в объектном представлении невалидных UTF-8 байтов профиля.
-		Encoding string `json:"encoding"`
-		// Value содержит base64-кодирование точных байтов ProfileText.
-		Value string `json:"value"`
-	}{"base64", base64.StdEncoding.EncodeToString([]byte(s))})
-}
-
-// UnmarshalJSON читает UTF-8 строку либо строгий объект base64 без неизвестных полей, сохраняя точные
-// байты профиля.
-func (p *ProfileText) UnmarshalJSON(b []byte) error {
-	if len(b) > 0 && b[0] == '"' {
-		// s принимает строковое UTF-8-представление профиля до изменения целевого значения.
-		var s string
-		if !utf8.Valid(b) || json.Unmarshal(b, &s) != nil {
-			return core.ErrInvalid
-		}
-		*p = ProfileText(s)
-		return nil
-	}
-	// v принимает объектное представление ProfileText с видом кодирования и закодированными байтами.
-	var v struct {
-		// Encoding должно содержать base64 для допуска объектного представления профиля.
-		Encoding string `json:"encoding"`
-		// Value содержит строку строгого base64, из которой восстанавливаются исходные байты.
-		Value string `json:"value"`
-	}
-	// dec разбирает объект ProfileText с запрещёнными неизвестными полями.
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if dec.Decode(&v) != nil || v.Encoding != "base64" {
-		return core.ErrInvalid
-	}
-	// raw содержит восстановленные байты профиля; err содержит отказ строгого base64-декодирования.
-	raw, err := base64.StdEncoding.Strict().DecodeString(v.Value)
-	if err != nil {
-		return core.ErrInvalid
-	}
-	*p = ProfileText(raw)
-	return nil
-}
-
-// Schema описывает два допустимых представления ProfileText: строку и строгий объект base64.
-func (ProfileText) Schema(huma.Registry) *huma.Schema {
-	return &huma.Schema{OneOf: []*huma.Schema{{Type: "string"}, {Type: "object", Properties: map[string]*huma.Schema{"encoding": {Type: "string", Enum: []any{"base64"}}, "value": {Type: "string", ContentEncoding: "base64"}}, Required: []string{"encoding", "value"}, AdditionalProperties: false}}}
 }
 
 // Field различает отсутствующее поле частичного изменения, явный null и переданное значение целевого
@@ -194,33 +132,38 @@ func recordDTO(r core.Record) RecordDTO {
 	return RecordDTO{string(r.ID), Decimal(r.Revision), r.CreatedAt.UTC(), r.UpdatedAt.UTC()}
 }
 
-// FailureDTO сообщает безопасный код неуспешной операции без внутренней диагностики.
+// FailureDTO сообщает безопасную причину долговечного отказа и отдельный следующий шаг.
 type FailureDTO struct {
 	// Code содержит стабильное публичное обозначение причины неуспеха.
 	Code string `json:"code"`
-	// Message содержит безопасное пояснение с указанием журнала приложения для подробностей.
+	// Message объясняет проверенную причину без внутренней диагностики.
 	Message string `json:"message"`
+	// Action предлагает подготовленный следующий шаг, если он достоверно известен.
+	Action string `json:"action,omitempty"`
+	// Field указывает известное публичное поле, связанное с отказом.
+	Field string `json:"field,omitempty"`
+	// Context сохраняет публичные идентификаторы исходной причины, независимо от текущих настроек.
+	Context *ProblemContextDTO `json:"context,omitempty"`
 }
 
-// failure создаёт безопасное описание неуспешной операции по коду; пустой код означает отсутствие
-// ошибки.
+// failure сохраняет прежнее общее объяснение старых данных, не разбирая диагностическую строку.
 func failure(code string) *FailureDTO {
 	if code == "" {
 		return nil
 	}
-	return &FailureDTO{code, "Операция не завершена успешно. Подробности доступны в журнале приложения."}
+	return &FailureDTO{Code: code, Message: "Операция не завершена успешно. Подробности доступны в журнале приложения."}
 }
 
 // WatchdogDTO передаёт сроки контроля источника точными десятичными наносекундами.
 type WatchdogDTO struct {
 	// VideoTimeoutNS задаёт допустимое отсутствие продвижения видео в наносекундах.
-	VideoTimeoutNS Decimal `json:"video_timeout_ns"`
+	VideoTimeoutNS Decimal `json:"video_timeout_ns" minimum:"1" maximum:"9223372036854775807"`
 	// AudioTimeoutNS задаёт допустимое отсутствие продвижения аудио в наносекундах.
-	AudioTimeoutNS Decimal `json:"audio_timeout_ns"`
+	AudioTimeoutNS Decimal `json:"audio_timeout_ns" minimum:"1" maximum:"9223372036854775807"`
 	// RecoveryWindowNS задаёт окно подтверждения восстановления LIVE в наносекундах.
-	RecoveryWindowNS Decimal `json:"recovery_window_ns"`
+	RecoveryWindowNS Decimal `json:"recovery_window_ns" minimum:"1" maximum:"9223372036854775807"`
 	// KeyframeTimeoutNS задаёт ожидание подходящего ключевого кадра в наносекундах.
-	KeyframeTimeoutNS Decimal `json:"keyframe_timeout_ns"`
+	KeyframeTimeoutNS Decimal `json:"keyframe_timeout_ns" minimum:"1" maximum:"9223372036854775807"`
 }
 
 // domain проверяет положительные сроки контроля медиапотока и представимость каждого в time.Duration
@@ -314,16 +257,16 @@ type FrameRateDTO struct {
 // ColorDTO сохраняет точные обозначения цветовых характеристик видео.
 type ColorDTO struct {
 	// Range содержит обозначение диапазона уровней цвета.
-	Range ProfileText `json:"range"`
+	Range string `json:"range"`
 	// Primaries содержит обозначение цветовых первичных координат.
-	Primaries ProfileText `json:"primaries"`
+	Primaries string `json:"primaries"`
 	// Transfer содержит обозначение передаточной характеристики цвета.
-	Transfer ProfileText `json:"transfer"`
+	Transfer string `json:"transfer"`
 	// Matrix содержит обозначение матрицы преобразования цветовых компонентов.
-	Matrix ProfileText `json:"matrix"`
+	Matrix string `json:"matrix"`
 }
 
-// VideoFormatDTO передаёт полное описание сжатого видео с точными байтами строковых параметров.
+// VideoFormatDTO передаёт полное описание сжатого видео с конечными строковыми параметрами.
 type VideoFormatDTO struct {
 	// Codec содержит идентификатор видеокодека.
 	Codec string `json:"codec"`
@@ -334,31 +277,31 @@ type VideoFormatDTO struct {
 	// FrameRate содержит несокращённую рациональную частоту кадров.
 	FrameRate FrameRateDTO `json:"frame_rate"`
 	// CodecProfile содержит точное обозначение профиля видеокодека.
-	CodecProfile ProfileText `json:"codec_profile"`
+	CodecProfile string `json:"codec_profile"`
 	// Level содержит точное обозначение уровня видеокодека.
-	Level ProfileText `json:"level"`
+	Level string `json:"level"`
 	// Tier содержит точное обозначение уровня производительности видеокодека, если оно задано.
-	Tier ProfileText `json:"tier"`
+	Tier string `json:"tier"`
 	// PixelFormat содержит обозначение пиксельного формата видео.
-	PixelFormat ProfileText `json:"pixel_format"`
+	PixelFormat string `json:"pixel_format"`
 	// BitDepth содержит глубину цветового компонента в битах.
 	BitDepth uint8 `json:"bit_depth"`
 	// Color содержит точные цветовые характеристики видео.
 	Color ColorDTO `json:"color"`
 }
 
-// AudioFormatDTO передаёт полное описание сжатого аудио с точными байтами строковых параметров.
+// AudioFormatDTO передаёт полное описание сжатого аудио с конечными строковыми параметрами.
 type AudioFormatDTO struct {
 	// Codec содержит идентификатор аудиокодека.
 	Codec string `json:"codec"`
 	// CodecProfile содержит обозначение профиля аудиокодека.
-	CodecProfile ProfileText `json:"codec_profile"`
+	CodecProfile string `json:"codec_profile"`
 	// SampleRateHz содержит частоту дискретизации аудио в герцах.
 	SampleRateHz uint32 `json:"sample_rate_hz"`
 	// Channels содержит число аудиоканалов.
 	Channels uint16 `json:"channels"`
 	// ChannelLayout содержит точное обозначение расположения каналов.
-	ChannelLayout ProfileText `json:"channel_layout"`
+	ChannelLayout string `json:"channel_layout"`
 }
 
 // FormatDTO объединяет полные описания видео- и аудиодорожек публичного медиаформата.
@@ -369,21 +312,21 @@ type FormatDTO struct {
 	Audio AudioFormatDTO `json:"audio"`
 }
 
-// formatDTO сохраняет точные численные параметры, дробь FPS и байты строковых полей медиаформата в
+// formatDTO сохраняет точные численные параметры, дробь FPS и строковые поля медиаформата в
 // HTTP DTO.
 func formatDTO(f core.MediaFormat) FormatDTO {
 	// v содержит исходные параметры видео; a содержит исходные параметры аудио для точного
 	// преобразования в DTO.
 	v, a := f.Video, f.Audio
-	return FormatDTO{VideoFormatDTO{string(v.Codec), v.Width, v.Height, FrameRateDTO{v.FrameRate.Numerator, v.FrameRate.Denominator}, ProfileText(v.CodecProfile), ProfileText(v.Level), ProfileText(v.Tier), ProfileText(v.PixelFormat), v.BitDepth, ColorDTO{ProfileText(v.Color.Range), ProfileText(v.Color.Primaries), ProfileText(v.Color.Transfer), ProfileText(v.Color.Matrix)}}, AudioFormatDTO{string(a.Codec), ProfileText(a.CodecProfile), a.SampleRateHz, a.Channels, ProfileText(a.ChannelLayout)}}
+	return FormatDTO{VideoFormatDTO{string(v.Codec), v.Width, v.Height, FrameRateDTO{v.FrameRate.Numerator, v.FrameRate.Denominator}, v.CodecProfile, v.Level, v.Tier, v.PixelFormat, v.BitDepth, ColorDTO{v.Color.Range, v.Color.Primaries, v.Color.Transfer, v.Color.Matrix}}, AudioFormatDTO{string(a.Codec), a.CodecProfile, a.SampleRateHz, a.Channels, a.ChannelLayout}}
 }
 
-// domain возвращает доменный медиаформат из DTO без нормализации дроби FPS и байтов ProfileText.
+// domain возвращает доменный медиаформат из DTO без нормализации дроби FPS и строковых полей.
 func (f FormatDTO) domain() core.MediaFormat {
 	// v содержит публичные параметры видео; a содержит публичные параметры аудио для восстановления
 	// доменного формата без нормализации.
 	v, a := f.Video, f.Audio
-	return core.MediaFormat{Video: core.VideoFormat{Codec: core.Codec(v.Codec), Width: v.Width, Height: v.Height, FrameRate: core.FrameRate{Numerator: v.FrameRate.Numerator, Denominator: v.FrameRate.Denominator}, CodecProfile: string(v.CodecProfile), Level: string(v.Level), Tier: string(v.Tier), PixelFormat: string(v.PixelFormat), BitDepth: v.BitDepth, Color: core.ColorInfo{Range: string(v.Color.Range), Primaries: string(v.Color.Primaries), Transfer: string(v.Color.Transfer), Matrix: string(v.Color.Matrix)}}, Audio: core.AudioFormat{Codec: core.Codec(a.Codec), CodecProfile: string(a.CodecProfile), SampleRateHz: a.SampleRateHz, Channels: a.Channels, ChannelLayout: string(a.ChannelLayout)}}
+	return core.MediaFormat{Video: core.VideoFormat{Codec: core.Codec(v.Codec), Width: v.Width, Height: v.Height, FrameRate: core.FrameRate{Numerator: v.FrameRate.Numerator, Denominator: v.FrameRate.Denominator}, CodecProfile: v.CodecProfile, Level: v.Level, Tier: v.Tier, PixelFormat: v.PixelFormat, BitDepth: v.BitDepth, Color: core.ColorInfo{Range: v.Color.Range, Primaries: v.Color.Primaries, Transfer: v.Color.Transfer, Matrix: v.Color.Matrix}}, Audio: core.AudioFormat{Codec: core.Codec(a.Codec), CodecProfile: a.CodecProfile, SampleRateHz: a.SampleRateHz, Channels: a.Channels, ChannelLayout: a.ChannelLayout}}
 }
 
 // VideoEncodingDTO передаёт общие параметры видеопотока отдельно от конкретного рецепта кодировщика.
@@ -404,29 +347,28 @@ type VideoEncodingDTO struct {
 
 // AudioEncodingDTO передаёт общий аудиобитрейт независимо от конкретного рецепта.
 type AudioEncodingDTO struct {
-	// BitrateBPS содержит целевой аудиобитрейт в битах за секунду.
-	BitrateBPS Decimal `json:"bitrate_bps"`
+	// BitrateBPS содержит целевой аудиобитрейт в битах за секунду; для FLAC требуется ноль.
+	BitrateBPS Decimal `json:"bitrate_bps" doc:"Положительный целевой битрейт AAC; Привязки: Opus/MP3 128000, AC-3 192000, FLAC 0 (целевой битрейт неприменим). Ноль разрешён только для полного FLAC/s16/48000/stereo с audio_encoder=flac и явными mode=transcode, live_audio_mode=transcode."`
 }
 
-// GroupProfileDTO возвращает полный сохранённый профиль группы без назначения новых значений прежним
-// снимкам.
+// GroupProfileDTO возвращает полный сохранённый профиль группы и самостоятельных снимков.
 type GroupProfileDTO struct {
 	// Mode содержит режим видео copy или transcode.
 	Mode string `json:"mode" enum:"copy,transcode"`
-	// LiveAudioMode содержит самостоятельный режим LIVE-аудио; отсутствие значения сохраняет прежнюю
-	// семантику профиля.
-	LiveAudioMode string `json:"live_audio_mode,omitempty" enum:"copy,transcode"`
+	// LiveAudioMode содержит явно сохранённый режим LIVE-аудио.
+	LiveAudioMode string `json:"live_audio_mode" enum:"copy,transcode"`
 	// Format содержит полный ожидаемый медиаформат обеих дорожек.
 	Format FormatDTO `json:"format"`
 	// VideoEncoding содержит общие параметры видеобитрейта и GOP.
 	VideoEncoding VideoEncodingDTO `json:"video_encoding"`
 	// AudioEncoding содержит общий параметр аудиобитрейта.
 	AudioEncoding AudioEncodingDTO `json:"audio_encoding"`
-	Encoding      *EncodingDTO     `json:"encoding" doc:"Материализованные настройки кодировщика. null обозначает прежний видеорецепт; выбор LIVE-аудио задаётся отдельно."`
+	// Encoding содержит полный материализованный набор применимых настроек кодировщика.
+	Encoding EncodingDTO `json:"encoding" doc:"Полные текущие настройки кодировщика; null не возвращается."`
 }
 
-// domain проверяет явный селектор LIVE-аудио и преобразует настройки профиля, сохраняя отсутствие
-// селектора для доменных правил совместимости.
+// domain преобразует входной p, материализуя encoding. Отсутствующий LIVE-селектор
+// остаётся пустым для правил CreateProfile и UpdateProfile; null и неизвестный режим отклоняются.
 func (p GroupProfileInput) domain() (core.GroupProfile, error) {
 	// liveAudioMode сохраняет отсутствие селектора либо проверенный явный режим LIVE-аудио.
 	var liveAudioMode core.LiveAudioMode
@@ -438,15 +380,14 @@ func (p GroupProfileInput) domain() (core.GroupProfile, error) {
 	}
 	// encoding содержит проверенные настройки конкретного кодировщика; err содержит отказ их
 	// преобразования для выбранного режима видео.
-	encoding, err := p.Encoding.domain(core.GroupMode(p.Mode))
+	encoding, err := p.Encoding.domain(core.GroupMode(p.Mode), core.Codec(p.Format.Video.Codec))
 	if err != nil {
 		return core.GroupProfile{}, err
 	}
 	return core.GroupProfile{Mode: core.GroupMode(p.Mode), LiveAudioMode: liveAudioMode, Format: p.Format.domain(), VideoEncoding: core.VideoEncoding{TargetBitrateBPS: uint64(p.VideoEncoding.TargetBitrateBPS), MaxBitrateBPS: uint64(p.VideoEncoding.MaxBitrateBPS), BufferBits: uint64(p.VideoEncoding.BufferBits), GOPFrames: p.VideoEncoding.GOPFrames, MaxBFrames: p.VideoEncoding.MaxBFrames, ClosedGOP: p.VideoEncoding.ClosedGOP}, AudioEncoding: core.AudioEncoding{BitrateBPS: uint64(p.AudioEncoding.BitrateBPS)}, Encoding: encoding}, nil
 }
 
-// groupProfileDTO переводит полный профиль в HTTP DTO без назначения новых настроек прежним
-// сохранённым профилям.
+// groupProfileDTO переводит полный сохранённый p в HTTP DTO без изменения настроек.
 func groupProfileDTO(p core.GroupProfile) GroupProfileDTO {
 	// v содержит общие настройки видеокодирования для возврата точных значений DTO.
 	v := p.VideoEncoding
@@ -500,7 +441,7 @@ type SessionDTO struct {
 	// StreamID указывает исходный Stream этой Session.
 	StreamID string `json:"stream_id"`
 	// State содержит долговечное состояние жизненного цикла Session.
-	State string `json:"state"`
+	State string `json:"state" enum:"STARTING,RUNNING,STOPPING,STOPPED,FAILED,INTERRUPTED"`
 	// DesiredPaused содержит желаемую ручную паузу, отдельно от текущего наблюдения медиатракта.
 	DesiredPaused bool `json:"desired_paused"`
 	// Stream содержит снимок настроек Stream и постоянного ключа на момент запуска.
@@ -525,10 +466,10 @@ func sessionDTO(s core.Session) SessionDTO {
 	// f содержит безопасную терминальную причину Session либо nil при отсутствии отказа.
 	var f *FailureDTO
 	if s.State == core.SessionFailed {
-		f = failure("session_failed")
+		f = failureReasonDTO(s.FailureReason, "session_failed")
 	}
 	if s.State == core.SessionInterrupted {
-		f = failure("session_interrupted")
+		f = failureReasonDTO(s.FailureReason, "session_interrupted")
 	}
 	return SessionDTO{recordDTO(s.Record), string(s.StreamID), string(s.State), s.DesiredPaused, streamDTO(s.Snapshot.Stream), groups, utcPointer(s.EndedAt), f}
 }
@@ -567,7 +508,7 @@ type ReceiptDTO struct {
 	// RequestID содержит идентификатор смыслового запроса для идемпотентного повторения команды.
 	RequestID string `json:"request_id"`
 	// Kind содержит вид принятой команды.
-	Kind string `json:"kind"`
+	Kind string `json:"kind" enum:"start_session,stop_session,pause_session,resume_session,add_output,start_output,stop_output,detach_output"`
 	// TargetID указывает целевой объект команды.
 	TargetID string `json:"target_id"`
 	// SessionID указывает Session принятой команды.
@@ -575,7 +516,7 @@ type ReceiptDTO struct {
 	// OutputID указывает выход команды, если она относится к выходу.
 	OutputID string `json:"output_id"`
 	// Status содержит долговечное состояние исполнения команды.
-	Status string `json:"status"`
+	Status string `json:"status" enum:"PENDING,CLAIMED,ISSUED,SUCCEEDED,FAILED,INTERRUPTED"`
 	// Failure содержит безопасное обозначение неуспеха команды либо null.
 	Failure *FailureDTO `json:"failure"`
 }
@@ -586,10 +527,10 @@ func receiptDTO(r core.CommandReceipt) ReceiptDTO {
 	// f содержит безопасный отказ FAILED или INTERRUPTED без внутренней диагностики квитанции.
 	var f *FailureDTO
 	if r.Status == core.CommandFailed {
-		f = failure("command_failed")
+		f = failureReasonDTO(r.FailureReason, "command_failed")
 	}
 	if r.Status == core.CommandInterrupted {
-		f = failure("command_interrupted")
+		f = failureReasonDTO(r.FailureReason, "command_interrupted")
 	}
 	return ReceiptDTO{recordDTO(r.Record), r.RequestID, string(r.Kind), string(r.TargetID), string(r.SessionID), string(r.OutputID), string(r.Status), f}
 }
@@ -601,9 +542,9 @@ type AssetDTO struct {
 	// Name содержит сохранённое имя заглушки.
 	Name string `json:"name"`
 	// Kind содержит вид исходника заглушки.
-	Kind string `json:"kind"`
+	Kind string `json:"kind" enum:",image,video"`
 	// State содержит сохранённое состояние заглушки.
-	State string `json:"state"`
+	State string `json:"state" enum:"PREPARING,READY,FAILED"`
 	// CurrentGenerationID указывает опубликованное текущее поколение либо пустую строку.
 	CurrentGenerationID string `json:"current_generation_id"`
 	// PendingGenerationID указывает ожидающее поколение новой подготовки либо пустую строку.
@@ -626,9 +567,9 @@ type GenerationDTO struct {
 	// AssetID указывает родительскую заглушку поколения.
 	AssetID string `json:"asset_id"`
 	// Kind содержит вид исходника текущей подготовки.
-	Kind string `json:"kind"`
+	Kind string `json:"kind" enum:"image,video"`
 	// Status содержит публичную стадию queued, preparing, ready или error.
-	Status string `json:"status"`
+	Status string `json:"status" enum:"queued,preparing,ready,error"`
 	// SizeBytes содержит точный размер исходника поколения в байтах.
 	SizeBytes Decimal `json:"size_bytes"`
 	// Failure содержит безопасную причину неуспешной подготовки либо null.
@@ -666,11 +607,11 @@ type VariantDTO struct {
 	// GenerationID указывает точное поколение варианта.
 	GenerationID string `json:"generation_id"`
 	// State содержит сохранённое состояние готовности варианта.
-	State string `json:"state"`
+	State string `json:"state" enum:"PREPARING,READY,FAILED"`
 	// Profile содержит полный профиль, по которому подготовлен вариант.
 	Profile GroupProfileDTO `json:"profile"`
 	// Format содержит фактически проверенный медиаформат файла варианта.
-	Format FormatDTO `json:"format"`
+	Format MeasuredFormatDTO `json:"format"`
 	// SizeBytes содержит точный размер файла варианта в байтах.
 	SizeBytes Decimal `json:"size_bytes"`
 }
@@ -678,7 +619,7 @@ type VariantDTO struct {
 // variantDTO возвращает профиль, проверенный формат и точный размер варианта, исключая файловые пути и
 // внутренние ключи артефакта.
 func variantDTO(v core.FallbackVariant) VariantDTO {
-	return VariantDTO{recordDTO(v.Record), string(v.AssetID), string(v.GenerationID), string(v.State), groupProfileDTO(v.Profile), formatDTO(v.VerifiedFormat), Decimal(v.SizeBytes)}
+	return VariantDTO{recordDTO(v.Record), string(v.AssetID), string(v.GenerationID), string(v.State), groupProfileDTO(v.Profile), measuredFormatDTO(v.VerifiedFormat), Decimal(v.SizeBytes)}
 }
 
 // PageDTO возвращает упорядоченные элементы ограниченной страницы и позицию следующего чтения.

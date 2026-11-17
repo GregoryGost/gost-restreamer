@@ -1,8 +1,6 @@
 package core
 
-import (
-	"context"
-)
+import "context"
 
 // PriorStartSession сверяет идентичность запроса до нового выбора файлов и физических проверок.
 func (s *Service) PriorStartSession(ctx context.Context, request StartSessionRequest) (CommandReceipt, bool, error) {
@@ -141,7 +139,7 @@ func (s *Service) SelectAddBinding(ctx context.Context, sessionID, destinationID
 			return err
 		}
 		if session.State != SessionRunning {
-			return ErrConflict
+			return WithFailureReason(ErrConflict, FailureReason{Code: FailureSessionStateConflict, Field: FailureFieldState, Context: FailureContext{StreamID: session.StreamID, SessionID: session.ID}})
 		}
 		// d содержит текущие настройки добавляемого назначения.
 		d, err := r.Config.Destination(ctx, destinationID)
@@ -156,9 +154,12 @@ func (s *Service) SelectAddBinding(ctx context.Context, sessionID, destinationID
 
 // selectDestinationBinding проверяет принадлежность назначения и группы Stream, затем выбирает из
 // текущего поколения заглушки точный готовый вариант полного профиля.
+// ctx ограничивает чтение r, streamID задаёт родителя d, policy выбирает Asset.
+// Каждому полному каноническому профилю соответствует единственный вариант.
+// Отказ чтения или проверки его варианта сохраняется целиком.
 func selectDestinationBinding(ctx context.Context, r Repositories, streamID ID, policy FallbackPolicy, d Destination) (PreparedBinding, error) {
 	if d.StreamID != streamID {
-		return PreparedBinding{}, ErrConflict
+		return PreparedBinding{}, WithFailureReason(ErrConflict, FailureReason{Code: FailureResourceOwnershipConflict, Context: FailureContext{DestinationID: d.ID, StreamID: d.StreamID}})
 	}
 	// g содержит группу назначения, а err — причину отказа её чтения.
 	g, err := r.Config.Group(ctx, d.GroupID)
@@ -166,7 +167,7 @@ func selectDestinationBinding(ctx context.Context, r Repositories, streamID ID, 
 		return PreparedBinding{}, err
 	}
 	if g.StreamID != streamID {
-		return PreparedBinding{}, ErrConflict
+		return PreparedBinding{}, WithFailureReason(ErrConflict, FailureReason{Code: FailureResourceOwnershipConflict, Context: FailureContext{GroupID: g.ID, DestinationID: d.ID}})
 	}
 	// p содержит полный текущий профиль группы назначения.
 	p, err := r.Config.Profile(ctx, g.ProfileID)
@@ -174,7 +175,7 @@ func selectDestinationBinding(ctx context.Context, r Repositories, streamID ID, 
 		return PreparedBinding{}, err
 	}
 	if err = policy.Validate(); err != nil {
-		return PreparedBinding{}, ErrNotReady
+		return PreparedBinding{}, WithFailureReason(ErrNotReady, FailureReason{Code: FailureFallbackNotConfigured, Field: FailureFieldFallback, Context: FailureContext{StreamID: d.StreamID, GroupID: g.ID, ProfileID: p.ID, DestinationID: d.ID}})
 	}
 	// a содержит заглушку и указатель её текущего поколения.
 	a, err := r.Artifacts.Asset(ctx, policy.AssetID)
@@ -182,7 +183,7 @@ func selectDestinationBinding(ctx context.Context, r Repositories, streamID ID, 
 		return PreparedBinding{}, err
 	}
 	if a.CurrentGenerationID == "" {
-		return PreparedBinding{}, ErrNotReady
+		return PreparedBinding{}, WithFailureReason(ErrNotReady, FailureReason{Code: FailureFallbackNotPrepared, Field: FailureFieldFallback, Context: FailureContext{StreamID: d.StreamID, AssetID: a.ID, GroupID: g.ID, ProfileID: p.ID, DestinationID: d.ID}})
 	}
 	// generation содержит опубликованное поколение, в котором ищется точный профиль.
 	generation, err := r.Artifacts.Generation(ctx, a.CurrentGenerationID)
@@ -201,5 +202,5 @@ func selectDestinationBinding(ctx context.Context, r Repositories, streamID ID, 
 			return binding, nil
 		}
 	}
-	return PreparedBinding{}, ErrNotReady
+	return PreparedBinding{}, WithFailureReason(ErrNotReady, FailureReason{Code: FailureFallbackProfileNotPrepared, Field: FailureFieldProfile, Context: FailureContext{StreamID: d.StreamID, GroupID: g.ID, ProfileID: p.ID, AssetID: a.ID, GenerationID: generation.ID, DestinationID: d.ID}})
 }

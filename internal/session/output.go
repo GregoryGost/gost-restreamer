@@ -10,8 +10,8 @@ import (
 )
 
 // startOutput выдаёт попытку отдельного выхода, ждёт группу, подготавливает отправителя и сохраняет
-// успех до наблюдателя и Activate. Поздний отказ компенсируется отдельно; завершение работника
-// сохраняет неподтверждённые ресурсы для повторной очистки.
+// успех принятой сервером команды c до наблюдателя и Activate. Поздний отказ компенсируется отдельно;
+// завершение работника сохраняет неподтверждённые ресурсы для повторной очистки.
 func (m *Manager) startOutput(c core.CommandReceipt) {
 	m.mu.Lock()
 	// parent содержит текущую локальную Session команды запуска выхода.
@@ -152,6 +152,7 @@ func (m *Manager) startOutput(c core.CommandReceipt) {
 	}
 	stop()
 	if err != nil {
+		err = commandFailure(c, err)
 		node.mu.Lock()
 		node.failure = err
 		node.mu.Unlock()
@@ -252,8 +253,10 @@ func (n *outputNode) cleanup(ctx context.Context, m *Manager) error {
 }
 
 // resolveFailure сверяет точную квитанцию перед записью отказа запуска либо компенсирует уже успешный
-// запуск. Окончательный отказ отправителя записывается через действующего наблюдателя и уступает
-// остановке или новому поколению выхода.
+// запуск. ctx ограничивает операции через Manager m. Неподтверждённый Complete возвращает ошибку,
+// сохраняя исходный отказ и узел для повторной очистки: компенсация не должна прерывать ту же
+// незавершённую попытку. Окончательный отказ отправителя записывается через действующего наблюдателя
+// и уступает остановке или новому поколению выхода.
 func (n *outputNode) resolveFailure(ctx context.Context, m *Manager) error {
 	n.mu.Lock()
 	// failure сохраняет причину отказа; final отличает окончательный отказ работающего отправителя;
@@ -292,10 +295,16 @@ func (n *outputNode) resolveFailure(ctx context.Context, m *Manager) error {
 			n.fence = f
 		}
 		if current.Status != core.CommandSucceeded {
-			// err содержит результат записи неуспешного завершения ещё не успешной команды
-			// запуска.
-			if err := m.complete(ctx, n.fence, false, failure); err == nil {
+			// completeErr содержит отказ записи или подтверждения первоначального результата запуска.
+			if completeErr := m.complete(ctx, n.fence, false, failure); completeErr == nil {
 				return nil
+			} else {
+				// current содержит квитанцию после отказа Complete; readErr сообщает, удалось ли
+				// отличить сохранённый результат от всё ещё незавершённой точной попытки.
+				current, readErr := m.config.Core.GetReceipt(ctx, n.fence.CommandID)
+				if readErr != nil || receiptFence(current) == n.fence && (current.Status == core.CommandClaimed || current.Status == core.CommandIssued) {
+					return errors.Join(completeErr, readErr)
+				}
 			}
 		}
 	}

@@ -176,9 +176,9 @@ func (m *Manager) commandFinished(id core.ID) {
 	m.signal()
 }
 
-// startSession выдаёт попытку, создаёт медиатракт и ждёт готовности оставшихся групп до успешной
-// квитанции и Feed. Затем сверяет управление и выходы; отказ запуска или потеря владельца требуют
-// отдельного долговечного завершения и очистки.
+// startSession исполняет принятую квитанцию c: выдаёт попытку, создаёт медиатракт и ждёт готовности
+// оставшихся групп до сохранения успешного результата и допуска Feed. Затем сверяет управление
+// и выходы; отказ запуска или потеря владельца требуют отдельного долговечного завершения и очистки.
 func (m *Manager) startSession(c core.CommandReceipt) {
 	m.mu.Lock()
 	// node содержит предварительно зарегистрированный узел запускаемой Session.
@@ -203,6 +203,7 @@ func (m *Manager) startSession(c core.CommandReceipt) {
 		err = node.initialize(startup)
 	}
 	if err != nil {
+		err = commandFailure(c, err)
 		node.finishStartup(err)
 		node.mu.Lock()
 		node.retirementNeeded = true
@@ -236,6 +237,7 @@ func (m *Manager) startSession(c core.CommandReceipt) {
 		node.mu.Unlock()
 	}
 	if err != nil {
+		err = commandFailure(c, err)
 		node.finishStartup(err)
 		node.mu.Lock()
 		node.retirementNeeded = true
@@ -412,9 +414,15 @@ func (n *sessionNode) initialize(ctx context.Context) error {
 // acquire регистрирует операцию членства до запуска его работника и возвращает прежнее членство только
 // для того же поколения выхода. Закрытие, исключённое поколение и исчерпание бюджета запрещают новую
 // регистрацию.
+// ctx ограничивает регистрацию, output фиксирует поколение и снимок. Пригодность снимка проверяется
+// до возврата существующего членства, чтобы прежний допуск не обходил аннулирование файла.
 func (n *sessionNode) acquire(ctx context.Context, output core.SessionOutput) (*membership, error) {
+	// err содержит отказ использования сохранённого снимка до регистрации членства.
+	if err := output.Snapshot.ValidateUsable(); err != nil {
+		return nil, err
+	}
 	if output.Snapshot.Artifact.GeneratorVersion != n.manager.config.GeneratorVersion {
-		return nil, core.ErrNotReady
+		return nil, core.WithFailureReason(core.ErrNotReady, core.FailureReason{Code: core.FailureFallbackVariantNotReady, Context: outputFailureContext(output)})
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -447,11 +455,22 @@ func (n *sessionNode) acquire(ctx context.Context, output core.SessionOutput) (*
 
 // openPreparedFile отклоняет манифест другой версии генератора и открывает закреплённый файл через
 // проверку FileStore.
+// ctx ограничивает чтение, manifest сохраняет точную привязку; пригодность проверяется при каждом
+// открытии, включая повторную попытку проигрывателя.
 func (m *Manager) openPreparedFile(ctx context.Context, manifest core.ArtifactManifest) (*os.File, error) {
-	if manifest.GeneratorVersion != m.config.GeneratorVersion {
-		return nil, core.ErrNotReady
+	// err содержит отказ пригодности перед обращением к файловому хранилищу.
+	if err := manifest.ValidateUsable(); err != nil {
+		return nil, err
 	}
-	return m.config.Files.OpenVerified(ctx, manifest)
+	if manifest.GeneratorVersion != m.config.GeneratorVersion {
+		return nil, core.WithFailureReason(core.ErrNotReady, core.FailureReason{Code: core.FailureFallbackVariantNotReady, Context: manifestFailureContext(manifest)})
+	}
+	// file содержит проверенный файл; err сообщает об отказе открытия доказанного артефакта.
+	file, err := m.config.Files.OpenVerified(ctx, manifest)
+	if err != nil {
+		return nil, core.WithFailureReason(err, core.FailureReason{Code: core.FailureFallbackVariantNotReady, Context: manifestFailureContext(manifest)})
+	}
+	return file, nil
 }
 
 // run получает ссылку на группу и ждёт готовности заглушки, сохраняя как ссылку, так и ошибку до
@@ -800,9 +819,11 @@ func (n *sessionNode) retireRevokedExecution() {
 	n.cleanup()
 }
 
-// retireExecution восстанавливает точную попытку из квитанции при необходимости и запрашивает
-// компенсацию сессии. Неудавшаяся запись сохраняет признак продолжения, а прежний успех запуска не
-// заменяется новым результатом.
+// retireExecution восстанавливает попытку из исходной квитанции и сохраняет cause до компенсации.
+// ctx ограничивает запись и контрольное чтение. Неизвестный результат Complete либо та же
+// нетерминальная попытка сохраняют retirementNeeded и исходный отказ для существующего повтора.
+// Подтверждённый терминальный результат, остановка пользователя и новый fence не переписываются;
+// дальнейшая точная компенсация сама проверяет, осталось ли прежнее исполнение актуальным.
 func (n *sessionNode) retireExecution(ctx context.Context) error {
 	n.mu.Lock()
 	// f содержит известную точную попытку; c сохраняет исходную квитанцию; cause сохраняет
@@ -828,7 +849,15 @@ func (n *sessionNode) retireExecution(ctx context.Context) error {
 		f = receiptFence(c)
 	}
 	if cause != nil && f.Attempt > 0 {
-		_ = n.manager.complete(ctx, f, false, cause)
+		// completeErr содержит отказ записи или подтверждения первоначального результата.
+		if completeErr := n.manager.complete(ctx, f, false, cause); completeErr != nil {
+			// current содержит точную квитанцию после отказа Complete; readErr сообщает,
+			// удалось ли отличить сохранённый результат от незавершённой записи.
+			current, readErr := n.manager.config.Core.GetReceipt(ctx, f.CommandID)
+			if readErr != nil || receiptFence(current) == f && (current.Status == core.CommandClaimed || current.Status == core.CommandIssued) {
+				return errors.Join(completeErr, readErr)
+			}
+		}
 	}
 	// err содержит результат точной компенсации исполнения Session без изменения прежнего успеха
 	// запуска.

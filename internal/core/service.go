@@ -71,10 +71,12 @@ func revise(r Record) (Record, error) {
 	return r, nil
 }
 
-// checkRevision возвращает ErrConflict при несовпадении текущей и ожидаемой ревизий.
-func checkRevision(actual, expected uint64) error {
+// checkRevision сравнивает сохранённую actual с ожидаемой expected и возвращает ErrConflict
+// с причиной конфликта ревизии. known содержит только публичные ID из уже прочитанной записи;
+// сами значения ревизий в причину не включаются. При совпадении возвращается nil.
+func checkRevision(actual, expected uint64, known FailureContext) error {
 	if actual != expected {
-		return ErrConflict
+		return WithFailureReason(ErrConflict, FailureReason{Code: FailureRevisionConflict, Field: FailureFieldRevision, Context: known})
 	}
 	return nil
 }
@@ -101,12 +103,15 @@ func (s *Service) CreateStream(ctx context.Context, value Stream) (Stream, error
 
 // UpdateStream заменяет конфигурацию при ожидаемой ревизии, сохраняя неизменный ключ публикации и
 // увеличивая ревизию записи.
+// s предоставляет транзакции, ctx ограничивает запись, value задаёт новую конфигурацию,
+// expected — ожидаемую ревизию. Конфликт возвращает ID прочитанного потока без изменения данных.
 func (s *Service) UpdateStream(ctx context.Context, value Stream, expected uint64) (Stream, error) {
 	// err содержит причину отказа проверки заменяющей конфигурации потока.
 	if err := value.Validate(); err != nil {
 		return Stream{}, err
 	}
-	// err содержит причину отказа транзакционного изменения потока.
+	// err содержит причину отказа транзакционного изменения потока; r предоставляет репозитории
+	// функции, которая сверяет и сохраняет конфигурацию в той же транзакции.
 	err := s.uow.Write(ctx, func(r Repositories) error {
 		// В транзакции сверяет ожидаемую Revision и неизменность PublicationKey, затем назначает следующую
 		// Record и сохраняет Stream.
@@ -117,7 +122,7 @@ func (s *Service) UpdateStream(ctx context.Context, value Stream, expected uint6
 		if err != nil {
 			return err
 		}
-		if err = checkRevision(current.Revision, expected); err != nil {
+		if err = checkRevision(current.Revision, expected, FailureContext{StreamID: current.ID}); err != nil {
 			return err
 		}
 		if value.PublicationKey != current.PublicationKey {
@@ -165,16 +170,27 @@ func (s *Service) CreateProfile(ctx context.Context, value TranscodeProfile) (Tr
 }
 
 // UpdateProfile проверяет ожидаемую ревизию и заменяет профиль без назначения значений по умолчанию;
-// явный режим LIVE-аудио и EncodingVersion нельзя сбросить в прежнее представление.
+// полный материализованный профиль требует явного режима LIVE-аудио.
+// s предоставляет транзакции, ctx ограничивает операцию хранилища; value содержит заменяемую
+// конфигурацию профиля, expected — её ожидаемую ревизию. Конфликт возвращает ID прочитанного профиля.
 func (s *Service) UpdateProfile(ctx context.Context, value TranscodeProfile, expected uint64) (TranscodeProfile, error) {
-	// err содержит причину отказа проверки заменяющей конфигурации профиля.
-	if err := value.Validate(); err != nil {
+	// err сообщает об ошибочном имени до обращения к хранилищу.
+	if err := validText("TranscodeProfile.Name", value.Name); err != nil {
 		return TranscodeProfile{}, err
 	}
+	// Пустой LIVE-селектор проверяется после CAS, чтобы устаревшая полная замена
+	// сначала получала конфликт ревизии. Другие явные профили проверяются до транзакции.
+	if value.Profile.LiveAudioMode != "" {
+		// err сообщает нарушение полной явной конфигурации.
+		if err := value.Profile.Validate(); err != nil {
+			return TranscodeProfile{}, err
+		}
+	}
 	// err содержит причину отказа транзакционного изменения профиля.
+	// r предоставляет репозитории текущей транзакции условной замены профиля.
 	err := s.uow.Write(ctx, func(r Repositories) error {
-		// В транзакции сначала сверяет Revision, запрещает потерю явного LiveAudioMode и понижение
-		// EncodingVersion, затем сохраняет следующую версию профиля.
+		// В транзакции сверяет Revision и сохраняет следующую ревизию полного профиля;
+		// переданная функция не подставляет отсутствующие параметры запроса.
 
 		// current содержит сохранённую конфигурацию профиля для проверки ревизии, а err —
 		// причину отказа её чтения.
@@ -182,14 +198,14 @@ func (s *Service) UpdateProfile(ctx context.Context, value TranscodeProfile, exp
 		if err != nil {
 			return err
 		}
-		if err = checkRevision(current.Revision, expected); err != nil {
+		if err = checkRevision(current.Revision, expected, FailureContext{ProfileID: current.ID}); err != nil {
 			return err
 		}
-		if current.Profile.LiveAudioMode != "" && value.Profile.LiveAudioMode == "" {
+		if value.Profile.LiveAudioMode == "" {
 			return invalidEncoding("live_audio_mode", "Полная замена профиля требует явного live_audio_mode: copy или transcode.")
 		}
-		if current.Profile.Encoding.Version == EncodingVersion && value.Profile.Encoding.Version != EncodingVersion {
-			return invalidEncoding("encoding", "Профиль версии 2 требует полный объект encoding версии 2; переход к прежнему формату запрещён.")
+		if err = value.Validate(); err != nil {
+			return err
 		}
 		value.Record, err = revise(current.Record)
 		if err != nil {
@@ -230,12 +246,15 @@ func (s *Service) CreateGroup(ctx context.Context, value TranscodeGroup) (Transc
 
 // UpdateGroup заменяет проверенную конфигурацию группы при ожидаемой ревизии и увеличивает ревизию
 // записи.
+// s предоставляет транзакции, ctx ограничивает запись, value задаёт новую конфигурацию,
+// expected — ожидаемую ревизию. Контекст конфликта берётся из прочитанной группы и её связей.
 func (s *Service) UpdateGroup(ctx context.Context, value TranscodeGroup, expected uint64) (TranscodeGroup, error) {
 	// err содержит причину отказа проверки заменяющей конфигурации группы.
 	if err := value.Validate(); err != nil {
 		return TranscodeGroup{}, err
 	}
-	// err содержит причину отказа транзакционного изменения группы.
+	// err содержит причину отказа транзакционного изменения группы; r предоставляет репозитории
+	// функции, которая сверяет и сохраняет конфигурацию в той же транзакции.
 	err := s.uow.Write(ctx, func(r Repositories) error {
 		// В транзакции сверяет Revision группы, назначает следующую Record и сохраняет TranscodeGroup.
 
@@ -245,7 +264,7 @@ func (s *Service) UpdateGroup(ctx context.Context, value TranscodeGroup, expecte
 		if err != nil {
 			return err
 		}
-		if err = checkRevision(current.Revision, expected); err != nil {
+		if err = checkRevision(current.Revision, expected, FailureContext{GroupID: current.ID, StreamID: current.StreamID, ProfileID: current.ProfileID}); err != nil {
 			return err
 		}
 		value.Record, err = revise(current.Record)
@@ -288,12 +307,15 @@ func (s *Service) CreateDestination(ctx context.Context, value Destination) (Des
 
 // UpdateDestination заменяет проверенные настройки назначения при ожидаемой ревизии и увеличивает
 // ревизию записи.
+// s предоставляет транзакции, ctx ограничивает запись, value задаёт новые настройки,
+// expected — ожидаемую ревизию. Контекст конфликта берётся из прочитанного назначения и его связей.
 func (s *Service) UpdateDestination(ctx context.Context, value Destination, expected uint64) (Destination, error) {
 	// err содержит причину отказа проверки заменяющей конфигурации назначения.
 	if err := value.Validate(); err != nil {
 		return Destination{}, err
 	}
-	// err содержит причину отказа транзакционного изменения назначения.
+	// err содержит причину отказа транзакционного изменения назначения; r предоставляет репозитории
+	// функции, которая сверяет и сохраняет настройки в той же транзакции.
 	err := s.uow.Write(ctx, func(r Repositories) error {
 		// В транзакции сверяет Revision назначения, назначает следующую Record и сохраняет Destination.
 
@@ -303,7 +325,7 @@ func (s *Service) UpdateDestination(ctx context.Context, value Destination, expe
 		if err != nil {
 			return err
 		}
-		if err = checkRevision(current.Revision, expected); err != nil {
+		if err = checkRevision(current.Revision, expected, FailureContext{DestinationID: current.ID, StreamID: current.StreamID, GroupID: current.GroupID}); err != nil {
 			return err
 		}
 		value.Record, err = revise(current.Record)

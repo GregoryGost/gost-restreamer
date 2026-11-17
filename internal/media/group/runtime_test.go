@@ -82,7 +82,7 @@ func runtimeUnitFixture(t *testing.T) runtimeFixture {
 		t.Fatal(err)
 	}
 	// gen содержит зарезервированное поколение подготовки контрольного артефакта.
-	gen, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: "unit-generator"})
+	gen, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: core.CurrentFallbackGeneratorVersion})
 	if err != nil {
 		t.Fatal(err)
 	}

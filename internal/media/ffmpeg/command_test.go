@@ -22,7 +22,7 @@ func nvidiaCommandConfig() NVIDIAConfig {
 	input := format
 	input.Video.Codec = core.CodecAV1
 	input.Video.CodecProfile = "main"
-	return NVIDIAConfig{Binary: "/usr/bin/ffmpeg", Input: input, Profile: core.GroupProfile{Mode: core.ModeTranscode, LiveAudioMode: core.LiveAudioTranscode, Format: format, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 6000000, MaxBitrateBPS: 7000000, BufferBits: 12000000, GOPFrames: 60, MaxBFrames: 2, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 192000}}, VideoTimeBase: media.TimeBase{Numerator: 1, Denominator: 30000}, AudioTimeBase: media.TimeBase{Numerator: 1, Denominator: 44100}}
+	return NVIDIAConfig{Binary: "/usr/bin/ffmpeg", Input: input, Profile: core.GroupProfile{Mode: core.ModeTranscode, Encoding: core.DefaultEncoding(core.ModeTranscode, core.VideoEncoderNVENC, core.RateControlVBR), LiveAudioMode: core.LiveAudioTranscode, Format: format, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 6000000, MaxBitrateBPS: 7000000, BufferBits: 12000000, GOPFrames: 60, MaxBFrames: 2, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 192000}}, VideoTimeBase: media.TimeBase{Numerator: 1, Denominator: 30000}, AudioTimeBase: media.TimeBase{Numerator: 1, Denominator: 44100}}
 }
 
 // Проверяет точные параметры NVDEC/NVENC, аудио, цвета и временных шкал и размещение skip_manual до
@@ -86,6 +86,7 @@ func TestNVIDIACommandPreservesExplicitEncodingAndTiming(t *testing.T) {
 
 // Проверяет отказ для несогласованного цвета, пустых временных баз, неподдержанной битности, Tier,
 // открытого GOP и раскладки аудио.
+// t проверяет каждое нарушение до запуска процесса.
 func TestNVIDIACommandRejectsUnsupportedContractFields(t *testing.T) {
 	// test содержит название сценария и изменение, нарушающее один из контрактов команды.
 	for _, test := range []struct {
@@ -93,11 +94,12 @@ func TestNVIDIACommandRejectsUnsupportedContractFields(t *testing.T) {
 		name string
 		// change вносит проверяемое нарушение в контрольную конфигурацию перед построением
 		// команды.
+		// Параметр c каждого обработчика change указывает на отдельную изменяемую копию настроек построения команды.
 		change func(*NVIDIAConfig)
 	}{
 		{"цвет", func(c *NVIDIAConfig) {
-			// Меняет выходную цветовую матрицу на bt470bg, создавая расхождение с входом.
-			c.Profile.Format.Video.Color.Matrix = "bt470bg"
+			// Убирает известную цветовую матрицу, необходимую программному конвертеру.
+			c.Profile.Format.Video.Color.Matrix = "unspecified"
 		}},
 		{"шкала видео", func(c *NVIDIAConfig) {
 			// Обнуляет шкалу времени видео для проверки отказа до запуска.
@@ -124,6 +126,7 @@ func TestNVIDIACommandRejectsUnsupportedContractFields(t *testing.T) {
 			c.Profile.Format.Audio.ChannelLayout = "5.1"
 		}},
 	} {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run(test.name, func(t *testing.T) {
 			// Применяет выбранное нарушение конфигурации и требует ErrInvalidSupervisor при построении команды.
 

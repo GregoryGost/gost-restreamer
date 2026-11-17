@@ -8,10 +8,10 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
-// Создаёт самостоятельный допустимый прежний профиль AV1/AAC без блока Encoding для доменных проверок.
+// validProfile создаёт полный AV1/AAC CBR-профиль для доменных проверок.
 func validProfile() core.GroupProfile {
 	return core.GroupProfile{
-		Mode: core.ModeCopy,
+		Mode: core.ModeCopy, LiveAudioMode: core.LiveAudioCopy,
 		Format: core.MediaFormat{
 			Video: core.VideoFormat{
 				Codec: core.CodecAV1, Width: 2560, Height: 1440,
@@ -21,8 +21,9 @@ func validProfile() core.GroupProfile {
 			},
 			Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"},
 		},
-		VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 6_000_000, MaxBitrateBPS: 8_000_000, BufferBits: 12_000_000, GOPFrames: 120, ClosedGOP: true},
+		VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 6_000_000, MaxBitrateBPS: 6_000_000, BufferBits: 12_000_000, GOPFrames: 120, ClosedGOP: true},
 		AudioEncoding: core.AudioEncoding{BitrateBPS: 192_000},
+		Encoding:      core.DefaultEncoding(core.ModeCopy, core.VideoEncoderSVTAV1, core.RateControlCBR),
 	}
 }
 
@@ -99,8 +100,8 @@ func TestFormatRequiredFields(t *testing.T) {
 			f.Video.Codec = core.CodecAAC
 		}},
 		{"video_codec_unknown", func(f *core.MediaFormat) {
-			// Подставляет неподдерживаемый видеокодек vp9.
-			f.Video.Codec = "vp9"
+			// Подставляет неизвестное обозначение видеокодека.
+			f.Video.Codec = "unknown-video"
 		}},
 		{"width", func(f *core.MediaFormat) {
 			// Обнуляет обязательную ширину кадра.
@@ -163,8 +164,8 @@ func TestFormatRequiredFields(t *testing.T) {
 			f.Audio.Codec = core.CodecAV1
 		}},
 		{"audio_codec_unknown", func(f *core.MediaFormat) {
-			// Подставляет неподдерживаемый аудиокодек opus.
-			f.Audio.Codec = "opus"
+			// Подставляет неизвестное обозначение аудиокодека.
+			f.Audio.Codec = "unknown-audio-codec"
 		}},
 		{"audio_profile", func(f *core.MediaFormat) {
 			// Убирает обязательный профиль аудиокодека.
@@ -223,8 +224,9 @@ func TestFormatRequiredFields(t *testing.T) {
 	}
 }
 
-// Проверяет сохранение произвольных структурно допустимых описаний и полного диапазона прежних
-// параметров без ограничений конкретного адаптера.
+// Проверяет произвольные описания измерений отдельно от строгих настроек и сохраняет независимые
+// ограничения кодировщика отдельно от структуры измеренного формата.
+// t сообщает об ошибках проверяемого сценария.
 func TestStructuralValidationPreservesDescriptions(t *testing.T) {
 	// codec выбирает поддерживаемый видеокодек для структурной проверки.
 	for _, codec := range []core.Codec{core.CodecAV1, core.CodecH264} {
@@ -239,45 +241,29 @@ func TestStructuralValidationPreservesDescriptions(t *testing.T) {
 		// before сохраняет исходный профиль для проверки отсутствия изменения.
 		before := p
 		// err сообщает об ошибке проверки допустимости профиля.
-		if err := p.Validate(); err != nil {
-			t.Fatalf("структурный профиль %s отклонён: %v", codec, err)
+		if err := p.Format.Validate(); err != nil {
+			t.Fatalf("структурное измерение %s отклонено: %v", codec, err)
+		}
+		// err подтверждает отказ использования произвольного измеренного текста как настройки.
+		if err := p.Validate(); !errors.Is(err, core.ErrInvalidProfile) {
+			t.Fatalf("неподдержанная настройка принята: %v", err)
 		}
 		if p != before {
 			t.Fatal("валидация изменила описание")
 		}
 	}
-	// p содержит отдельный полный профиль текущего сценария проверки.
-	p := validProfile()
-	p.Mode = core.ModeTranscode
-	p.VideoEncoding.TargetBitrateBPS = 1
-	p.VideoEncoding.MaxBitrateBPS = 1
-	p.VideoEncoding.BufferBits = 1
-	p.VideoEncoding.GOPFrames = 1
-	p.VideoEncoding.MaxBFrames = 0
-	p.VideoEncoding.ClosedGOP = false
+	// p проверяет нативный минимум H.264 отдельно от открытых структурных описаний.
+	p := encodedProfile(core.VideoEncoderNVENC, core.RateControlCBR)
+	p.Format.Video.Width, p.Format.Video.Height = 2, 2
+	p.VideoEncoding = core.VideoEncoding{TargetBitrateBPS: 1, MaxBitrateBPS: 1, BufferBits: 1, GOPFrames: 1, ClosedGOP: true}
 	p.AudioEncoding.BitrateBPS = 1
-	// err сообщает об ошибке проверки допустимости профиля.
+	// err сообщает об отказе допустимого минимального рецепта.
 	if err := p.Validate(); err != nil {
-		t.Fatalf("положительная граница отклонена: %v", err)
+		t.Fatalf("Положительная нативная граница отклонена: %v", err)
 	}
 	p.Format.Video.Width, p.Format.Video.Height = 1, 1
-	p.Format.Video.FrameRate = core.FrameRate{Numerator: 1, Denominator: 1}
-	p.Format.Video.BitDepth = 1
-	p.Format.Audio.SampleRateHz, p.Format.Audio.Channels = 1, 1
-	// err сообщает об ошибке проверки допустимости профиля.
-	if err := p.Validate(); err != nil {
-		t.Fatalf("минимальные положительные размеры формата отклонены: %v", err)
-	}
-	p.Format.Video.Width, p.Format.Video.Height = math.MaxUint32, math.MaxUint32
-	p.Format.Video.BitDepth = math.MaxUint8
-	p.Format.Audio.SampleRateHz, p.Format.Audio.Channels = math.MaxUint32, math.MaxUint16
-	p.VideoEncoding.TargetBitrateBPS, p.VideoEncoding.MaxBitrateBPS = math.MaxUint64, math.MaxUint64
-	p.VideoEncoding.BufferBits = math.MaxUint64
-	p.VideoEncoding.GOPFrames, p.VideoEncoding.MaxBFrames = math.MaxUint32, math.MaxUint32
-	p.AudioEncoding.BitrateBPS = math.MaxUint64
-	// err сообщает об ошибке проверки допустимости профиля.
-	if err := p.Validate(); err != nil {
-		t.Fatalf("верхние границы типов не должны вводить ограничений адаптера: %v", err)
+	if p.Validate() == nil || p.Format.Validate() != nil {
+		t.Fatal("Структурные размеры ошибочно смешаны с ограничениями кодировщика")
 	}
 }
 
@@ -352,8 +338,8 @@ func TestProfileValidationCategories(t *testing.T) {
 	}
 }
 
-// Проверяет участие всех прежних полей в равенстве профиля, математическое равенство FPS и сохранение
-// точных пробелов строк.
+// Проверяет различимость полей, исключение недопустимых настроек из равенства и математическое
+// равенство FPS; строки настроек не обрезаются автоматически.
 func TestProfileEqualityAccountsForEveryField(t *testing.T) {
 	// cases перечисляет сценарии проверки допустимости или различимости полей профиля.
 	cases := []struct {
@@ -479,7 +465,10 @@ func TestProfileEqualityAccountsForEveryField(t *testing.T) {
 			tc.mutate(&b)
 			// err сообщает об ошибке проверки допустимости профиля.
 			if err := b.Validate(); err != nil {
-				t.Fatalf("проверка равенства получила некорректный вход: %v", err)
+				if a.Equal(b) || b.Equal(a) || b.Equal(b) {
+					t.Fatalf("недопустимый профиль участвует в равенстве: %v", err)
+				}
+				return
 			}
 			if a.Equal(b) || b.Equal(a) {
 				t.Fatal("различие поля не учтено")

@@ -142,6 +142,8 @@ type API struct {
 	active, streams int
 	// drained закрывается после ухода последнего принятого обработчика при закрытом допуске.
 	drained chan struct{}
+	// registrationErr сохраняет отказ подготовки внутренней схемы тела до возврата из New.
+	registrationErr error
 }
 
 // New связывает маршрутизатор с доменом и заданными владельцами команд и подготовки. После регистрации
@@ -170,8 +172,8 @@ func New(config Config) (*API, error) {
 	hc.CreateHooks = nil
 	hc.RejectUnknownQueryParameters = true
 	hc.Transformers = []huma.Transformer{func(ctx huma.Context, status string, v any) (any, error) {
-		// Добавляет ссылку на схему ответа и заменяет ошибки безопасным представлением, сохраняя проверенные
-		// детали ошибок профиля для статуса 422.
+		// Добавляет ссылку на схему ответа и передаёт ошибки общему преобразователю доверенных причин.
+		// Подробные профильные 422 сохраняют собственное представление.
 
 		// op содержит операцию текущего ответа для поиска его схемы.
 		if op := ctx.Operation(); op != nil {
@@ -191,27 +193,7 @@ func New(config Config) (*API, error) {
 		// n содержит численный HTTP-статус для применения безопасного преобразования ошибок.
 		n, _ := strconv.Atoi(status)
 		if n >= 400 {
-			// problem содержит доверенную ошибку профиля; ok подтверждает её тип для
-			// сохранения деталей только при 422.
-			if problem, ok := v.(*trustedProfileProblem); ok && n == 422 {
-				return problem, nil
-			}
-			// problem содержит стандартную ошибку Huma; ok подтверждает её тип перед
-			// проверкой ошибки live_audio_mode.
-			if problem, ok := v.(*huma.ErrorModel); ok && n == 422 {
-				// op содержит текущую операцию для ограничения специальной ошибки
-				// режимов создания и изменения профиля.
-				if op := ctx.Operation(); op != nil && (op.OperationID == "create-profile" || op.OperationID == "update-profile") {
-					// detail содержит очередное нарушение валидации Huma при поиске
-					// поля profile.live_audio_mode.
-					for _, detail := range problem.Errors {
-						if detail != nil && detail.Location == "body.profile.live_audio_mode" {
-							return newProfileProblem("invalid_profile", "profile.live_audio_mode", "Требуется явное значение copy или transcode."), nil
-						}
-					}
-				}
-			}
-			return safeProblem(n), nil
+			return transformProblem(ctx, n, v), nil
 		}
 		return v, nil
 	}}
@@ -229,7 +211,7 @@ func New(config Config) (*API, error) {
 		}
 		_, err = w.Write(data)
 		return err
-	}, Unmarshal: json.Unmarshal}
+	}, Unmarshal: unmarshalJSON}
 	hc.Formats = map[string]huma.Format{"application/json": format, "json": format}
 	a.huma = humachi.New(a.router, hc)
 	a.huma.UseMiddleware(func(ctx huma.Context, next func(huma.Context)) {
@@ -249,7 +231,7 @@ func New(config Config) (*API, error) {
 	})
 	a.router.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		// Возвращает безопасный ответ 404 для незарегистрированного маршрута.
-		writeProblem(w, http.StatusNotFound)
+		writeProblemCode(w, http.StatusNotFound, "route_not_found")
 	})
 	a.router.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
 		// Возвращает безопасный ответ 405 при неподдерживаемом методе известного маршрута.
@@ -260,6 +242,11 @@ func New(config Config) (*API, error) {
 	a.registerFallback()
 	a.registerRuntime()
 	a.registerSystem()
+	if a.registrationErr != nil {
+		cancel()
+		return nil, a.registrationErr
+	}
+	repairPublicNumericSchemas(a.huma.OpenAPI().Components.Schemas)
 	// schemas хранит подготовленные JSON-байты публичных схем по имени файла для дальнейшего
 	// неизменяемого чтения.
 	schemas := map[string][]byte{}
@@ -282,7 +269,7 @@ func New(config Config) (*API, error) {
 		// публичного имени.
 		data, ok := schemas[chi.URLParam(r, "schema")]
 		if !ok {
-			writeProblem(w, 404)
+			writeProblemCode(w, 404, "schema_not_found")
 			return
 		}
 		w.Header().Set("Content-Type", "application/schema+json")
@@ -372,7 +359,7 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	if a.closed {
 		a.mu.Unlock()
-		writeProblem(w, 503)
+		writeProblemCode(w, 503, "api_closed")
 		return
 	}
 	a.active++
@@ -430,8 +417,7 @@ func (a *API) operation(ctx context.Context) (context.Context, context.CancelFun
 	return context.WithTimeout(ctx, a.config.Limits.OperationTimeout)
 }
 
-// problem журналирует исходную ошибку и возвращает безопасное HTTP-представление. Только проверенные
-// ошибки профиля сохраняют подготовленные code, field и detail.
+// problem журналирует исходную ошибку и выбирает целую доверенную причину после прежней классификации.
 func (a *API) problem(err error) error {
 	if err == nil {
 		return nil
@@ -439,19 +425,7 @@ func (a *API) problem(err error) error {
 	// status содержит выбранный HTTP-статус исходной ошибки для журнала и публичного ответа.
 	status := classify(err)
 	a.config.Logger.Error("api_operation", "component", "api", "status", status, "error", err)
-	// profileError принимает проверенную доменную ошибку профиля для сохранения её публичных деталей
-	// при 422.
-	var profileError *core.ProfileError
-	if status == 422 && errors.As(err, &profileError) {
-		return newProfileProblem(profileError.Code(), profileError.Field(), profileError.Detail())
-	}
-	// inputError принимает проверенную ошибку преобразования входного профиля для безопасных code,
-	// field и detail.
-	var inputError profileInputError
-	if status == 422 && errors.As(err, &inputError) {
-		return newProfileProblem("invalid_profile", inputError.field, inputError.detail)
-	}
-	return huma.NewError(status, safeDetail(status))
+	return diagnosticProblem(err, status)
 }
 
 // classify отображает ошибки домена и транспорта в HTTP-статусы с установленным порядком приоритетов
@@ -484,85 +458,56 @@ func classify(err error) int {
 	}
 }
 
-// safeDetail возвращает подготовленное объяснение HTTP-ошибки без исходных значений запроса и
-// диагностики.
-func safeDetail(status int) string {
-	switch status {
-	case 400:
-		return "Некорректный запрос."
-	case 404:
-		return "Объект не найден."
-	case 405:
-		return "Метод не поддерживается."
-	case 408:
-		return "Истекло время передачи файла."
-	case 409:
-		return "Операция конфликтует с текущим состоянием или версией."
-	case 413:
-		return "Превышен допустимый размер тела запроса."
-	case 415:
-		return "Тип содержимого не поддерживается."
-	case 422:
-		return "Параметры запроса недопустимы."
-	case 503:
-		return "Операция временно недоступна."
-	default:
-		return "Внутренняя ошибка сервиса."
-	}
-}
-
-// safeProblem формирует Problem Details для статуса с безопасным текстом и без подробностей исходной
-// ошибки.
-func safeProblem(status int) *huma.ErrorModel {
-	return &huma.ErrorModel{Type: "about:blank", Title: http.StatusText(status), Status: status, Detail: safeDetail(status)}
-}
-
-// ProfileProblemDTO дополняет Problem Details стабильным кодом и публичным путём ошибочного поля
-// профиля.
-type ProfileProblemDTO struct {
-	// ErrorModel содержит стандартные поля Problem Details с безопасными описаниями ошибки профиля.
-	huma.ErrorModel
-	Code  string `json:"code,omitempty" doc:"Стабильный код проверенной ошибки профиля."`
-	Field string `json:"field,omitempty" doc:"Публичный путь к недопустимому полю профиля."`
-}
-
-// Обёртка отделяет проверенную доменную ошибку от произвольных ошибок Huma.
-type trustedProfileProblem struct { /* ProfileProblemDTO содержит подготовленные проверенные детали, которым разрешено пройти преобразователь ответа. */
-	ProfileProblemDTO
-}
-
-// newProfileProblem оборачивает проверенные поля ошибки профиля в отдельный доверенный тип,
-// допускаемый преобразователем ответа.
-func newProfileProblem(code, field, detail string) *trustedProfileProblem {
-	return &trustedProfileProblem{ProfileProblemDTO{Type: "about:blank", Title: http.StatusText(http.StatusUnprocessableEntity), Status: http.StatusUnprocessableEntity, Detail: detail, Code: code, Field: field}}
-}
-
 // writeProblem записывает безопасный Problem Details с заданным HTTP-статусом и Content-Type
 // application/problem+json.
 func writeProblem(w http.ResponseWriter, status int) {
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(safeProblem(status))
+	writeProblemCode(w, status, defaultProblemCode(status))
 }
 
 // operation задаёт общий префикс, идентификатор и объявленные ошибки типизированной HTTP-операции.
 func operation(method, path, id, summary string) huma.Operation {
-	return huma.Operation{Method: method, Path: Prefix + path, OperationID: id, Summary: summary, Errors: []int{400, 404, 408, 409, 413, 415, 422, 503}}
+	return huma.Operation{Method: method, Path: Prefix + path, OperationID: id, Summary: summary, Errors: []int{400, 404, 405, 408, 409, 413, 415, 422, 500, 503}}
 }
 
 // register добавляет ограничение тела и срока чтения, контекст операции и безопасное преобразование
-// ошибок. Ответ проверяется на представимость в JSON до записи; схема 422 профиля уточняется после
-// регистрации Huma.
+// ошибок. Ответ проверяется на представимость в JSON до записи; профильные 422 сохраняют отдельную схему.
 func register[I, O any](a *API, op huma.Operation, handler func(context.Context, *I) (*O, error)) {
-	// profileErrorResponse хранит специальную схему ответа 422 для операций создания и изменения
-	// профиля.
-	var profileErrorResponse *huma.Response
-	if op.OperationID == "create-profile" || op.OperationID == "update-profile" {
-		if op.Responses == nil {
-			op.Responses = map[string]*huma.Response{}
-		}
-		profileErrorResponse = &huma.Response{Description: "Параметры профиля недопустимы.", Content: map[string]*huma.MediaType{"application/problem+json": {Schema: a.huma.OpenAPI().Components.Schemas.Schema(reflect.TypeFor[ProfileProblemDTO](), true, "")}}}
+	if a.registrationErr != nil {
+		return
 	}
+	// publicBody сохраняет исходную схему; bodyMedia удерживает её описание содержимого,
+	// пока Huma захватывает отдельный указатель внутренней схемы для проверки запросов.
+	var publicBody *huma.Schema
+	var bodyMedia *huma.MediaType
+	// body описывает поле Body; hasBody отличает JSON-операции от query-only запросов.
+	if body, hasBody := reflect.TypeFor[I]().FieldByName("Body"); hasBody {
+		// registry хранит публичный граф DTO; hint повторяет правило именования Huma.
+		registry := a.huma.OpenAPI().Components.Schemas
+		hint := reflect.TypeFor[I]().Name() + "Body"
+		if reflect.TypeFor[I]().Name() == "" {
+			hint = op.OperationID + "Request"
+		}
+		if body.Tag.Get("nameHint") != "" {
+			hint = body.Tag.Get("nameHint")
+		}
+		publicBody = huma.SchemaFromField(registry, body, hint)
+		repairPublicNumericSchema(registry, publicBody, body.Type, body.Tag, map[*huma.Schema]bool{})
+		// private содержит независимую строковую проекцию; err сообщает об отказе её подготовки.
+		private, err := privateBodySchema(registry, publicBody)
+		if err != nil {
+			a.registrationErr = err
+			return
+		}
+		if op.RequestBody == nil {
+			op.RequestBody = &huma.RequestBody{}
+		}
+		if op.RequestBody.Content == nil {
+			op.RequestBody.Content = map[string]*huma.MediaType{}
+		}
+		bodyMedia = &huma.MediaType{Schema: private}
+		op.RequestBody.Content["application/json"] = bodyMedia
+	}
+	a.setProblemResponses(&op)
 	op.MaxBodyBytes = a.config.Limits.JSONBytes
 	op.BodyReadTimeout = a.config.Limits.OperationTimeout
 	huma.Register(a.huma, op, func(ctx context.Context, in *I) (*O, error) {
@@ -584,10 +529,11 @@ func register[I, O any](a *API, op huma.Operation, handler func(context.Context,
 		}
 		return out, a.problem(err)
 	})
-	if profileErrorResponse != nil {
-		// Huma добавляет стандартную схему ошибок при регистрации, поэтому уточняем её после этого шага.
-		op.Responses["422"] = profileErrorResponse
+	if bodyMedia != nil {
+		bodyMedia.Schema = publicBody
 	}
+	// Huma defineErrors заменяет объявленные ответы; восстанавливаем публичные схемы после регистрации.
+	a.setProblemResponses(&op)
 }
 
 // transportError хранит HTTP-статус, уже выбранный проверкой транспортной границы.
@@ -613,7 +559,13 @@ func pageOne() core.PageRequest { return core.PageRequest{Query: core.ListQuery{
 func replaceSchemaRefs(data []byte) []byte {
 	// schema содержит разобранное JSON-дерево схемы для замены внутренних ссылок.
 	var schema any
-	if json.Unmarshal(data, &schema) != nil {
+	// decoder сохраняет точные числовые ограничения схемы при замене ссылок.
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if decoder.Decode(&schema) != nil {
+		return data
+	}
+	if decoder.Decode(new(any)) != io.EOF {
 		return data
 	}
 	// rewrite рекурсивно обходит объекты и массивы схемы, меняя только внутренние ссылки $ref.

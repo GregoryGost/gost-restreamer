@@ -22,14 +22,19 @@ import (
 
 // Создаёт проверяемый профиль H.264 либо AV1 с видео 128×128 и стереофоническим AAC 48 kHz для тестов
 // подготовки.
+// codec выбирает выходной видеокодек контрольного профиля.
 func selfProfile(codec core.Codec) core.GroupProfile {
 	// p содержит базовый профиль видео 128×128 и AAC 48 кГц, адаптируемый к выбранному видеокодеку.
-	p := core.GroupProfile{Mode: core.ModeTranscode, Format: core.MediaFormat{Video: core.VideoFormat{Codec: codec, Width: 128, Height: 128, FrameRate: core.FrameRate{Numerator: 30, Denominator: 1}, CodecProfile: "high", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 100000, MaxBitrateBPS: 200000, BufferBits: 200000, GOPFrames: 15, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 64000}}
+	p := core.GroupProfile{Mode: core.ModeTranscode, LiveAudioMode: core.LiveAudioCopy, Format: core.MediaFormat{Video: core.VideoFormat{Codec: codec, Width: 128, Height: 128, FrameRate: core.FrameRate{Numerator: 30, Denominator: 1}, CodecProfile: "high", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 100000, MaxBitrateBPS: 200000, BufferBits: 200000, GOPFrames: 15, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 64000}}
 	if codec == core.CodecAV1 {
 		p.VideoEncoding.MaxBitrateBPS = p.VideoEncoding.TargetBitrateBPS
 		p.Mode = core.ModeCopy
 		p.Format.Video.CodecProfile = "main"
 		p.Format.Video.Tier = "main"
+	}
+	p.Encoding = core.DefaultEncoding(p.Mode, core.VideoEncoderNVENC, core.RateControlVBR)
+	if codec == core.CodecAV1 {
+		p.Encoding = core.DefaultEncoding(p.Mode, core.VideoEncoderSVTAV1, core.RateControlCBR)
 	}
 	return p
 }
@@ -94,6 +99,7 @@ func TestProductionBuildersKeepHardwarePolicyAndFDInput(t *testing.T) {
 }
 
 // Проверяет замену звука исходного видео на тишину формата профиля даже при выбранном LIVE copy.
+// t сообщает об ошибках проверяемого сценария.
 func TestProductionBuilderReplacesSourceAudioWithProfileSilence(t *testing.T) {
 	// p содержит профиль H.264 с выбранным копированием LIVE-аудио.
 	p := selfProfile(core.CodecH264)
@@ -104,7 +110,7 @@ func TestProductionBuilderReplacesSourceAudioWithProfileSilence(t *testing.T) {
 	audio.Channels, audio.ChannelLayout = 1, "mono"
 	// command содержит команду, которая должна заменить исходное аудио тишиной профиля. err сообщает
 	// об отказе её построения.
-	command, err := ProductionBuilder("ffmpeg")(GenerateRequest{Source: Source{Kind: core.AssetVideo, Format: core.SourceFormat{Audio: &audio}, Duration: time.Second, Demuxer: "mov"}, Profile: p, LoopDuration: 1600 * time.Millisecond})
+	command, err := ProductionBuilder("ffmpeg")(GenerateRequest{Source: Source{Kind: core.AssetVideo, Format: core.SourceFormat{Video: &p.Format.Video, Audio: &audio}, Duration: time.Second, Demuxer: "mov"}, Profile: p, LoopDuration: 1600 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}

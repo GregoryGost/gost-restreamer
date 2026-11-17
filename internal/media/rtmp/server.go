@@ -388,7 +388,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) (result error) {
 	for {
 		// msg содержит очередное типизированное сообщение RTMP. err сообщает об отказе чтения
 		// или разбора.
-		msg, err := rc.Read()
+		msg, err := wire.readMessage(rc.Read)
 		if err != nil {
 			return err
 		}
@@ -448,7 +448,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 }
 
-// publication переводит AV1/AAC текущего допуска OBS в конфигурации и пакеты маршрутизатора.
+// publication переводит AV1/HEVC/VP9 и поддержанное аудио текущего допуска OBS в пакеты маршрутизатора.
 type publication struct {
 	// publicationID связывает входные измерения с точным RuntimeLease публикации.
 	publicationID core.ID
@@ -460,14 +460,36 @@ type publication struct {
 	source *media.Source
 	// wire предоставляет исходные байты последней конфигурации до преобразований библиотеки.
 	wire *wireConn
-	// av1c хранит копию исходных заголовков AV1. asc хранит копию исходной AudioSpecificConfig.
+	// av1c хранит исходный video codec record без транспортного префикса и FullBox.
+	// asc хранит согласованные аудиозаголовки: исходный ASC либо описание нового аудиокодека.
 	av1c, asc []byte
+	// audioCodec различает текущую аудиопоследовательность; пустое значение сохраняет прежний AAC путь.
+	audioCodec core.Codec
+	// audioPending хранит проверенные исходные заголовки до уточнения по первой AU.
+	// У MP3/AC3 он пуст; факт начатой последовательности хранится отдельно в audioCodec.
+	audioPending []byte
+	// opusSkipPending требует потребить первую полную AU120отсчётов последовательности с preSkip120.
+	// Изменение готовности видео или источника не меняет этот признак.
+	opusSkipPending bool
+	// videoCodec выбирает семантику текущих видеозаголовков; ноль сохраняет прежнее AV1 начало.
+	videoCodec core.Codec
+	// hdrState проверяет устойчивость codec metadata отдельно от заменяемого colorInfo.
+	hdrState codec.HDRState
+	// override хранит единственный полный colorInfo и не сбрасывается одним SequenceStart.
+	override colorOverride
 	// description сохраняет проверенную последовательность AV1 и подтверждённые между TU сведения.
 	description av1Description
+	// vp9 сохраняет reference geometry между key/inter AU одной record-конфигурации.
+	vp9 codec.VP9Description
+	// hevc сохраняет только parser context: недостающие PS извлекаются из первого AU,
+	// исходный hvcC в av1c и публикуемых CodecConfig никогда не подменяется derived record.
+	hevc codec.HEVCDescription
+	// hevcReady отмечает достаточность private parameter sets для разбора последующих pictures.
+	hevcReady bool
 	// video содержит действующую видеоконфигурацию. audio содержит действующую аудиоконфигурацию.
 	video, audio media.CodecConfig
-	// videoRevision считает принятые конфигурации AV1. audioRevision считает принятые конфигурации
-	// AAC.
+	// videoRevision считает принятые video records и HDR boundaries.
+	// audioRevision считает настоящие начала аудиопоследовательностей.
 	videoRevision, audioRevision uint64
 	// fps сохраняет проверенную частоту кадров из метаданных.
 	fps core.FrameRate
@@ -486,7 +508,7 @@ type publication struct {
 	hasVideoTime, hasAudioTime bool
 }
 
-// Разбирает сообщение текущей публикации AV1/AAC: обновляет конфигурации, метаданные или передаёт AU;
+// Разбирает msg текущей публикации: обновляет конфигурации и metadata либо передаёт AU;
 // завершение последовательности и неподдержанные формы возвращают ошибку.
 func (p *publication) message(msg message.Message) error {
 	// m содержит текущее RTMP-сообщение в распознанной конкретной форме.
@@ -494,34 +516,14 @@ func (p *publication) message(msg message.Message) error {
 	case *message.DataAMF0:
 		return p.metadata(m.Payload)
 	case *message.VideoExMetadata:
-		if m.FourCC != message.FourCCAV1 {
+		if !ingestVideoFourCC(m.FourCC) {
 			return ErrCodec
 		}
-		return p.metadata(m.Payload)
+		return p.videoMetadata(m.Payload)
 	case *message.VideoExSequenceStart:
-		if m.FourCC != message.FourCCAV1 || m.AV1Config == nil {
-			return ErrCodec
-		}
-		// raw ссылается на исходное полное сообщение конфигурации AV1 из ограничителя.
-		raw := p.wire.lastConfig
-		if len(raw) < 5 {
-			return ErrCodec
-		}
-		// d содержит разобранное описание AV1. err сообщает о повреждении или неподдержанной
-		// конфигурации.
-		d, err := parseAV1Config(raw[5:])
-		if err != nil {
-			return err
-		}
-		if err = p.invalidate(); err != nil {
-			return err
-		}
-		p.av1c = append([]byte(nil), raw[5:]...)
-		p.description = d
-		p.videoRevision++
-		p.ready = false
+		return p.videoConfig(m.FourCC)
 	case *message.Audio:
-		if m.Codec != message.CodecMPEG4Audio {
+		if m.Codec != message.CodecMPEG4Audio || m.AACType != message.AudioAACTypeConfig && p.audioCodec != "" && p.audioCodec != core.CodecAAC {
 			return ErrCodec
 		}
 		if m.AACType == message.AudioAACTypeConfig {
@@ -530,22 +532,26 @@ func (p *publication) message(msg message.Message) error {
 		return p.audioPacket(m.DTS, m.AU)
 	case *message.AudioExSequenceStart:
 		if m.FourCC != message.FourCCMP4A {
-			return ErrCodec
+			return p.audioBindingConfig(m.FourCC)
 		}
 		return p.audioConfig(5)
 	case *message.AudioExCodedFrames:
-		if m.FourCC != message.FourCCMP4A {
+		// selected связывает внешний FourCC с активной аудиопоследовательностью.
+		selected := ingestAudioCodec(m.FourCC)
+		if selected == "" || selected != p.audioCodec && (selected != core.CodecAAC || p.audioCodec != "") {
 			return ErrCodec
 		}
 		return p.audioPacket(m.DTS, m.Payload)
 	case *message.VideoExCodedFrames:
-		if m.FourCC != message.FourCCAV1 {
+		if !ingestVideoFourCC(m.FourCC) || p.videoCodec != "" && ingestCodec(m.FourCC) != p.videoCodec {
 			return ErrCodec
 		}
-		return p.videoPacket(m.DTS, m.Payload)
+		return p.videoPacketCTS(m.DTS, m.PTSDelta, m.Payload)
 	case *message.VideoExFramesX:
-		// FramesX не является принятой здесь нормативной AV1 CodedFrames формой.
-		return fmt.Errorf("%w: требуется AV1 CodedFrames", ErrCodec)
+		if m.FourCC != message.FourCCHEVC || p.videoCodec != core.CodecHEVC {
+			return fmt.Errorf("%w: CodedFramesX поддержан только для HEVC", ErrCodec)
+		}
+		return p.videoPacketCTS(m.DTS, 0, m.Payload)
 	case *message.VideoExSequenceEnd, *message.AudioExSequenceEnd:
 		return ioEndSequence()
 	case *message.Video, *message.AudioExMultitrack, *message.VideoExMultitrack:
@@ -581,13 +587,22 @@ func (p *publication) audioConfig(offset int) error {
 		return err
 	}
 	p.asc = append([]byte(nil), raw[offset:]...)
+	p.audioCodec = core.CodecAAC
+	p.audioPending = nil
+	p.opusSkipPending = false
 	p.ready = false
 	return nil
 }
 
-// Проверяет метку и TU, учитывает подтверждённый вход и ждёт полной пары конфигураций с независимым
-// стартом. После готовности публикует исходный TU с точной общей шкалой и PTS=DTS.
+// videoPacket передаёт AU без смещения времени показа через общий проверенный путь приёма.
+// Равные PTS/DTS обязательны для AV1/VP9; HEVC с отдельным CTS использует videoPacketCTS.
 func (p *publication) videoPacket(t time.Duration, tu []byte) error {
+	return p.videoPacketCTS(t, 0, tu)
+}
+
+// videoPacketCTS проверяет фактический AU и сохраняет signed HEVC CTS в общей шкале.
+// Смена effective HDR даже при прежних заголовках отзывает выдачи до публикации затронутого видео.
+func (p *publication) videoPacketCTS(t, composition time.Duration, tu []byte) error {
 	// err сообщает о некорректной или уменьшившейся входной метке видео.
 	if err := p.timestamp(t, true); err != nil {
 		return err
@@ -597,10 +612,13 @@ func (p *publication) videoPacket(t time.Duration, tu []byte) error {
 	}
 	// f содержит подтверждённый формат TU либо пока неполное описание. key показывает независимость
 	// по сжатым данным. err сообщает о повреждении или нехватке сведений.
-	f, key, err := p.description.inspect(tu, p.fps)
+	f, key, err := p.inspectVideo(tu)
 	if err == nil || errors.Is(err, ErrUnready) {
 		if f.Codec == "" {
-			f.Codec = core.CodecAV1
+			f.Codec = p.videoCodec
+			if f.Codec == "" {
+				f.Codec = core.CodecAV1
+			}
 		}
 		// receivedAt выбирает сохранённое время получения сообщения либо текущее время при его
 		// отсутствии.
@@ -611,10 +629,40 @@ func (p *publication) videoPacket(t time.Duration, tu []byte) error {
 		p.router.ObserveIngressAt(p.publicationID, media.TrackVideo, uint64(len(tu)), f, core.AudioFormat{}, receivedAt)
 	}
 	if errors.Is(err, ErrUnready) {
+		if p.ready && (p.videoCodec == core.CodecVP9 || p.videoCodec == core.CodecHEVC) {
+			return err
+		}
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	if composition%time.Millisecond != 0 || composition < -(1<<23)*time.Millisecond || composition > ((1<<23)-1)*time.Millisecond || f.Codec != core.CodecHEVC && composition != 0 {
+		return codec.ErrTiming
+	}
+	if !p.ready && !key {
+		return nil
+	}
+	// hdr содержит codec snapshot текущего AU, затем заменяется полным состоянием после colorInfo.
+	var hdr media.HDRMetadata
+	if hdrVideo(f) || f.Codec == core.CodecHEVC || f.Codec == core.CodecVP9 || p.override.active {
+		hdr, err = p.hdrState.Observe(f.Codec, p.av1c, tu, key)
+		if err != nil {
+			return err
+		}
+	}
+	f, hdr, err = p.override.apply(f, hdr)
+	if err != nil {
+		return err
+	}
+	if p.ready && (p.video.Info().HDR != hdr || !sameIngestVideo(p.video.Info().Video, f)) {
+		if err = p.invalidate(); err != nil {
+			return err
+		}
+		if p.videoRevision == ^uint64(0) {
+			return ErrLimit
+		}
+		p.videoRevision++
 	}
 	if len(p.asc) == 0 {
 		return nil
@@ -623,7 +671,7 @@ func (p *publication) videoPacket(t time.Duration, tu []byte) error {
 		return ErrCodec
 	}
 	// config содержит видеоконфигурацию для фактического формата до назначения общей точной шкалы.
-	config, err := media.NewCodecConfig(media.CodecConfigInfo{Track: media.TrackVideo, SourceEpoch: p.source.Epoch(), Revision: p.videoRevision, TimeBase: media.TimeBase{Numerator: 1, Denominator: 1000}, Video: f}, p.av1c)
+	config, err := media.NewCodecConfig(media.CodecConfigInfo{Track: media.TrackVideo, SourceEpoch: p.source.Epoch(), Revision: p.videoRevision, TimeBase: media.TimeBase{Numerator: 1, Denominator: 1000}, Video: f, HDR: hdr}, p.av1c)
 	if err != nil {
 		return err
 	}
@@ -662,22 +710,24 @@ func (p *publication) videoPacket(t time.Duration, tu []byte) error {
 		p.audioDuration = audioDuration
 		p.ready = true
 	}
-	// AV1 CodedFrames несёт один TU и единственную метку T. Локальный порт
-	// сохраняет порядок TU и представляет расписание T точно в обоих полях;
-	// это не восстановление отсутствующего DTS кодировщика.
+	// AV1/VP9 CodedFrames несут единственную метку T; HEVC передаёт отдельный signed CTS.
+	// Общая шкала точно сохраняет обе сетевые метки без восстановления отсутствующего DTS.
 	// ticks содержит исходную RTMP-метку видео, точно выраженную в отсчётах общей шкалы.
 	ticks := int64(t/time.Millisecond) * int64(p.clock/1000)
-	// packet содержит исходный AV1 TU с общей шкалой, равными PTS/DTS и проверенной независимостью.
-	packet, err := media.NewPacket(media.PacketInfo{PTS: ticks, DTS: ticks, DurationTicks: p.videoDuration, Keyframe: key}, p.video, tu)
+	// packet содержит исходный AU с общей шкалой, исходным signed CTS и проверенной независимостью.
+	packet, err := media.NewPacket(media.PacketInfo{PTS: ticks + int64(composition/time.Millisecond)*int64(p.clock/1000), DTS: ticks, DurationTicks: p.videoDuration, Keyframe: key}, p.video, tu)
 	if err != nil {
 		return err
 	}
 	return p.source.Publish(packet)
 }
 
-// Проверяет метку и учитывает вход при пригодном AAC-префиксе; после готовности публикует исходную AU
-// в общей шкале с длительностью 1024 сэмпла.
+// audioPacket проверяет метку t и передаёт au по фактическому кодеку текущей аудиопоследовательности.
+// AAC сохраняет прежнюю длительность1024отсчёта и ожидание видео; новые привязки проверяются отдельно.
 func (p *publication) audioPacket(t time.Duration, au []byte) error {
+	if p.audioCodec != "" && p.audioCodec != core.CodecAAC {
+		return p.audioBindingPacket(t, au)
+	}
 	// err сообщает о некорректной или уменьшившейся входной метке аудио.
 	if err := p.timestamp(t, false); err != nil {
 		return err

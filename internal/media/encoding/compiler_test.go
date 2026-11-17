@@ -3,12 +3,99 @@ package encoding
 import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// Создаёт прежний тестовый профиль 128×128/30 с H.264 transcode либо AV1 copy для сравнения рецептов
-// компилятора.
+// Проверяет точные режимы качества SVT: чистый CQP/CRF не получает скрытых ограничений битрейта,
+// сохраняет независимые AU и передаёт выбранные AQ, tuning и lookahead без изменения профиля.
+// t сверяет параметры кодировщика с выбранным режимом качества.
+func TestCompilerSVTQualityArguments(t *testing.T) {
+	// scenario задаёт допустимую комбинацию режима качества, tuning и его числового значения SVT.
+	for _, scenario := range []struct {
+		// rc выбирает CQP либо CRF. tuning задаёт публичное имя настройки. tune задаёт числовой код SVT.
+		rc, tuning, tune string
+	}{
+		{"cqp", "psnr", "1"}, {"crf", "psnr", "1"}, {"crf", "vq", "0"},
+		{"crf", "ssim", "2"}, {"crf", "ms_ssim", "4"}, {"crf", "vmaf", "5"},
+	} {
+		// value выбирает обе крайние разрешённые настройки качества.
+		for _, value := range []int{1, 63} {
+			// t сообщает об ошибках проверяемого сценария.
+			t.Run(scenario.rc+"/"+scenario.tuning+"/"+strconv.Itoa(value), func(t *testing.T) {
+				// Компилирует крайнее качество выбранного режима и проверяет его argv и независимость AU.
+				// p содержит отдельный профиль нового AV1-рецепта без битрейта или VBV.
+				p := compilerProfile(core.CodecAV1)
+				p.LiveAudioMode = core.LiveAudioCopy
+				p.Encoding = core.DefaultEncoding(p.Mode, core.VideoEncoderSVTAV1, scenario.rc)
+				p.Encoding.SVTAV1.Tuning = scenario.tuning
+				p.Encoding.SVTAV1.LookaheadFrames = 6
+				p.VideoEncoding.TargetBitrateBPS, p.VideoEncoding.MaxBitrateBPS, p.VideoEncoding.BufferBits = 0, 0, 0
+				// flag выбирает единственный публичный параметр качества FFmpeg. aq задаёт ожидаемый AQ.
+				flag, aq := "-crf", "2"
+				if scenario.rc == core.RateControlCQP {
+					p.Encoding.QP = core.OptionalQP{Set: true, Value: value}
+					flag, aq = "-qp", "0"
+				} else {
+					p.Encoding.CRF = core.OptionalCRF{Set: true, ValueHundredths: value * 100}
+				}
+				// before сохраняет профиль для проверки отсутствия неявной материализации.
+				before := p
+				// plan содержит скомпилированные кодеки; err сообщает о нарушении нового контракта.
+				plan, err := Compile(p, Prepared)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// video объединяет аргументы для поиска обязательных параметров.
+				video := strings.Join(plan.Video, " ")
+				// want содержит очередной обязательный параметр качества или независимости AU.
+				for _, want := range []string{flag + " " + strconv.Itoa(value), "pred-struct=2", "scd=0", "enable-overlays=0", "enable-dg=0", "hierarchical-levels=0", "enable-tf=0", "aq-mode=" + aq, "tune=" + scenario.tune, "lookahead=6"} {
+					if !strings.Contains(video, want) {
+						t.Fatal(want, video)
+					}
+				}
+				// forbidden перечисляет целевые ограничения скорости, недопустимые в чистом режиме качества.
+				for _, forbidden := range []string{"-b:v", "-maxrate", "-bufsize", "rc=", "mbr="} {
+					if strings.Contains(video, forbidden) {
+						t.Fatal(forbidden, video)
+					}
+				}
+				if p != before {
+					t.Fatal("компиляция изменила профиль")
+				}
+			})
+		}
+	}
+}
+
+// Проверяет отключение PCE только для кодирования обычной 7.1: LIVE copy сохраняет исходные байты,
+// а подготовка и LIVE transcode используют один и тот же точный рецепт AAC.
+// t проверяет равенство собственных рецептов и неизменность LIVE copy.
+func TestCompilerSevenChannelPairsDisablePCEWithoutChangingLiveCopy(t *testing.T) {
+	// p содержит новый H.264-профиль с целевой обычной 7.1 и явным кодированием LIVE-аудио.
+	p := compilerProfile(core.CodecH264)
+	p.LiveAudioMode = core.LiveAudioTranscode
+	p.Encoding = core.DefaultEncoding(p.Mode, core.VideoEncoderNVENC, core.RateControlVBR)
+	p.Format.Audio.Channels, p.Format.Audio.ChannelLayout = 8, "7.1"
+	// prepared содержит рецепт AAC-тишины; err сообщает об отказе его компиляции.
+	prepared, err := Compile(p, Prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// live содержит рецепт явного перекодирования LIVE в тот же AAC.
+	live, err := Compile(p, Live)
+	if err != nil || !reflect.DeepEqual(prepared.Audio, live.Audio) || !strings.Contains(strings.Join(live.Audio, " "), "-aac_pce 0") {
+		t.Fatal(prepared, live, err)
+	}
+	p.LiveAudioMode = core.LiveAudioCopy
+	live, err = Compile(p, Live)
+	if err != nil || !reflect.DeepEqual(live.Audio, []string{"-c:a", "copy"}) {
+		t.Fatal(live, err)
+	}
+}
+
+// compilerProfile создаёт полный профиль codec для H.264 transcode либо AV1 copy с размером 128×128/30.
 func compilerProfile(codec core.Codec) core.GroupProfile {
 	// p содержит базовый тестовый профиль, который адаптируется к выбранному H.264 или AV1.
 	p := core.GroupProfile{Mode: core.ModeTranscode, Format: core.MediaFormat{Video: core.VideoFormat{Codec: codec, Width: 128, Height: 128, FrameRate: core.FrameRate{Numerator: 30, Denominator: 1}, CodecProfile: "high", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 100000, MaxBitrateBPS: 200000, BufferBits: 200000, GOPFrames: 15, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 64000}}
@@ -17,6 +104,12 @@ func compilerProfile(codec core.Codec) core.GroupProfile {
 		p.Mode = core.ModeCopy
 		p.Format.Video.CodecProfile = "main"
 		p.Format.Video.Tier = "main"
+	}
+	p.LiveAudioMode = core.LiveAudioCopy
+	if codec == core.CodecAV1 {
+		p.Encoding = core.DefaultEncoding(p.Mode, core.VideoEncoderSVTAV1, core.RateControlCBR)
+	} else {
+		p.Encoding = core.DefaultEncoding(p.Mode, core.VideoEncoderNVENC, core.RateControlVBR)
 	}
 	return p
 }
@@ -122,44 +215,19 @@ func TestCompilerExplicitRateControlAndEveryEncoderOption(t *testing.T) {
 	}
 }
 
-// Проверяет прежние различия LIVE и подготовки, отсутствие явного lookahead при auto и отказ для
-// неизвестной цели, AV1 LIVE и конфликтующего custom.
-func TestCompilerLegacySemanticsAndAutoLookahead(t *testing.T) {
-	// p содержит профиль без явных параметров кодировщика для проверки прежних рецептов.
-	p := compilerProfile(core.CodecH264)
-	// live содержит аргументы эфира прежнего H.264-профиля. err сообщает об отказе компиляции.
-	live, err := Compile(p, Live)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// prepared содержит аргументы подготовки, сравниваемые с LIVE и последующими вариантами AV1.
+// TestCompilerRejectsMissingSettingsAndKeepsAutoLookahead проверяет явную текущую модель,
+// отсутствие override при auto lookahead и ранний отказ неверного target или конфликтующего custom.
+// t сообщает о нарушении входных ограничений либо аргументов SVT.
+func TestCompilerRejectsMissingSettingsAndKeepsAutoLookahead(t *testing.T) {
+	// p задаёт полный AV1 copy с VBR без VBV и без явного lookahead.
+	p := compilerProfile(core.CodecAV1)
+	p.Encoding = core.DefaultEncoding(p.Mode, core.VideoEncoderSVTAV1, core.RateControlVBR)
+	p.Encoding.SVTAV1.LookaheadFrames = -1
+	p.VideoEncoding.MaxBitrateBPS, p.VideoEncoding.BufferBits = 0, 0
+	// prepared содержит аргументы подготовки; err сохраняет отказ компиляции.
 	prepared, err := Compile(p, Prepared)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(strings.Join(live.Video, " "), "-rc vbr") || strings.Contains(strings.Join(prepared.Video, " "), "-rc ") {
-		t.Fatal(live, prepared)
-	}
-	if strings.Contains(strings.Join(live.Video, " "), "-preset") {
-		t.Fatal(live)
-	}
-	p = compilerProfile(core.CodecAV1)
-	prepared, err = Compile(p, Prepared)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(strings.Join(prepared.Video, " "), "rc=2:mbr=0:pred-struct=1") {
-		t.Fatal(prepared)
-	}
-	p.Encoding = core.DefaultEncoding(p.Mode, "libsvtav1", "vbr")
-	p.VideoEncoding.MaxBitrateBPS = 0
-	p.VideoEncoding.BufferBits = 0
-	prepared, err = Compile(p, Prepared)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(strings.Join(prepared.Video, " "), "lookahead=") {
-		t.Fatal("auto требует отсутствия override", prepared)
+	if err != nil || strings.Contains(strings.Join(prepared.Video, " "), "lookahead=") {
+		t.Fatal(prepared, err)
 	}
 	if _, err = Compile(p, Live); err == nil {
 		t.Fatal("copy запустил encoder LIVE")
@@ -170,6 +238,10 @@ func TestCompilerLegacySemanticsAndAutoLookahead(t *testing.T) {
 	p.Encoding.VideoCustom = "rc=1"
 	if _, err = Compile(p, Prepared); err == nil {
 		t.Fatal("конфликт прошёл compiler")
+	}
+	p.Encoding = core.EncodingSettings{}
+	if _, err = Compile(p, Prepared); err == nil {
+		t.Fatal("нулевые настройки получили исполнимый рецепт")
 	}
 }
 

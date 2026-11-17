@@ -127,10 +127,10 @@ func TestContractWireRejectsUnsupportedCodecsBeforeRemainingPayload(t *testing.T
 	}{
 		{"legacy-video", 9, []byte{0x17}, 13},
 		{"video-multitrack", 9, []byte{0x96}, 13},
-		{"non-av1", 9, []byte{0x91, 'h', 'v', 'c', '1'}, 17},
+		{"unsupported-vvc", 9, []byte{0x91, 'v', 'v', 'c', '1'}, 17},
 		{"non-aac", 8, []byte{0x2f}, 13},
 		{"audio-multitrack", 8, []byte{0x95}, 13},
-		{"non-mp4a", 8, []byte{0x91, 'O', 'p', 'u', 's'}, 17},
+		{"unsupported-eac3", 8, []byte{0x91, 'e', 'c', '-', '3'}, 17},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Проверяет ранний отказ выбранного неподдержанного кодека до чтения оставшихся байтов полезной

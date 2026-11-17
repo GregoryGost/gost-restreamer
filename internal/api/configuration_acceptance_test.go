@@ -3,12 +3,10 @@ package api_test
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -130,16 +128,34 @@ func apiAcceptanceJSON(t *testing.T, w *httptest.ResponseRecorder) map[string]an
 	// v принимает JSON-объект настоящего ответа API.
 	var v map[string]any
 	// err содержит отказ разбора JSON-тела тестового ответа.
-	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+	if err := apiAcceptanceDecodeJSON(w.Body.Bytes(), &v); err != nil {
 		t.Fatal(err)
 	}
 	return v
 }
 
-// apiAcceptanceProfile создаёт прежний полный профиль с большими точными целыми и несокращённой дробью
-// FPS для проверки сохранности представления.
+// apiAcceptanceDecodeJSON разбирает данные в target, сохраняя числовые токены как json.Number
+// в нетипизированных объектах; типизированные поля проходят обычную проверку encoding/json.
+func apiAcceptanceDecodeJSON(data []byte, target any) error {
+	// decoder читает исходные JSON-байты без преобразования целых в float64.
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	// err содержит отказ чтения единственного ожидаемого значения JSON.
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	// extra выявляет второе значение или мусор после первого объекта, как json.Unmarshal.
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return core.ErrInvalid
+	}
+	return nil
+}
+
+// apiAcceptanceProfile создаёт полный текущий AV1-профиль с несокращённой дробью
+// FPS и допустимыми нативными битрейтами для проверки точного представления.
 func apiAcceptanceProfile() core.GroupProfile {
-	return core.GroupProfile{Mode: core.ModeCopy, Format: core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecAV1, Width: 640, Height: 360, FrameRate: core.FrameRate{Numerator: 60000, Denominator: 2002}, CodecProfile: "main", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: math.MaxUint64 - 1, MaxBitrateBPS: math.MaxUint64, BufferBits: math.MaxUint64, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 9007199254740993}}
+	return core.GroupProfile{Mode: core.ModeCopy, LiveAudioMode: core.LiveAudioCopy, Encoding: core.DefaultEncoding(core.ModeCopy, core.VideoEncoderSVTAV1, core.RateControlCBR), Format: core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecAV1, Width: 640, Height: 360, FrameRate: core.FrameRate{Numerator: 60000, Denominator: 2002}, CodecProfile: "main", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 4000000, MaxBitrateBPS: 4000000, BufferBits: 8000000, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 128000}}
 }
 
 // apiAcceptanceSeedConfiguration создаёт связанные Stream, Profile, Group и Destination с
@@ -171,9 +187,9 @@ func apiAcceptanceSeedConfiguration(t *testing.T, f *apiAcceptanceFixture) (core
 	return s, p, g, d
 }
 
-// apiAcceptanceInsertLegacyProfile сохраняет прежний профиль напрямую в тестовое хранилище, обходя
-// правила создания нового HTTP-профиля.
-func apiAcceptanceInsertLegacyProfile(t *testing.T, f *apiAcceptanceFixture, profile core.GroupProfile) core.TranscodeProfile {
+// apiAcceptanceInsertProfile сохраняет полный profile напрямую в хранилище f; t
+// сообщает ошибку вставки без прохождения HTTP и назначения значений по умолчанию.
+func apiAcceptanceInsertProfile(t *testing.T, f *apiAcceptanceFixture, profile core.GroupProfile) core.TranscodeProfile {
 	t.Helper()
 	// now задаёт UTC-времена прежнего профиля с микросекундной точностью SQLite.
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -181,6 +197,7 @@ func apiAcceptanceInsertLegacyProfile(t *testing.T, f *apiAcceptanceFixture, pro
 	// нового HTTP-профиля.
 	p := core.TranscodeProfile{ID: "legacy-profile", Revision: 1, CreatedAt: now, UpdatedAt: now, Name: "Прежний", Profile: profile}
 	// err содержит отказ прямой вставки прежнего профиля в тестовую БД.
+	// r предоставляет репозитории текущей операции хранилища.
 	if err := f.store.Write(context.Background(), func(r core.Repositories) error {
 		// Вставляет прежний профиль напрямую, сохраняя его исходное представление без значений по умолчанию
 		// сервиса.
@@ -242,7 +259,7 @@ func TestAcceptanceConfigurationPresenceCASAndKeyReadback(t *testing.T) {
 	}
 	// path адресует назначение, изменяемое и удаляемое по ожидаемой ревизии.
 	path := "/destinations/" + string(d.ID)
-	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":"1","enabled":false,"stream_key":""}`, 200)
+	apiAcceptanceRequest(t, f.api, "PATCH", path, `{"expected_revision":1,"enabled":false,"stream_key":""}`, 200)
 	// stored содержит назначение после PATCH; err содержит отказ чтения для проверки false, пустого
 	// ключа и сохранённых полей.
 	stored, err := f.service.GetDestination(context.Background(), d.ID)
@@ -255,7 +272,7 @@ func TestAcceptanceConfigurationPresenceCASAndKeyReadback(t *testing.T) {
 		body string
 		// status задаёт ожидаемый отказ структуры, ревизии, null или Decimal.
 		status int
-	}{{`{"enabled":true}`, 422}, {`{"expected_revision":"1","enabled":true}`, 409}, {`{"expected_revision":"2","enabled":null}`, 422}, {`{"expected_revision":2,"enabled":true}`, 422}, {`{"expected_revision":"18446744073709551616","enabled":true}`, 422}} {
+	}{{`{"enabled":true}`, 422}, {`{"expected_revision":1,"enabled":true}`, 409}, {`{"expected_revision":2,"enabled":null}`, 422}, {`{"expected_revision":"2","enabled":true}`, 422}, {`{"expected_revision":18446744073709551616,"enabled":true}`, 422}} {
 		// w содержит текущий отказ PATCH для проверки application/problem+json.
 		w := apiAcceptanceRequest(t, f.api, "PATCH", path, tc.body, tc.status)
 		if !strings.HasPrefix(w.Header().Get("Content-Type"), "application/problem+json") {
@@ -266,7 +283,7 @@ func TestAcceptanceConfigurationPresenceCASAndKeyReadback(t *testing.T) {
 	if err != nil || stored.Revision != 2 || stored.Enabled || stored.StreamKey != "" {
 		t.Fatal("отклонённые PATCH изменили конфигурацию", stored, err)
 	}
-	apiAcceptanceRequest(t, f.api, "PATCH", "/streams/"+string(s.ID), `{"expected_revision":"1","publication_key":"changed"}`, 422)
+	apiAcceptanceRequest(t, f.api, "PATCH", "/streams/"+string(s.ID), `{"expected_revision":1,"publication_key":"changed"}`, 422)
 	// stream содержит Stream после запрещённого изменения publication_key для проверки неизменности
 	// ключа.
 	stream, err := f.service.GetStream(context.Background(), s.ID)
@@ -299,7 +316,7 @@ func TestAcceptanceConcurrentCASUpdatesHaveExactlyOneWinner(t *testing.T) {
 			// w сохраняет ответ одного конкурентного PATCH.
 			w := httptest.NewRecorder()
 			// r содержит PATCH одного имени с общей ожидаемой ревизией 1.
-			r := httptest.NewRequest("PATCH", api.Prefix+"/streams/"+string(s.ID), strings.NewReader(fmt.Sprintf(`{"expected_revision":"1","name":%q}`, name)))
+			r := httptest.NewRequest("PATCH", api.Prefix+"/streams/"+string(s.ID), strings.NewReader(fmt.Sprintf(`{"expected_revision":1,"name":%q}`, name)))
 			r.Header.Set("Content-Type", "application/json")
 			f.api.ServeHTTP(w, r)
 			statuses <- w.Code
@@ -339,10 +356,10 @@ func TestAcceptanceFallbackPolicyCASPreservesStreamAndSupportsExplicitClear(t *t
 	// path адресует самостоятельный ресурс политики заглушки Stream.
 	path := "/streams/" + string(s.ID) + "/fallback-policy"
 	// policy содержит JSON полной политики с точным сроком за пределами точности JavaScript.
-	policy := fmt.Sprintf(`{"expected_revision":"1","fallback":{"asset_id":%q,"watchdog":{"video_timeout_ns":"9007199254740993","audio_timeout_ns":"1000000001","recovery_window_ns":"1000000002","keyframe_timeout_ns":"1000000003"}}}`, a.ID)
-	// w содержит ответ замены политики для проверки точной наносекундной строки.
+	policy := fmt.Sprintf(`{"expected_revision":1,"fallback":{"asset_id":%q,"watchdog":{"video_timeout_ns":9007199254740993,"audio_timeout_ns":1000000001,"recovery_window_ns":1000000002,"keyframe_timeout_ns":1000000003}}}`, a.ID)
+	// w содержит ответ замены политики для проверки точного числового значения наносекунд.
 	w := apiAcceptanceRequest(t, f.api, "PUT", path, policy, 200)
-	if !strings.Contains(w.Body.String(), `"video_timeout_ns":"9007199254740993"`) {
+	if !strings.Contains(w.Body.String(), `"video_timeout_ns":9007199254740993`) {
 		t.Fatal("длительность потеряла точность", w.Body)
 	}
 	// stored содержит Stream после замены и последующей очистки политики.
@@ -350,34 +367,34 @@ func TestAcceptanceFallbackPolicyCASPreservesStreamAndSupportsExplicitClear(t *t
 	if err != nil || stored.Revision != 2 || stored.Name != s.Name || stored.PublicationKey != s.PublicationKey || stored.Fallback.AssetID != a.ID || stored.Fallback.Watchdog.VideoTimeout != 9007199254740993 {
 		t.Fatal("PUT policy изменил Stream или длительность", stored, err)
 	}
-	apiAcceptanceRequest(t, f.api, "PUT", path, `{"expected_revision":"2"}`, 422)
-	apiAcceptanceRequest(t, f.api, "PUT", path, `{"expected_revision":"1","fallback":null}`, 409)
-	apiAcceptanceRequest(t, f.api, "PUT", path, `{"expected_revision":"2","fallback":null}`, 200)
+	apiAcceptanceRequest(t, f.api, "PUT", path, `{"expected_revision":2}`, 422)
+	apiAcceptanceRequest(t, f.api, "PUT", path, `{"expected_revision":1,"fallback":null}`, 409)
+	apiAcceptanceRequest(t, f.api, "PUT", path, `{"expected_revision":2,"fallback":null}`, 200)
 	stored, err = f.service.GetStream(context.Background(), s.ID)
 	if err != nil || stored.Fallback != (core.FallbackPolicy{}) || stored.Revision != 3 || stored.PublicationKey != s.PublicationKey {
 		t.Fatal("явная очистка policy не применена", stored, err)
 	}
-	apiAcceptanceRequest(t, f.api, "PATCH", "/streams/"+string(s.ID), strings.Replace(policy, `"expected_revision":"1"`, `"expected_revision":"3"`, 1), 200)
-	apiAcceptanceRequest(t, f.api, "PATCH", "/streams/"+string(s.ID), `{"expected_revision":"4","fallback":null}`, 200)
+	apiAcceptanceRequest(t, f.api, "PATCH", "/streams/"+string(s.ID), strings.Replace(policy, `"expected_revision":1`, `"expected_revision":3`, 1), 200)
+	apiAcceptanceRequest(t, f.api, "PATCH", "/streams/"+string(s.ID), `{"expected_revision":4,"fallback":null}`, 200)
 }
 
-// Проверяет сохранение полных uint64, исходной дроби FPS и произвольных байтов профиля через GET, POST
+// Проверяет сохранение полных uint64, исходной дроби FPS и допустимых строк профиля через GET, POST
 // и полную замену PATCH.
-func TestAcceptanceProfileRoundTripPreservesFullIntegersFPSAndBytes(t *testing.T) {
+// t сообщает об ошибках проверяемого сценария.
+func TestAcceptanceProfileRoundTripPreservesFullIntegersFPSAndStrings(t *testing.T) {
 	// f содержит API сценария точного полного цикла профиля.
 	f := newAPIAcceptanceFixture(t, nil)
-	// p содержит полный профиль с большими uint64, исходной дробью FPS и затем невалидными UTF-8
-	// байтами.
+	// p содержит полный профиль с большими uint64, исходной дробью FPS и допустимыми строками.
 	p := apiAcceptanceProfile()
-	p.Format.Video.Level = string([]byte{0xff, 'x', 0xfe})
-	p.Format.Audio.ChannelLayout = string([]byte{'s', 0x80, 't'})
+	p.Format.Video.Level = "2.0"
+	p.Format.Audio.ChannelLayout = "stereo"
 	// stored содержит сохранённый точный профиль; err содержит отказ создания.
 	stored, err := f.service.CreateProfile(context.Background(), core.TranscodeProfile{Name: "Точный профиль", Profile: p})
 	if err != nil {
 		t.Fatal(err)
 	}
 	p = stored.Profile
-	// w сохраняет GET профиля для проверки JSON-строк точных целых.
+	// w сохраняет GET профиля для проверки числовых JSON-токенов точных целых.
 	w := apiAcceptanceRequest(t, f.api, "GET", "/transcode-profiles/"+string(stored.ID), "", 200)
 	// v содержит разобранный публичный ресурс профиля.
 	v := apiAcceptanceJSON(t, w)
@@ -385,30 +402,20 @@ func TestAcceptanceProfileRoundTripPreservesFullIntegersFPSAndBytes(t *testing.T
 	profile := v["profile"].(map[string]any)
 	// video содержит общие видеонастройки с проверяемыми точными uint64.
 	video := profile["video_encoding"].(map[string]any)
-	if video["max_bitrate_bps"] != "18446744073709551615" || video["target_bitrate_bps"] != "18446744073709551614" || profile["audio_encoding"].(map[string]any)["bitrate_bps"] != "9007199254740993" {
+	if video["max_bitrate_bps"] != json.Number("4000000") || video["target_bitrate_bps"] != json.Number("4000000") || profile["audio_encoding"].(map[string]any)["bitrate_bps"] != json.Number("128000") {
 		t.Fatalf("целые потеряли точность: %s", w.Body)
 	}
 	// format содержит полное публичное описание обеих дорожек.
 	format := profile["format"].(map[string]any)
-	// vf содержит видеоформат с несокращённым FPS и байтовым level.
+	// vf содержит видеоформат с несокращённым FPS и строковым level.
 	vf := format["video"].(map[string]any)
-	if !reflect.DeepEqual(vf["frame_rate"], map[string]any{"numerator": float64(60000), "denominator": float64(2002)}) {
+	if !reflect.DeepEqual(vf["frame_rate"], map[string]any{"numerator": json.Number("60000"), "denominator": json.Number("2002")}) {
 		t.Fatal("исходная дробь FPS нормализована")
 	}
-	// tc связывает возвращённое байтовое поле с его точным исходным содержимым.
-	for _, tc := range []struct {
-		// value содержит публичное представление невалидных UTF-8 байтов.
-		value any
-		// bytes содержит исходные точные байты для проверки base64.
-		bytes string
-	}{{vf["level"], p.Format.Video.Level}, {format["audio"].(map[string]any)["channel_layout"], p.Format.Audio.ChannelLayout}} {
-		// encoded содержит объектное представление поля; ok подтверждает объект вместо потери
-		// исходных байтов.
-		encoded, ok := tc.value.(map[string]any)
-		if !ok || encoded["encoding"] != "base64" || encoded["value"] != base64.StdEncoding.EncodeToString([]byte(tc.bytes)) {
-			t.Fatalf("байтовое поле заменено: %#v", tc.value)
-		}
+	if vf["level"] != p.Format.Video.Level || format["audio"].(map[string]any)["channel_layout"] != p.Format.Audio.ChannelLayout {
+		t.Fatal("Строки профиля изменены", format)
 	}
+
 	// body содержит JSON создания копии полного возвращённого профиля.
 	body, err := json.Marshal(map[string]any{"name": "Копия", "profile": profile})
 	if err != nil {
@@ -423,16 +430,16 @@ func TestAcceptanceProfileRoundTripPreservesFullIntegersFPSAndBytes(t *testing.T
 	}
 	// copyPath адресует созданную копию для проверок неполной и полной замены.
 	copyPath := "/transcode-profiles/" + created["id"].(string)
-	apiAcceptanceRequest(t, f.api, "PATCH", copyPath, `{"expected_revision":"1","profile":{"mode":"copy"}}`, 422)
-	apiAcceptanceRequest(t, f.api, "PATCH", copyPath, `{"expected_revision":"1","profile":null}`, 422)
-	video["closed_gop"] = false
-	body, err = json.Marshal(map[string]any{"expected_revision": "1", "profile": profile})
+	apiAcceptanceRequest(t, f.api, "PATCH", copyPath, `{"expected_revision":1,"profile":{"mode":"copy"}}`, 422)
+	apiAcceptanceRequest(t, f.api, "PATCH", copyPath, `{"expected_revision":1,"profile":null}`, 422)
+	video["gop_frames"] = json.Number("60")
+	body, err = json.Marshal(map[string]any{"expected_revision": json.Number("1"), "profile": profile})
 	if err != nil {
 		t.Fatal(err)
 	}
 	apiAcceptanceRequest(t, f.api, "PATCH", copyPath, string(body), 200)
 	copy, err = f.service.GetProfile(context.Background(), copy.ID)
-	p.VideoEncoding.ClosedGOP = false
+	p.VideoEncoding.GOPFrames = 60
 	if err != nil || !reflect.DeepEqual(copy.Profile, p) {
 		t.Fatal("полная замена профиля потеряла поля или false", copy, err)
 	}
@@ -465,7 +472,7 @@ func TestAcceptanceFrameworkErrorsNeverEchoRejectedValues(t *testing.T) {
 		apiAcceptanceNoSecrets(t, w.Body.String(), secret)
 		// v содержит Problem Details для проверки статуса и отсутствия исходного массива errors.
 		v := apiAcceptanceJSON(t, w)
-		if v["status"] != float64(tc.status) || v["errors"] != nil {
+		if v["status"] != json.Number(strconv.Itoa(tc.status)) || v["errors"] != nil {
 			t.Fatalf("небезопасная структура Problem: %s", w.Body)
 		}
 	}

@@ -25,7 +25,7 @@ func conversionCommandConfig() ffmpeg.NVIDIAConfig {
 	output.Video.Width, output.Video.Height = 1920, 1080
 	output.Video.FrameRate = core.FrameRate{Numerator: 30, Denominator: 1}
 	output.Audio.SampleRateHz = 44100
-	return ffmpeg.NVIDIAConfig{Binary: "/usr/bin/ffmpeg", Input: input, VideoTimeBase: media.TimeBase{Numerator: 1, Denominator: 60000}, AudioTimeBase: media.TimeBase{Numerator: 1, Denominator: 48000}, Profile: core.GroupProfile{Mode: core.ModeTranscode, LiveAudioMode: core.LiveAudioTranscode, Format: output, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 6000000, MaxBitrateBPS: 8000000, BufferBits: 12000000, GOPFrames: 60, MaxBFrames: 2, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 192000}}}
+	return ffmpeg.NVIDIAConfig{Binary: "/usr/bin/ffmpeg", Input: input, VideoTimeBase: media.TimeBase{Numerator: 1, Denominator: 60000}, AudioTimeBase: media.TimeBase{Numerator: 1, Denominator: 48000}, Profile: core.GroupProfile{Mode: core.ModeTranscode, Encoding: core.DefaultEncoding(core.ModeTranscode, core.VideoEncoderNVENC, core.RateControlVBR), LiveAudioMode: core.LiveAudioTranscode, Format: output, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 6000000, MaxBitrateBPS: 8000000, BufferBits: 12000000, GOPFrames: 60, MaxBFrames: 2, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 192000}}}
 }
 
 // Возвращает единственное значение заданного флага команды либо завершает тест при отсутствии, повторе
@@ -108,6 +108,7 @@ func TestAcceptanceNVIDIAConvertsProfileOnOneExplicitGrid(t *testing.T) {
 
 // Проверяет поддержанные рациональные частоты, сокращение только в команде и отдельные отказы
 // диапазона, общей шкалы, точности FPS, цвета и режима copy.
+// t сверяет сокращённые дроби и ранние отказы непредставимых значений.
 func TestAcceptanceNVIDIARationalRatesAndPrecisionRefusal(t *testing.T) {
 	// tc содержит очередной сценарий точной рациональной частоты кадров.
 	for _, tc := range []struct {
@@ -122,9 +123,10 @@ func TestAcceptanceNVIDIARationalRatesAndPrecisionRefusal(t *testing.T) {
 		{"ntsc", core.FrameRate{Numerator: 30000, Denominator: 1001}, "30000/1001"},
 		{"equivalent", core.FrameRate{Numerator: 120000, Denominator: 4004}, "30000/1001"},
 		{"ntsc60", core.FrameRate{Numerator: 60000, Denominator: 1001}, "60000/1001"},
-		{"small", core.FrameRate{Numerator: 1, Denominator: math.MaxInt32}, "1/2147483647"},
+		{"small", core.FrameRate{Numerator: 1, Denominator: 44500}, "1/44500"},
 		{"large_equivalent", core.FrameRate{Numerator: 4000000000, Denominator: 2000000000}, "2/1"},
 	} {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run(tc.name, func(t *testing.T) {
 			// Проверяет сокращённую дробь единственного фильтра FPS без изменения исходного профиля.
 
@@ -159,8 +161,13 @@ func TestAcceptanceNVIDIARationalRatesAndPrecisionRefusal(t *testing.T) {
 		// name задаёт название сценария отказа точности, временной шкалы или цвета.
 		name string
 		// change вносит конкретное нарушение профиля перед проверкой отказа команды.
+		// Параметр c каждого обработчика change указывает на отдельную изменяемую копию настроек построения команды.
 		change func(*ffmpeg.NVIDIAConfig)
 	}{
+		{"frame_duration_overflow", func(c *ffmpeg.NVIDIAConfig) {
+			// c задаёт целую длительность кадра вне нативного диапазона аудиошкалы.
+			c.Profile.Format.Video.FrameRate = core.FrameRate{Numerator: 1, Denominator: math.MaxInt32}
+		}},
 		{"missing_audio_base", func(c *ffmpeg.NVIDIAConfig) {
 			// Обнуляет AudioTimeBase для проверки отказа неполной конфигурации.
 			c.AudioTimeBase = media.TimeBase{}
@@ -187,6 +194,7 @@ func TestAcceptanceNVIDIARationalRatesAndPrecisionRefusal(t *testing.T) {
 			c.Profile.Format.Video.Color.Transfer = "smpte2084"
 		}},
 	} {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run(tc.name, func(t *testing.T) {
 			// Вносит выбранное нарушение точности или формата и требует отказа построения команды.
 

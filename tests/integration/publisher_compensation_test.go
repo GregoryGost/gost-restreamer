@@ -34,7 +34,7 @@ type publisherCompensationFixture struct {
 
 // Создаёт работающую сессию и два выхода в изолированной SQLite с бюджетом одного наблюдателя выхода.
 // Возвращает общий Router без медиагрупп; освобождение хранилища, наблюдателя и Router
-// зарегистрировано в t.Cleanup.
+// зарегистрировано в t.Cleanup. t сообщает об отказе подготовки и последующих проверок.
 func newPublisherCompensationFixture(t *testing.T) publisherCompensationFixture {
 	t.Helper()
 	// ctx используется для создания тестовой сессии и синтетической подготовки заглушки.
@@ -51,6 +51,7 @@ func newPublisherCompensationFixture(t *testing.T) publisherCompensationFixture 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Обратный вызов очистки закрывает временный Store при любом исходе теста.
 	t.Cleanup(func() {
 		// Закрывает временное хранилище проверки компенсации неактивированного выхода.
 
@@ -98,7 +99,7 @@ func newPublisherCompensationFixture(t *testing.T) publisherCompensationFixture 
 		}
 	}
 	// gen содержит резерв подготовки и точную обязательную привязку единственного профиля.
-	gen, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: "controlled-generator"})
+	gen, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: core.CurrentFallbackGeneratorVersion})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,6 +147,7 @@ func newPublisherCompensationFixture(t *testing.T) publisherCompensationFixture 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Обратный вызов очистки закрывает наблюдателя до освобождения Store.
 	t.Cleanup(func() {
 		// Закрывает наблюдателя родительской Session после проверки изоляции компенсации.
 
@@ -164,6 +166,7 @@ func newPublisherCompensationFixture(t *testing.T) publisherCompensationFixture 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Обратный вызов очистки закрывает Router до освобождения Store.
 	t.Cleanup(func() {
 		// Закрывает маршрутизатор после освобождения подготовленных отправителей.
 

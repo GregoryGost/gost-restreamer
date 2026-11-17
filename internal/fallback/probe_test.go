@@ -15,6 +15,55 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/media/fmp4"
 )
 
+// Проверяет точное восстановление ffprobe extradata и отказ при разрыве смещений, неверной
+// шестнадцатеричной записи, отсутствующей ASCII-колонке либо неполном объявленном размере.
+func TestProbeExtraDataPreservesBytesAndRejectsIncompleteDump(t *testing.T) {
+	// dump содержит две строки реального формата ffprobe с 18 байтами и отдельной ASCII-колонкой.
+	dump := "\n00000000: 0011 2233 4455 6677 8899 aabb ccdd eeff  ..\"3DUfw........\n00000010: 1190                                     ..\n"
+	// expected содержит те же исходные байты, включая отдельные байты короткой последней строки.
+	expected := []byte{0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x90}
+	// actual содержит восстановленные байты; err сообщает об отказе чтения корректного дампа.
+	actual, err := probeExtraData(dump, 18)
+	if err != nil || !bytes.Equal(actual, expected) {
+		t.Fatal(actual, err)
+	}
+	// invalid содержит очередное усечение или повреждение дампа.
+	for _, invalid := range []string{"", "00000000 1190  ..", "00000000: zzzz  ..", "00000000: 119  ..", "00000000: 1190", strings.ReplaceAll(dump, "00000010:", "00000011:")} {
+		// err сообщает о принятии повреждённой структуры вместо отказа.
+		if _, err := probeExtraData(invalid, 18); err == nil {
+			t.Fatalf("повреждённый дамп принят: %q", invalid)
+		}
+	}
+	if _, err = probeExtraData(dump, 17); err == nil {
+		t.Fatal("усечённый объявленный размер принят")
+	}
+}
+
+// Проверяет восстановление отсутствующего layout из настоящего ASC и сверку измеренных полей,
+// не позволяя ни подставить желаемый профиль, ни проигнорировать повреждённый codec extradata.
+func TestProbeAudioUsesActualASCWithoutLayout(t *testing.T) {
+	// stream описывает реальный стереофонический AAC LC 48 кГц с отсутствующим channel_layout.
+	stream := probeStream{Codec: "aac", Profile: "LC", SampleRate: "48000", Channels: 2, ExtraData: "\n00000000: 1190                                     ..\n", ExtraDataSize: 2}
+	// actual содержит формат, восстановленный по ASC; err сообщает об отказе подтверждения формата.
+	actual, err := stream.audio()
+	if err != nil || actual.ChannelLayout != "stereo" || actual.Channels != 2 {
+		t.Fatal(actual, err)
+	}
+	// corrupt содержит очередное описание, противоречащее фактическому ASC.
+	for _, corrupt := range []probeStream{
+		{Codec: "aac", Profile: "LC", SampleRate: "48000", Channels: 1, ExtraData: stream.ExtraData, ExtraDataSize: 2},
+		{Codec: "aac", Profile: "LC", SampleRate: "44100", Channels: 2, ExtraData: stream.ExtraData, ExtraDataSize: 2},
+		{Codec: "aac", Profile: "HE-AAC", SampleRate: "48000", Channels: 2, ExtraData: stream.ExtraData, ExtraDataSize: 2},
+		{Codec: "aac", Profile: "LC", SampleRate: "48000", Channels: 2, ExtraData: stream.ExtraData, ExtraDataSize: 3},
+		{Codec: "aac", Profile: "LC", SampleRate: "48000", Channels: 6, Layout: "5.1"},
+	} {
+		// err сообщает о принятии неподтверждённых или противоречивых сведений AAC.
+		if _, err := corrupt.audio(); err == nil {
+			t.Fatal("неподтверждённая конфигурация принята", corrupt)
+		}
+	}
+}
+
 // probeJSONRunner подставляет JSON метаданных или выбранную ошибку вместо запуска ffprobe.
 type probeJSONRunner struct {
 	// data содержит JSON, записываемый получателю тестовой команды.
@@ -25,6 +74,7 @@ type probeJSONRunner struct {
 
 // Проверяет отказ Source и Verify для неизвестной или чрезмерной длительности, размеров, частоты и
 // неподдержанных кодеков, а также предел числа пакетов.
+// t сообщает об ошибках проверяемого сценария.
 func TestSourceAndVerificationRejectUnmeasuredOrExcessiveMetadata(t *testing.T) {
 	// scenario выбирает поле метаданных для замены недопустимым значением.
 	for _, scenario := range []struct { /* name обозначает нарушение в имени подтеста. old содержит заменяемый фрагмент эталонного JSON. new содержит недопустимую подстановку. */
@@ -36,11 +86,12 @@ func TestSourceAndVerificationRejectUnmeasuredOrExcessiveMetadata(t *testing.T) 
 		{"width-limit", "\"width\":128", "\"width\":5000"},
 		{"height-empty", "\"height\":128", "\"height\":0"},
 		{"fps-unknown", "30/1", "0/0"},
-		{"unsupported-pixel", "yuv420p", "yuv420p10le"},
+		{"unsupported-pixel", "yuv420p", "yuv420p12le"},
 		{"audio-rate-invalid", "\"48000\"", "\"invalid\""},
 		{"audio-codec-invalid", "\"aac\"", "\"mp3\""},
 		{"video-codec-invalid", "\"h264\"", "\"vp9\""},
 	} {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run(scenario.name, func(t *testing.T) {
 			// Подменяет выбранное поле метаданных недопустимым значением и требует отказа как проверки источника,
 			// так и проверки результата.
@@ -64,7 +115,7 @@ func TestSourceAndVerificationRejectUnmeasuredOrExcessiveMetadata(t *testing.T) 
 	p.Limits.MaxPackets = 1
 	// profile содержит ожидаемый H.264-формат с цветом, соответствующим тестовому SPS.
 	profile := selfProfile(core.CodecH264)
-	profile.Format.Video.Color = core.ColorInfo{Range: "limited", Primaries: "unspecified", Transfer: "unspecified", Matrix: "unspecified"}
+	profile.Format.Video.Color = core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}
 	// err содержит результат проверки файла при превышенном количестве пакетов.
 	if _, err := p.Verify(context.Background(), selfFragmented(t, "valid"), profile); !errors.Is(err, ErrLimit) {
 		t.Fatal(err)
@@ -136,21 +187,23 @@ func (r probeJSONRunner) Run(_ context.Context, c Command, input *os.File, out i
 
 // selfProbeJSON содержит метаданные H.264 128×128/30 и стереофонического AAC 48 кГц для контрольных
 // fMP4.
-const selfProbeJSON = `{"streams":[{"codec_type":"video","start_time":"0.000000","codec_name":"h264","profile":"High","width":128,"height":128,"avg_frame_rate":"30/1","pix_fmt":"yuv420p","level":11,"color_range":"tv","color_primaries":"unspecified","color_transfer":"unspecified","color_space":"unspecified"},{"codec_type":"audio","start_time":"0.000000","codec_name":"aac","profile":"LC","sample_rate":"48000","channels":2,"channel_layout":"stereo"}],"format":{"format_name":"mov,mp4,m4a,3gp,3g2,mj2","duration":"1.600000"}}`
+const selfProbeJSON = `{"streams":[{"codec_type":"video","start_time":"0.000000","codec_name":"h264","profile":"High","width":128,"height":128,"avg_frame_rate":"30/1","pix_fmt":"yuv420p","level":11,"color_range":"tv","color_primaries":"bt709","color_transfer":"bt709","color_space":"bt709","extradata":"\n00000000: 0164 000b ffe1 001b 6764 000b acb4 1023  .\n00000010: 602d 4040 4050 0000 0300 1000 0003 03c0  .\n00000020: f142 aa01 0005 68ef 0f2c 8bfd f8f8 00  .\n","extradata_size":47},{"codec_type":"audio","start_time":"0.000000","codec_name":"aac","profile":"LC","sample_rate":"48000","channels":2,"channel_layout":"stereo"}],"format":{"format_name":"mov,mp4,m4a,3gp,3g2,mj2","duration":"1.600000"}}`
 
 // Создаёт временный fMP4 с H.264/AAC и управляемым дефектом независимости, NAL, длительности или
 // аудиодорожки; файл закрывается после теста.
+// t сообщает об ошибках проверяемого сценария.
+// scenario выбирает управляемый дефект контейнера либо корректный положительный контроль.
 func selfFragmented(t *testing.T, scenario string) *os.File {
 	t.Helper()
 	// headers содержит фиксированный avcC с SPS и PPS контрольного видео. err сообщает о
 	// некорректной шестнадцатеричной записи.
-	headers, err := hex.DecodeString("0164000bffe100186764000bacd942046c0440000003004000000f03c50a658001000668ebe3cb22c0fdf8f800")
+	headers, err := hex.DecodeString("0164000bffe1001b6764000bacb41023602d40404050000003001000000303c0f142aa01000568ef0f2c8bfdf8f800")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// p содержит профиль контрольного H.264 с цветом, соответствующим SPS.
 	p := selfProfile(core.CodecH264)
-	p.Format.Video.Color = core.ColorInfo{Range: "limited", Primaries: "unspecified", Transfer: "unspecified", Matrix: "unspecified"}
+	p.Format.Video.Color = core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}
 	// v содержит видеоконфигурацию контрольного файла со шкалой 1/30 секунды.
 	v, err := media.NewCodecConfig(media.CodecConfigInfo{Track: media.TrackVideo, SourceEpoch: 1, Revision: 1, TimeBase: media.TimeBase{Numerator: 1, Denominator: 30}, Video: p.Format.Video}, headers)
 	if err != nil {
@@ -226,9 +279,11 @@ func selfFragmented(t *testing.T, scenario string) *os.File {
 
 // Проверяет успешный разбор контрольного fMP4 и отказ при ложном ключевом флаге, испорченном NAL,
 // неверной длительности, отсутствии аудио и ADTS.
+// t сообщает об ошибках проверяемого сценария.
 func TestProbeRequiresActualIndependentAUsAndCompleteDurations(t *testing.T) {
 	// scenario выбирает допустимый файл либо конкретное нарушение сжатых данных и длительностей.
 	for _, scenario := range []string{"valid", "false-key", "bad-nal", "video-duration", "audio-duration", "no-audio", "adts"} {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run(scenario, func(t *testing.T) {
 			// Проверяет фактические AU и длительности выбранного файла: допускается только valid, остальные
 			// сценарии должны завершиться ошибкой.
@@ -237,7 +292,7 @@ func TestProbeRequiresActualIndependentAUsAndCompleteDurations(t *testing.T) {
 			f := selfFragmented(t, scenario)
 			// p содержит ожидаемый профиль с цветом контрольного SPS.
 			p := selfProfile(core.CodecH264)
-			p.Format.Video.Color = core.ColorInfo{Range: "limited", Primaries: "unspecified", Transfer: "unspecified", Matrix: "unspecified"}
+			p.Format.Video.Color = core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}
 			// probe содержит проверяющий порт с фиксированным JSON и настоящим разбором
 			// fMP4.
 			probe := Prober{Binary: "probe", Runner: probeJSONRunner{data: []byte(selfProbeJSON)}, Limits: selfProbeLimits()}

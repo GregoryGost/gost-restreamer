@@ -369,8 +369,9 @@ func assertDecodedConversion(t *testing.T, binary string, wire []byte, scenario 
 
 // Запускает ограниченную попытку Supervisor с настоящим обменом fMP4 через UDS и выбранным CPU либо
 // VideoToolbox-кодировщиком. После физического завершения проверяет диагностику времени и удаление
-// UDS, возвращая пакеты, конфигурации и копию выходного контейнера.
-func runConversionWorker(t *testing.T, binary string, packets []media.Packet, init fmp4.Init, scenario conversionScenario) ([]media.Packet, fmp4.Init, []byte) {
+// UDS, возвращая пакеты, конфигурации и копию выходного контейнера. builders допускает один
+// явно заданный рабочий построитель; без него сохраняется прежняя независимая CPU-команда.
+func runConversionWorker(t *testing.T, binary string, packets []media.Packet, init fmp4.Init, scenario conversionScenario, builders ...ffmpeg.CommandBuilder) ([]media.Packet, fmp4.Init, []byte) {
 	t.Helper()
 	// base задаёт частный короткий каталог UDS для настоящей попытки FFmpeg; err сообщает об ошибке
 	// его создания.
@@ -510,6 +511,12 @@ func runConversionWorker(t *testing.T, binary string, packets []media.Packet, in
 		}
 		args = append(args, "-fps_mode:v", "passthrough", "-enc_time_base:v", "filter", "-c:a", "aac", "-b:a", "64000", "-ar:a", "48000", "-ac:a", "2", "-f", "mp4", "-movflags", "delay_moov+default_base_moof+frag_every_frame", "-min_frag_duration", "1", "-use_editlist", "1", "-movie_timescale", "240000", "-video_track_timescale", strconv.FormatUint(uint64(scenario.outputRate.Numerator), 10), "-avoid_negative_ts", "disabled", "unix:"+a.OutputPath)
 		return ffmpeg.Command{Binary: binary, Args: args}, nil
+	}
+	if len(builders) > 1 {
+		t.Fatal("допускается один построитель команды")
+	}
+	if len(builders) == 1 {
+		command = builders[0]
 	}
 	// ctx ограничивает всю попытку преобразования 25 секундами; cancel освобождает её контекст и
 	// таймер.

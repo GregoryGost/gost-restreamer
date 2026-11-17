@@ -25,6 +25,10 @@ type Source struct {
 	Width, Height uint32
 	// Demuxer содержит проверенное имя демультиплексора FFmpeg для входного файла.
 	Demuxer string
+	// HDR сохраняет проверенные исходные авторские сведения только на время подготовки поколения.
+	HDR media.HDRMetadata
+	// HDRVerified подтверждает проверку неизменности HDR на всей используемой области исходника.
+	HDRVerified bool
 }
 
 // GenerateRequest объединяет проверенный источник, выходной профиль и точную длительность создаваемой
@@ -42,7 +46,8 @@ type GenerateRequest struct {
 // параметрах.
 type CommandBuilder func(GenerateRequest) (Command, error)
 
-// ProductionBuilder выбирает libsvtav1 либо h264_nvenc без неявной замены кодировщика.
+// ProductionBuilder создаёт для binary построитель, который проверяет req и использует
+// явно выбранный кодировщик без автоматической замены.
 func ProductionBuilder(binary string) CommandBuilder {
 	return func(req GenerateRequest) (Command, error) {
 		// Строит команду подготовки с выбранным binary и рабочим кодировщиком для профиля запроса.
@@ -50,8 +55,9 @@ func ProductionBuilder(binary string) CommandBuilder {
 	}
 }
 
-// Собирает команду подготовки с входом FD 3 и отдельной AAC-тишиной; отвергает неподдержанные профили
-// и неточную длину петли. testEncoder задаёт явную подстановку для компонентных тестов.
+// buildCommand собирает для binary проверенный req с входом FD 3 и отдельной собственной
+// аудиотишиной. Неверный профиль, неподдержанный источник или неточная петля отклоняются
+// до запуска процесса. testEncoder задаёт явную подстановку только для компонентных тестов.
 func buildCommand(binary string, req GenerateRequest, testEncoder string) (Command, error) {
 	// p содержит выходной профиль текущего запроса подготовки.
 	p := req.Profile
@@ -66,23 +72,18 @@ func buildCommand(binary string, req GenerateRequest, testEncoder string) (Comma
 	// v содержит выходной формат видео. a содержит выходной формат аудио. e содержит ограничения
 	// видеокодирования.
 	v, a, e := p.Format.Video, p.Format.Audio, p.VideoEncoding
-	if v.Width%2 != 0 || v.Height%2 != 0 || v.Width > math.MaxInt32 || v.Height > math.MaxInt32 || v.PixelFormat != "yuv420p" || v.BitDepth != 8 || !e.ClosedGOP || e.GOPFrames > math.MaxInt32 || e.MaxBFrames > math.MaxInt32 || e.BufferBits > math.MaxInt32 || e.TargetBitrateBPS > math.MaxInt64 || e.MaxBitrateBPS > math.MaxInt64 || p.AudioEncoding.BitrateBPS > math.MaxInt64 {
+	if v.Width%2 != 0 || v.Height%2 != 0 || v.Width > math.MaxInt32 || v.Height > math.MaxInt32 || !e.ClosedGOP || e.GOPFrames > math.MaxInt32 || e.MaxBFrames > math.MaxInt32 || e.BufferBits > math.MaxInt32 || e.TargetBitrateBPS > math.MaxInt64 || e.MaxBitrateBPS > math.MaxInt64 || p.AudioEncoding.BitrateBPS > math.MaxInt64 {
 		return Command{}, ErrInvalid
 	}
-	// validLayout показывает, согласованы ли число каналов и обозначение mono либо stereo.
-	validLayout := a.Channels == 1 && a.ChannelLayout == "mono" || a.Channels == 2 && a.ChannelLayout == "stereo"
-	if a.CodecProfile != "LC" || !validLayout || a.SampleRateHz == 0 {
+	if a.SampleRateHz == 0 || a.Codec == core.CodecAAC && (a.CodecProfile != "LC" || !core.ValidAACLayout(a.ChannelLayout, a.Channels)) {
 		return Command{}, ErrInvalid
 	}
-	if v.Color.Primaries != "bt709" || v.Color.Transfer != "bt709" || v.Color.Matrix != "bt709" || (v.Color.Range != "limited" && v.Color.Range != "full" && v.Color.Range != "tv" && v.Color.Range != "pc") {
-		return Command{}, fmt.Errorf("%w: поддержан SDR bt709", ErrInvalid)
-	}
-	if req.Source.Kind != core.AssetImage && req.Source.Kind != core.AssetVideo {
-		return Command{}, ErrInvalid
-	}
-	// source содержит необязательное описание входного видео для проверки ограничений цвета.
-	if source := req.Source.Format.Video; source != nil && (source.Color.Transfer == "smpte2084" || source.Color.Transfer == "arib-std-b67" || source.BitDepth != 8 || source.PixelFormat != "yuv420p") {
-		return Command{}, fmt.Errorf("%w: неподдержанный HDR/цветовой формат источника", ErrInvalid)
+	// conversion задаёт физическое преобразование по фактическому источнику либо узкую
+	// политику рендеринга изображения/SDR с неполными CICP; source при этом не изменяется.
+	// err сообщает о несовместимом источнике или невозможности построить требуемое преобразование.
+	conversion, err := preparedConversion(req.Source, p)
+	if err != nil {
+		return Command{}, err
 	}
 	if req.Source.Demuxer != "mov" && req.Source.Demuxer != "matroska" && req.Source.Demuxer != "png_pipe" && req.Source.Demuxer != "jpeg_pipe" {
 		return Command{}, ErrInvalid
@@ -104,7 +105,7 @@ func buildCommand(binary string, req GenerateRequest, testEncoder string) (Comma
 	if err != nil {
 		return Command{}, err
 	}
-	// n преобразует числовой параметр FFmpeg в десятичную строку.
+	// n преобразует числовой параметр v кодировщика FFmpeg в десятичную строку.
 	n := func(v uint64) string {
 		// Представляет числовые параметры FFmpeg десятичными строками без знака.
 		return strconv.FormatUint(v, 10)
@@ -120,24 +121,8 @@ func buildCommand(binary string, req GenerateRequest, testEncoder string) (Comma
 	args = append(args, "-fd", "3", "-i", "fd:")
 	args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("anullsrc=r=%d:cl=%s", a.SampleRateHz, a.ChannelLayout))
 	args = append(args, "-map", "0:v:0", "-map", "1:a:0")
-	// encoder содержит рабочее имя видеокодировщика для выбранного кодека.
-	encoder := "h264_nvenc"
-	switch v.Codec {
-	case core.CodecAV1:
-		if v.CodecProfile != "main" || v.Tier != "main" && v.Tier != "" || e.MaxBFrames != 0 {
-			return Command{}, ErrInvalid
-		}
-		encoder = "libsvtav1"
-		if p.Encoding.Version == 0 && (e.TargetBitrateBPS != e.MaxBitrateBPS || e.BufferBits*1000%e.TargetBitrateBPS != 0 || e.BufferBits*1000/e.TargetBitrateBPS < 20 || e.BufferBits*1000/e.TargetBitrateBPS > 10000) {
-			return Command{}, fmt.Errorf("%w: AV1 поддерживает CBR с точным буфером 20–10000 ms", ErrInvalid)
-		}
-	case core.CodecH264:
-		if v.Tier != "" || v.CodecProfile != "baseline" && v.CodecProfile != "main" && v.CodecProfile != "high" || v.CodecProfile == "baseline" && e.MaxBFrames != 0 {
-			return Command{}, ErrInvalid
-		}
-	default:
-		return Command{}, ErrInvalid
-	}
+	// encoder сохраняет явный выбор для ограниченной тестовой подстановки NVENC.
+	encoder := p.Encoding.VideoEncoder
 	// plan содержит аргументы кодировщиков, построенные по проверенному профилю для подготовки.
 	plan, err := encoding.Compile(p, encoding.Prepared)
 	if err != nil {
@@ -161,8 +146,17 @@ func buildCommand(binary string, req GenerateRequest, testEncoder string) (Comma
 			plan.Video = append(adapted, "-sc_threshold", "0")
 		}
 	}
-	args = append(args, "-vf", fmt.Sprintf("fps=fps=%d/%d:round=near:eof_action=round,tpad=stop_mode=clone:stop=-1,scale=w=%d:h=%d,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709", fps.Numerator, fps.Denominator, v.Width, v.Height), "-fps_mode:v", "passthrough", "-enc_time_base:v", "filter")
+	// filter добавляет FPS и продолжение последнего кадра перед выбранным преобразованием.
+	filter := fmt.Sprintf("fps=fps=%d/%d:round=near:eof_action=round,tpad=stop_mode=clone:stop=-1,%s", fps.Numerator, fps.Denominator, conversion)
+	// pixel задаёт физические плоскости кодировщика отдельно от кодекового плана.
+	pixel := v.PixelFormat
+	if encoder == core.VideoEncoderHEVCNVENC && v.BitDepth == 10 {
+		pixel = "p010le"
+		filter += ",format=p010le"
+	}
+	args = append(args, "-vf", filter, "-fps_mode:v", "passthrough", "-enc_time_base:v", "filter")
 	args = append(args, plan.Video...)
+	args = append(args, "-pix_fmt:v", pixel)
 	args = append(args, "-af", "apad=pad_dur="+duration)
 	args = append(args, plan.Audio...)
 	args = append(args, "-t", duration, "-f", "mp4", "-movflags", "delay_moov+default_base_moof+frag_every_frame", "-min_frag_duration", "1", "-use_editlist", "1", "-movie_timescale", n(uint64(scale)), "-video_track_timescale", n(uint64(videoScale)), "-avoid_negative_ts", "disabled", "pipe:1")
@@ -175,4 +169,48 @@ func gcd(a, b uint64) uint64 {
 		a, b = b, a%b
 	}
 	return a
+}
+
+// preparedConversion строит фильтр для source и полного profile. Известное видео проходит
+// общий конвертер; неподтверждённый цвет не подменяется desired. Узкий SDR-рендерер допускает
+// PNG/JPEG и восьмибитное 4:2:0 видео с неполными CICP только для SVT/NVENC с AAC и BT.709.
+func preparedConversion(source Source, profile core.GroupProfile) (string, error) {
+	// target содержит желаемую геометрию и цвет результата, а не наблюдение источника.
+	target := profile.Format.Video
+	if source.Kind != core.AssetImage && source.Kind != core.AssetVideo {
+		return "", ErrInvalid
+	}
+	if source.Kind == core.AssetVideo && source.Format.Video == nil {
+		return "", fmt.Errorf("%w: отсутствует фактический видеоформат", ErrInvalid)
+	}
+	if isHDRVideo(target) && (source.Demuxer != "mov" || !source.HDRVerified) {
+		return "", fmt.Errorf("%w: нужен проверенный статический HDR-источник MOV/MP4", ErrInvalid)
+	}
+	if source.Kind == core.AssetVideo {
+		// actual содержит исходные CICP; полное описание проверяет общий конвертер без запасного пути.
+		actual := *source.Format.Video
+		if actual.Color.Range != "" && actual.Color.Range != "unspecified" && actual.Color.Primaries != "" && actual.Color.Primaries != "unspecified" && actual.Color.Transfer != "" && actual.Color.Transfer != "unspecified" && actual.Color.Matrix != "" && actual.Color.Matrix != "unspecified" {
+			// filter содержит проверенный граф; err объясняет несовместимые исходные или целевые параметры.
+			filter, err := encoding.SoftwareVideoFilter(actual, target, true)
+			if err != nil {
+				return "", fmt.Errorf("%w: %w", ErrInvalid, err)
+			}
+			return filter, nil
+		}
+		if actual.BitDepth != 8 || actual.PixelFormat != "yuv420p" || isHDRVideo(actual) {
+			return "", fmt.Errorf("%w: неполный цвет разрешён только для SDR 8-bit 4:2:0", ErrInvalid)
+		}
+	}
+	if target.BitDepth != 8 || target.PixelFormat != "yuv420p" || target.Color.Primaries != "bt709" || target.Color.Transfer != "bt709" || target.Color.Matrix != "bt709" || profile.Format.Audio.Codec != core.CodecAAC || profile.Encoding.AudioEncoder != core.AudioEncoderAAC || profile.Encoding.VideoEncoder != core.VideoEncoderNVENC && profile.Encoding.VideoEncoder != core.VideoEncoderSVTAV1 {
+		return "", fmt.Errorf("%w: источник без полных CICP требует ограниченный BT.709 SDR-рендерер", ErrInvalid)
+	}
+	if source.Kind == core.AssetImage && (source.Demuxer != "png_pipe" && source.Demuxer != "jpeg_pipe") {
+		return "", ErrInvalid
+	}
+	// rangeName задаёт диапазон собственного результата; отсутствующие source CICP остаются неизвестными.
+	rangeName := "limited"
+	if target.Color.Range == "full" || target.Color.Range == "pc" {
+		rangeName = "full"
+	}
+	return fmt.Sprintf("scale=w=%d:h=%d:out_range=%s,format=yuv420p,setparams=range=%s:color_primaries=bt709:color_trc=bt709:colorspace=bt709", target.Width, target.Height, rangeName, rangeName), nil
 }

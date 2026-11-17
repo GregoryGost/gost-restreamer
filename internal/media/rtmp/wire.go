@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,6 +23,10 @@ type wireStream struct {
 	extended bool
 	// extendedValue сохраняет расширенную метку для проверки продолжений fmt3.
 	extendedValue uint32
+	// timestamp хранит абсолютную миллисекундную метку сообщения; delta — наследуемое приращение.
+	timestamp, delta uint32
+	// messageStreamID сохраняет идентификатор сообщения из последнего заголовка fmt0.
+	messageStreamID uint32
 	// slots учитывает длины удерживаемых библиотекой ячеек фрагментов, включая хвост после
 	// завершения или Abort.
 	slots []uint32
@@ -63,6 +68,17 @@ type wireConn struct {
 	base uint64
 	// lastConfig ссылается на последнее полностью собранное сообщение конфигурации аудио или видео.
 	lastConfig []byte
+	// completedID монотонно различает полностью захваченные сообщения, включая управляющие.
+	// lastConfigID связывает lastConfig с конкретным завершением; ноль означает отсутствие конфигурации.
+	completedID, lastConfigID uint64
+	// lastConfigChunkStream и lastConfigMessageStream сохраняют реальные идентификаторы конфигурации.
+	lastConfigChunkStream   byte
+	lastConfigMessageStream uint32
+	// lastConfigTimestamp сохраняет исходную абсолютную миллисекундную метку конфигурации.
+	lastConfigTimestamp uint32
+	// failureID считает ошибки транспортных Read/Write, включая установку их сроков.
+	// Сравнение до и после SDK Read не позволяет принять I/O ошибку за ошибку разбора ASC.
+	failureID atomic.Uint64
 	// startupDeadline ограничивает весь этап начального согласования и допуска; после запуска
 	// обнуляется.
 	startupDeadline time.Time
@@ -86,7 +102,14 @@ func newWireConn(conn net.Conn, limits Limits) (*wireConn, error) {
 }
 
 // Write ставит срок записи с учётом общего срока запуска и передаёт одну запись вложенному соединению.
-func (c *wireConn) Write(p []byte) (int, error) {
+// n возвращает фактически принятые байты p, result сохраняет исходную ошибку без замены её причины.
+func (c *wireConn) Write(p []byte) (n int, result error) {
+	defer func() {
+		// Учитывает фактическую ошибку записи или установки срока без изменения её значения.
+		if result != nil {
+			c.failureID.Add(1)
+		}
+	}()
 	// err сообщает об отказе установки срока очередной записи.
 	if err := c.SetWriteDeadline(c.deadline(c.limits.WriteTimeout)); err != nil {
 		return 0, err
@@ -96,7 +119,14 @@ func (c *wireConn) Write(p []byte) (int, error) {
 
 // Read выдаёт байты согласования, затем не более одного проверенного блока RTMP; последний блок AMF
 // становится доступен только после проверки всего тела.
-func (c *wireConn) Read(p []byte) (int, error) {
+// read возвращает число выданных байтов p; result сохраняет отказ чтения, срока или проверки блока.
+func (c *wireConn) Read(p []byte) (read int, result error) {
+	defer func() {
+		// Учитывает любую ошибку чтения ограничителя, в том числе частичный блок и отказ срока.
+		if result != nil {
+			c.failureID.Add(1)
+		}
+	}()
 	if len(p) == 0 {
 		return 0, nil
 	}
@@ -142,6 +172,27 @@ func (c *wireConn) deadline(timeout time.Duration) time.Time {
 	return d
 }
 
+// readFull читает ровно p из исходного соединения, сохраняя ошибку даже при n==len(p).
+// io.ReadFull в этом случае скрывает ошибку Reader, что не позволяет отличить отказ транспорта
+// от последующего отказа SDK при разборе ASC. Только EOF после части неполного p переводится
+// в ErrUnexpectedEOF, как у прежнего чтения; отдельного буфера или читателя SDK здесь нет.
+func (c *wireConn) readFull(p []byte) error {
+	// offset считает фактически прочитанные байты в пределах переданного ограниченного среза.
+	offset := 0
+	for offset < len(p) {
+		// n и err сохраняют фактический результат каждой операции исходного транспорта.
+		n, err := c.Conn.Read(p[offset:])
+		offset += n
+		if err != nil {
+			if err == io.EOF && offset > 0 && offset < len(p) {
+				return io.ErrUnexpectedEOF
+			}
+			return err
+		}
+	}
+	return nil
+}
+
 // Читает беззнаковое трёхбайтовое число RTMP в сетевом порядке; длину среза обеспечивает вызывающий.
 func be24(p []byte) uint32 { return uint32(p[0])<<16 | uint32(p[1])<<8 | uint32(p[2]) }
 
@@ -162,7 +213,7 @@ func (c *wireConn) readChunk() error {
 	// header служит временным буфером заголовка очередного блока.
 	var header [18]byte
 	// err сообщает об отказе чтения первого байта блока.
-	if _, err := io.ReadFull(c.Conn, header[:1]); err != nil {
+	if err := c.readFull(header[:1]); err != nil {
 		return err
 	}
 	// fmtID содержит формат наследования заголовка. id содержит поддержанный короткий идентификатор
@@ -201,7 +252,7 @@ func (c *wireConn) readChunk() error {
 		hn = 4
 	}
 	// err сообщает об отказе чтения оставшихся полей заголовка.
-	if _, err := io.ReadFull(c.Conn, header[1:hn]); err != nil {
+	if err := c.readFull(header[1:hn]); err != nil {
 		return err
 	}
 	if fmtID <= 1 {
@@ -213,7 +264,7 @@ func (c *wireConn) readChunk() error {
 	}
 	if s.extended {
 		// err сообщает об отказе чтения расширенной временной метки.
-		if _, err := io.ReadFull(c.Conn, header[hn:hn+4]); err != nil {
+		if err := c.readFull(header[hn : hn+4]); err != nil {
 			return err
 		}
 		// v содержит прочитанную расширенную метку для проверки повторения в продолжениях.
@@ -223,6 +274,26 @@ func (c *wireConn) readChunk() error {
 			return ErrFraming
 		}
 		s.extendedValue = v
+	}
+	if start {
+		// value содержит абсолютную метку fmt0 либо приращение fmt1/fmt2.
+		value := uint32(0)
+		if fmtID <= 2 {
+			value = be24(header[1:4])
+			if s.extended {
+				value = s.extendedValue
+			}
+		}
+		switch fmtID {
+		case 0:
+			s.timestamp, s.delta = value, 0
+			s.messageStreamID = binary.LittleEndian.Uint32(header[8:12])
+		case 1, 2:
+			s.timestamp += value
+			s.delta = value
+		case 3:
+			s.timestamp += s.delta
+		}
 	}
 	s.known = true
 	if s.length > c.limits.MaxMessageBytes {
@@ -298,7 +369,7 @@ func (c *wireConn) readChunk() error {
 		initialN = 0
 	}
 	// err сообщает об отказе чтения первого необходимого байта префикса.
-	if _, err := io.ReadFull(c.Conn, initial[:initialN]); err != nil {
+	if err := c.readFull(initial[:initialN]); err != nil {
 		return err
 	}
 	// oldPrefix сохраняет прежнее число байтов префикса для восстановления capture при его позднем
@@ -312,7 +383,7 @@ func (c *wireConn) readChunk() error {
 	// remainingPrefix задаёт число дополнительных байтов, нужных до полного пятибайтового префикса.
 	remainingPrefix := min(int(amount)-initialN, 5-s.prefixN)
 	// err сообщает об отказе чтения оставшейся части префикса.
-	if _, err := io.ReadFull(c.Conn, initial[initialN:initialN+remainingPrefix]); err != nil {
+	if err := c.readFull(initial[initialN : initialN+remainingPrefix]); err != nil {
 		return err
 	}
 	oldPrefix = s.prefixN
@@ -327,7 +398,7 @@ func (c *wireConn) readChunk() error {
 	copy(chunk, header[:hn])
 	copy(chunk[hn:], initial[:initialN])
 	// err сообщает об отказе чтения оставшегося тела блока.
-	if _, err := io.ReadFull(c.Conn, chunk[hn+initialN:]); err != nil {
+	if err := c.readFull(chunk[hn+initialN:]); err != nil {
 		return err
 	}
 	// body ссылается на тело текущего блока без заголовка.
@@ -380,9 +451,16 @@ func (c *wireConn) readChunk() error {
 				}
 			}
 		}
-		c.lastConfig = nil
+		if c.completedID == ^uint64(0) {
+			return ErrLimit
+		}
+		c.completedID++
+		c.lastConfig, c.lastConfigID = nil, 0
 		if s.collect && (s.typ == 8 || s.typ == 9) && s.amfOffset < 0 {
 			c.lastConfig = s.capture
+			c.lastConfigID = c.completedID
+			c.lastConfigChunkStream, c.lastConfigMessageStream = id, s.messageStreamID
+			c.lastConfigTimestamp = s.timestamp
 		}
 		s.received = 0
 		s.fragments = 0
@@ -403,23 +481,27 @@ func (c *wireConn) beginCapture(s *wireStream) error {
 	return nil
 }
 
-// Определяет поддержанный AV1/AAC и конфигурацию по накопленным первым байтам; проверяет специальный
-// бюджет до полного чтения и восстанавливает ранее полученную часть префикса при начале накопления.
+// inspectPrefix определяет поддержанные AV1/HEVC/VP9 и audio FourCC по первым байтам s.
+// Проверяет бюджет до полного чтения и восстанавливает oldPrefix при начале накопления capture.
 func (c *wireConn) inspectPrefix(s *wireStream, oldPrefix int) error {
 	if s.typ == 9 && s.prefixN >= 1 {
 		if s.prefix[0]&0x80 == 0 {
-			return fmt.Errorf("%w: требуется Enhanced RTMP AV1", ErrCodec)
+			return fmt.Errorf("%w: требуется Enhanced RTMP", ErrCodec)
 		}
 		// kind содержит тип Enhanced RTMP видеопакета из младших битов префикса.
 		kind := s.prefix[0] & 15
 		if kind == 6 {
 			return fmt.Errorf("%w: multitrack", ErrCodec)
 		}
-		if kind == 1 && (s.prefix[0]>>4&7 < 1 || s.prefix[0]>>4&7 > 2) {
-			return fmt.Errorf("%w: AV1 FrameType", ErrCodec)
+		if (kind == 1 || kind == 3) && (s.prefix[0]>>4&7 < 1 || s.prefix[0]>>4&7 > 2) {
+			return fmt.Errorf("%w: FrameType", ErrCodec)
 		}
-		if s.prefixN == 5 && string(s.prefix[1:5]) != "av01" {
-			return ErrCodec
+		if s.prefixN == 5 {
+			switch string(s.prefix[1:5]) {
+			case "av01", "hvc1", "vp09":
+			default:
+				return ErrCodec
+			}
 		}
 		if !s.collect && (kind == 0 || kind == 4) {
 			// limit выбирает бюджет конфигурации либо AMF-метаданных AV1.
@@ -452,8 +534,12 @@ func (c *wireConn) inspectPrefix(s *wireStream, oldPrefix int) error {
 			if kind != 0 && kind != 1 && kind != 2 {
 				return ErrCodec
 			}
-			if s.prefixN == 5 && string(s.prefix[1:5]) != "mp4a" {
-				return ErrCodec
+			if s.prefixN == 5 {
+				switch string(s.prefix[1:5]) {
+				case "mp4a", "Opus", "fLaC", ".mp3", "ac-3":
+				default:
+					return ErrCodec
+				}
 			}
 		}
 		if !s.collect && s.prefixN >= 2 {

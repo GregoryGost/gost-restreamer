@@ -63,7 +63,8 @@ func (m *Manager) waitAdmission(ctx context.Context, startup <-chan struct{}) er
 
 // AdmitOBS проверяет key текущего Stream streamID и выбирает ровно одну Session.
 // При отсутствии запуска принимает штатный StartSession со всеми Enabled; при точном
-// ErrInUse один раз перечитывает разрешённый запуск. Возвращает только готовый Router
+// ErrInUse либо собственной непосредственной session_active один раз перечитывает разрешённый запуск.
+// Возвращает только готовый Router
 // того же SessionID/incarnation/lifecycle. ctx ограничивает допуск, но не жизнь принятой Session.
 func (m *Manager) AdmitOBS(ctx context.Context, streamID core.ID, key string) (core.Session, *media.Router, error) {
 	// finish отменяет дочерний ctx и присоединяет наблюдателя владельцев допуска.
@@ -89,7 +90,7 @@ func (m *Manager) AdmitOBS(ctx context.Context, streamID core.ID, key string) (c
 		// receipt фиксирует выбранную Session даже при дальнейшем истечении ctx;
 		// startErr сохраняет точный отказ принятия, не смешивая его с ошибкой чтения.
 		receipt, startErr := m.StartSession(ctx, core.StartSessionRequest{RequestID: "obs:" + hex.EncodeToString(random[:]), StreamID: streamID})
-		if startErr == core.ErrInUse {
+		if obsSessionActive(startErr) {
 			selected, found, err = m.config.Core.InspectOBS(ctx, streamID, key)
 			if err != nil {
 				return core.Session{}, nil, err

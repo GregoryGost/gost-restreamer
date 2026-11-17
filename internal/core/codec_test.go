@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"maps"
 	"math"
 	"reflect"
 	"testing"
@@ -13,22 +12,17 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
-// Проверяет сохранение точных строковых байтов, полного uint64, исходной дроби FPS и вложенного снимка
-// после кодирования и чтения.
+// Проверяет сохранение допустимых строк, полного uint64, исходной дроби FPS и вложенного снимка.
+// t сообщает об ошибках проверяемого сценария.
 func TestProfileMetadataPreservesExactAcceptedValues(t *testing.T) {
 	// p содержит отдельный полный профиль текущего сценария проверки.
 	p := validProfile()
 	p.Format.Video.FrameRate = core.FrameRate{Numerator: 60000, Denominator: 2002}
-	p.VideoEncoding.TargetBitrateBPS = math.MaxUint64 - 1
-	p.VideoEncoding.MaxBitrateBPS = math.MaxUint64
-	p.VideoEncoding.BufferBits = math.MaxUint64
-	p.AudioEncoding.BitrateBPS = math.MaxUint64
-	// raw содержит пробелы, некорректный UTF-8 и нулевой байт для проверки точного хранения строк.
-	raw := string([]byte{' ', 0xff, 0, 'x', ' '})
-	p.Format.Video.CodecProfile, p.Format.Video.Level, p.Format.Video.Tier = raw, raw, raw
-	p.Format.Video.PixelFormat = raw
-	p.Format.Video.Color = core.ColorInfo{Range: raw, Primaries: raw, Transfer: raw, Matrix: raw}
-	p.Format.Audio.CodecProfile, p.Format.Audio.ChannelLayout = raw, raw
+	p.Encoding = core.DefaultEncoding(core.ModeCopy, core.VideoEncoderSVTAV1, core.RateControlVBR)
+	p.VideoEncoding.TargetBitrateBPS = 100000000
+	p.VideoEncoding.MaxBitrateBPS, p.VideoEncoding.BufferBits = 0, 0
+	p.AudioEncoding.BitrateBPS = 576000
+	p.Format.Video.Color.Range = "tv"
 	// err сообщает об ошибке проверки допустимости профиля.
 	if err := p.Validate(); err != nil {
 		t.Fatalf("исходный принятый профиль недопустим: %v", err)
@@ -57,6 +51,7 @@ func TestProfileMetadataPreservesExactAcceptedValues(t *testing.T) {
 	// now задаёт общее время записей исторического снимка.
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	// record создаёт записи снимка с максимальной ревизией и общим фиксированным временем.
+	// id задаёт идентификатор создаваемой синтетической записи снимка.
 	record := func(id core.ID) core.Record {
 		// Создаёт запись с заданным ID, максимальной Revision и общим временем для проверки точного сохранения
 		// снимка.
@@ -80,6 +75,24 @@ func TestProfileMetadataPreservesExactAcceptedValues(t *testing.T) {
 	restored, err := core.DecodeSessionSnapshot(snapshotData)
 	if err != nil || !reflect.DeepEqual(snapshot, restored) {
 		t.Fatalf("снимок изменён после хранения: ошибка %v", err)
+	}
+	// observed содержит самостоятельное измерение, чьи строки внутренний байтовый кодек не нормализует.
+	observed := p.Format
+	// raw содержит непустую последовательность с некорректным UTF-8 и нулевым байтом для проверки измерений.
+	raw := string([]byte{' ', 0xff, 0, 'x', ' '})
+	observed.Video.CodecProfile, observed.Video.Level, observed.Video.Tier = raw, raw, raw
+	observed.Video.PixelFormat = raw
+	observed.Video.Color = core.ColorInfo{Range: raw, Primaries: raw, Transfer: raw, Matrix: raw}
+	observed.Audio.CodecProfile, observed.Audio.ChannelLayout = raw, raw
+	// observedData содержит внутреннее byte-представление измеренного формата.
+	observedData, err := core.EncodeMediaFormat(observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// decodedObserved содержит восстановленные raw-измерения без подмены UNKNOWN.
+	decodedObserved, err := core.DecodeMediaFormat(observedData)
+	if err != nil || decodedObserved != observed {
+		t.Fatalf("внутренние байты измерения изменены: %v", err)
 	}
 }
 
@@ -227,6 +240,12 @@ func TestProfileIdentityUsesRationalFPSAndEveryProfileField(t *testing.T) {
 			// канонические байты изменённого полного профиля. err сообщает об ошибке
 			// вычисления канонической идентичности профиля.
 			otherKey, otherContent, err := core.ProfileIdentity(other)
+			if other.Validate() != nil {
+				if !errors.Is(err, core.ErrInvalidProfile) || otherKey != "" || len(otherContent) != 0 {
+					t.Fatalf("недопустимое изменение получило идентичность: %v", err)
+				}
+				return
+			}
 			if err != nil || otherKey == key || bytes.Equal(otherContent, content) {
 				t.Fatalf("изменение поля не различено: ключ %q, ошибка %v", otherKey, err)
 			}
@@ -327,97 +346,6 @@ func TestProfileMetadataRejectsUnknownCorruptAndInvalidValues(t *testing.T) {
 		// err сообщает об ошибке отклонения неизвестной версии выбранным декодером.
 		if err := decode([]byte(`{"Version":999}`)); !errors.Is(err, core.ErrInvalidMetadata) {
 			t.Fatalf("неизвестная версия метаданных принята: %v", err)
-		}
-	}
-}
-
-// Проверяет представление v3 с явным режимом LIVE-аудио, допустимый null Encoding и отказ для неполных
-// полей без изменения получателя.
-func TestExplicitLiveAudioProfileWireAndStrictReplacement(t *testing.T) {
-	// withEncoding выбирает наличие полного блока Encoding в профиле с явным LIVE-аудиорежимом.
-	for _, withEncoding := range []bool{false, true} {
-		// legacy задаёт исходный профиль без явного LIVE-аудиоселектора.
-		legacy := encodedProfile(core.VideoEncoderNVENC, core.RateControlVBR)
-		if !withEncoding {
-			legacy.Encoding = core.EncodingSettings{}
-		}
-		// mode задаёт очередной явный LIVE-аудиорежим.
-		for _, mode := range []core.LiveAudioMode{core.LiveAudioCopy, core.LiveAudioTranscode} {
-			// p содержит отдельный полный профиль текущего сценария проверки.
-			p := legacy
-			p.LiveAudioMode = mode
-			// before сохраняет исходный профиль для проверки отсутствия изменения.
-			before := p
-			// raw содержит сохраняемое представление проверяемого профиля. err сообщает об
-			// ошибке кодирования проверенного профиля.
-			raw, err := core.EncodeProfile(p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			// got содержит профиль, восстановленный из проверяемого представления.
-			got, err := core.DecodeProfile(raw)
-			if err != nil || got != p || p != before || got.EffectiveLiveAudioMode() != mode {
-				t.Fatalf("v3 изменил явный профиль: %v", err)
-			}
-			// fields предоставляет поля сохранённого JSON-профиля для выбранного изменения.
-			var fields map[string]json.RawMessage
-			// err сообщает об ошибке разбора JSON проверяемого представления.
-			if err := json.Unmarshal(raw, &fields); err != nil {
-				t.Fatal(err)
-			}
-			if string(fields["Version"]) != "3" || (string(fields["Encoding"]) == "null") == withEncoding || core.MetadataVersion != 1 || core.EncodingVersion != 2 {
-				t.Fatalf("Версии или null Encoding изменены: %s", raw)
-			}
-			// key содержит вычисленный ключ полного профиля.
-			key, _, err := core.ProfileIdentity(p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			// oldKey содержит ключ исходного профиля без LIVE-аудиоселектора.
-			oldKey, _, err := core.ProfileIdentity(legacy)
-			if err != nil || key == oldKey || p.Equal(legacy) || legacy.Equal(p) {
-				t.Fatal("Явный селектор не входит в идентичность", err)
-			}
-			// field выбирает обязательное поле сохраняемого представления для проверки.
-			for _, field := range []string{"LiveAudioMode", "Encoding", "VideoEncoding", "AudioEncoding", "Format"} {
-				// value задаёт отсутствие поля либо явный null для проверки строгого
-				// чтения.
-				for _, value := range []json.RawMessage{nil, json.RawMessage("null")} {
-					// copyFields содержит отдельную копию полей профиля для внесения
-					// повреждения.
-					copyFields := make(map[string]json.RawMessage, len(fields))
-					maps.Copy(copyFields, fields)
-					if value == nil {
-						delete(copyFields, field)
-					} else {
-						copyFields[field] = value
-					}
-					// corrupt содержит профиль с выбранным удалённым или обнулённым
-					// полем. err сообщает об ошибке кодирования проверяемого
-					// JSON-представления.
-					corrupt, err := json.Marshal(copyFields)
-					if err != nil {
-						t.Fatal(err)
-					}
-					// receiver содержит исходное значение получателя для проверки
-					// отсутствия частичного изменения.
-					receiver := p
-					err = receiver.UnmarshalJSON(corrupt)
-					if field == "Encoding" && value != nil {
-						if err != nil || receiver.Encoding != (core.EncodingSettings{}) {
-							t.Fatal("Явный null Encoding не прочитан", err)
-						}
-					} else if !errors.Is(err, core.ErrInvalidMetadata) || receiver != p {
-						t.Fatalf("Некорректное поле %s изменило профиль: %v", field, err)
-					}
-				}
-			}
-		}
-		// before сохраняет исходный профиль для проверки отсутствия изменения.
-		before := legacy
-		// err сообщает об ошибке проверки допустимости профиля.
-		if err := legacy.Validate(); err != nil || legacy.EffectiveLiveAudioMode() != core.LiveAudioTranscode || legacy != before {
-			t.Fatal("Чтение прежнего режима изменило профиль", err)
 		}
 	}
 }

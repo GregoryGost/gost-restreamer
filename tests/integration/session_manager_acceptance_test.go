@@ -357,7 +357,7 @@ func newSessionAcceptanceFixture(t *testing.T, helper string, endpoints []string
 		f.destinations = append(f.destinations, d)
 	}
 	f.seedFallback(t)
-	f.config = session.Config{Core: f.service, Files: f.files, Processes: f.processes, GeneratorVersion: "controlled-generator", Router: publisherRouterLimits(), Publisher: publisher.Options{Queue: publisherQueue(), RetryInitial: 10 * time.Millisecond, RetryMax: 50 * time.Millisecond, ResubscribeDelay: 5 * time.Millisecond, Transport: publisherTransportOptions(nil)}, Logger: slog.New(slog.NewJSONHandler(&f.logs, nil)), MaxSessions: 1, MaxOutputs: 8, MaxCommands: 8, PageSize: 8, MaxGroups: 4, MaxReferences: 8, ReconcileInterval: 5 * time.Millisecond, StartupTimeout: 4 * time.Second, OperationTimeout: 300 * time.Millisecond, ShutdownTimeout: 4 * time.Second,
+	f.config = session.Config{Core: f.service, Files: f.files, Processes: f.processes, GeneratorVersion: core.CurrentFallbackGeneratorVersion, Router: publisherRouterLimits(), Publisher: publisher.Options{Queue: publisherQueue(), RetryInitial: 10 * time.Millisecond, RetryMax: 50 * time.Millisecond, ResubscribeDelay: 5 * time.Millisecond, Transport: publisherTransportOptions(nil)}, Logger: slog.New(slog.NewJSONHandler(&f.logs, nil)), MaxSessions: 1, MaxOutputs: 8, MaxCommands: 8, PageSize: 8, MaxGroups: 4, MaxReferences: 8, ReconcileInterval: 5 * time.Millisecond, StartupTimeout: 4 * time.Second, OperationTimeout: 300 * time.Millisecond, ShutdownTimeout: 4 * time.Second,
 		Group: group.RuntimeConfig{Switcher: group.SwitcherConfig{Profile: profile, Watchdog: watchdog, Queue: publisherQueue(), Router: publisherRouterLimits(), MaxAVSkew: 100 * time.Millisecond, MaxTransitionGap: 100 * time.Millisecond}, Container: integrationLimits(), Binary: helper, ResubscribeBackoff: 5 * time.Millisecond, ControlInterval: 5 * time.Millisecond, ShutdownTimeout: 3 * time.Second, FFmpeg: ffmpeg.Config{BaseDir: filepath.Join(base, "r"), StartupTimeout: 3 * time.Second, VideoTimeout: 2 * time.Second, AudioTimeout: 2 * time.Second, WatchdogInterval: 10 * time.Millisecond, MaxRestarts: 0, RestartBackoff: time.Millisecond, GracePeriod: 50 * time.Millisecond, KillTimeout: time.Second, ShutdownTimeout: 3 * time.Second, DiagnosticEvents: 64, DiagnosticBytes: 65536, DiagnosticChunkBytes: 1024, MaxCommandBytes: 8192, MaxCommandArgs: 128}}}
 	f.config.Monitoring = monitoring.SamplerConfig{MaxSources: 128, StaleAfter: 5 * time.Second, ShutdownTimeout: 4 * time.Second}
 	f.config.Telemetry = core.TelemetryLimits{Events: core.EventLimits{MaxEvents: 128, MaxBytes: 1 << 20, MaxEventBytes: 65536, MaxPageSize: 64}, MediaStaleAfter: 5 * time.Second, MaxGPUDevices: 8, MaxGPUUUIDBytes: 256, MaxGPUBytes: 1 << 20}
@@ -386,7 +386,7 @@ func (f *sessionAcceptanceFixture) configureOwners(t *testing.T, helper string) 
 	t.Helper()
 	// preparation содержит реальный FallbackManager общих файлов и процессов; err содержит отказ его
 	// создания.
-	preparation, err := fallback.NewManager(f.service, f.files, fallback.Config{ReconcileLimit: 16, GeneratorVersion: "controlled-generator", FFmpeg: helper, FFprobe: helper, ProcessRegistry: f.processes, MaxUploadBytes: 1 << 20, MaxOutputBytes: 1 << 20, PrepareTimeout: 5 * time.Second, ShutdownTimeout: 3 * time.Second, QueueInterval: time.Millisecond, Runner: fallback.RunnerLimits{Timeout: 3 * time.Second, MaxArgs: 128, MaxCommandBytes: 8192, MaxDiagnosticBytes: 65536}, Probe: fallback.ProbeLimits{MaxJSONBytes: 65536, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 4096 * 4096, MaxDuration: time.Minute, ImageDuration: time.Second, MaxPackets: 1000, Container: integrationLimits()}})
+	preparation, err := fallback.NewManager(f.service, f.files, fallback.Config{ReconcileLimit: 16, GeneratorVersion: core.CurrentFallbackGeneratorVersion, FFmpeg: helper, FFprobe: helper, ProcessRegistry: f.processes, MaxUploadBytes: 1 << 20, MaxOutputBytes: 1 << 20, PrepareTimeout: 5 * time.Second, ShutdownTimeout: 3 * time.Second, QueueInterval: time.Millisecond, Runner: fallback.RunnerLimits{Timeout: 3 * time.Second, MaxArgs: 128, MaxCommandBytes: 8192, MaxDiagnosticBytes: 65536}, Probe: fallback.ProbeLimits{MaxJSONBytes: 65536, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 4096 * 4096, MaxDuration: time.Minute, ImageDuration: time.Second, MaxPackets: 1000, Container: integrationLimits()}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func (f *sessionAcceptanceFixture) seedFallback(t *testing.T) {
 	// ctx задаёт контекст резервирования и публикации управляемого поколения заглушки.
 	ctx := context.Background()
 	// g содержит зарезервированное поколение; err содержит отказ допуска подготовки.
-	g, err := f.service.ReservePreparation(ctx, core.PreparationRequest{AssetID: f.asset.ID, ExpectedRevision: f.asset.Revision, Kind: core.AssetImage, GeneratorVersion: "controlled-generator"})
+	g, err := f.service.ReservePreparation(ctx, core.PreparationRequest{AssetID: f.asset.ID, ExpectedRevision: f.asset.Revision, Kind: core.AssetImage, GeneratorVersion: core.CurrentFallbackGeneratorVersion})
 	if err != nil {
 		t.Fatal(err)
 	}

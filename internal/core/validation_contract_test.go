@@ -40,7 +40,7 @@ func contractSnapshots(t *testing.T) (core.SessionSnapshot, core.OutputSnapshot)
 	// profile задаёт именованный полный профиль тестовой группы.
 	profile := core.TranscodeProfile{Record: contractRecord(group.ProfileID), Name: "Профиль", Profile: p}
 	// manifest задаёт точный готовый файл заглушки с согласованным профилем.
-	manifest := core.ArtifactManifest{GenerationID: "generation", VerifiedFormat: p.Format, VariantID: "variant", AssetID: policy.AssetID, SourceHash: "synthetic-source-hash", Profile: p, ProfileKey: key, CanonicalProfile: canonical, GeneratorVersion: "generator-1", ManagedPath: "variants/generation.mp4", SizeBytes: 512, ContentHash: "synthetic-content-hash"}
+	manifest := core.ArtifactManifest{GenerationID: "generation", VerifiedFormat: p.Format, VariantID: "variant", AssetID: policy.AssetID, SourceHash: "synthetic-source-hash", Profile: p, ProfileKey: key, CanonicalProfile: canonical, GeneratorVersion: core.CurrentFallbackGeneratorVersion, ManagedPath: "variants/generation.mp4", SizeBytes: 512, ContentHash: "synthetic-content-hash"}
 	// output задаёт согласованный самостоятельный снимок выхода.
 	output := core.OutputSnapshot{
 		Destination: core.Destination{Record: contractRecord("destination"), StreamID: stream.ID, GroupID: group.ID, Name: "Назначение", Platform: "custom", Endpoint: "rtmps://example.invalid/live", StreamKey: "synthetic-output-key", Enabled: true},
@@ -180,12 +180,14 @@ func TestSessionSnapshotRejectsForeignAndDuplicateGroups(t *testing.T) {
 }
 
 // Проверяет согласованность ссылок и полного профиля всех частей снимка выхода.
+// t сообщает об ошибках проверяемого сценария.
 func TestOutputSnapshotRequiresOneConsistentFallbackProfile(t *testing.T) {
 	// tc содержит выбранное изменение или допустимое сочетание полей проверяемой сущности.
 	for _, tc := range []struct {
 		// name задаёт имя проверяемого нарушения доменного ограничения.
 		name string
 		// edit вносит выбранное нарушение в отдельную копию корректного доменного значения.
+		// Параметр v каждого обработчика edit указывает на отдельную изменяемую копию снимка выхода.
 		edit func(*core.OutputSnapshot)
 	}{
 		{"invalid_destination", func(v *core.OutputSnapshot) {
@@ -226,9 +228,10 @@ func TestOutputSnapshotRequiresOneConsistentFallbackProfile(t *testing.T) {
 		}},
 		{"different_full_profile", func(v *core.OutputSnapshot) {
 			// Меняет ширину профиля снимка без изменения профиля манифеста.
-			v.Profile.Profile.Format.Video.Width++
+			v.Profile.Profile.Format.Video.Width += 2
 		}},
 	} {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run(tc.name, func(t *testing.T) {
 			// Проверяет ErrInvalid для выбранного нарушения связей назначения, группы, профиля, политики и
 			// манифеста выхода.

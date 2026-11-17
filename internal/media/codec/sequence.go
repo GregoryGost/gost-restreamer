@@ -5,8 +5,8 @@ import (
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/av1"
 )
 
-// parseSequence читает исходные биты поддержанного AV1 Main SDR по §5.5.1–5.5.3.
-// Сведения о задержке отображения сохраняются; модель декодера, несколько слоёв и HDR не поддержаны.
+// parseSequence читает исходные биты прогрессивного AV1 по §5.5.1–5.5.3.
+// Сведения о задержке отображения сохраняются; модель декодера, несколько слоёв и модель зерна не поддержаны.
 func parseSequence(payload []byte) (av1.SequenceHeader, error) {
 	// r читает поля заголовка последовательности AV1 из переданного битового потока.
 	r := bitReader{b: payload}
@@ -20,7 +20,7 @@ func parseSequence(payload []byte) (av1.SequenceHeader, error) {
 	s.SeqProfile = uint8(r.read(3))
 	s.StillPicture = flag()
 	s.ReducedStillPictureHeader = flag()
-	if s.SeqProfile != 0 || s.StillPicture || s.ReducedStillPictureHeader {
+	if s.SeqProfile > 2 || s.StillPicture || s.ReducedStillPictureHeader {
 		return s, ErrCodec
 	}
 	if flag() {
@@ -101,10 +101,18 @@ func parseSequence(payload []byte) (av1.SequenceHeader, error) {
 	// c указывает на цветовые параметры разбираемой последовательности.
 	c := &s.ColorConfig
 	c.HighBitDepth = flag()
-	c.MonoChrome = flag()
 	c.BitDepth = 8
-	if c.HighBitDepth || c.MonoChrome {
-		return s, ErrCodec
+	if c.HighBitDepth {
+		c.BitDepth = 10
+		if s.SeqProfile == 2 {
+			c.TwelveBit = flag()
+			if c.TwelveBit {
+				c.BitDepth = 12
+			}
+		}
+	}
+	if s.SeqProfile != 1 {
+		c.MonoChrome = flag()
 	}
 	c.ColorDescriptionPresentFlag = flag()
 	c.ColorPrimaries = 2
@@ -115,14 +123,42 @@ func parseSequence(payload []byte) (av1.SequenceHeader, error) {
 		c.TransferCharacteristics = av1.SequenceHeader_TransferCharacteristics(r.read(8))
 		c.MatrixCoefficients = av1.SequenceHeader_MatrixCoefficients(r.read(8))
 	}
-	if c.TransferCharacteristics == 16 || c.TransferCharacteristics == 18 || c.ColorPrimaries == 1 && c.TransferCharacteristics == 13 && c.MatrixCoefficients == 0 {
-		return s, ErrCodec
+
+	switch {
+	case c.MonoChrome:
+		c.ColorRange = flag()
+		c.SubsamplingX, c.SubsamplingY = true, true
+		// У монохромной последовательности separate_uv_delta_q отсутствует.
+	case c.ColorPrimaries == 1 && c.TransferCharacteristics == 13 && c.MatrixCoefficients == 0:
+		c.ColorRange = true
+		if s.SeqProfile == 0 {
+			return s, ErrCodec
+		}
+		r.read(1) // separate_uv_delta_q для трёх полноразмерных плоскостей.
+	default:
+		c.ColorRange = flag()
+		switch s.SeqProfile {
+		case 0:
+			c.SubsamplingX, c.SubsamplingY = true, true
+		case 1:
+			c.SubsamplingX, c.SubsamplingY = false, false
+		case 2:
+			c.SubsamplingX = true
+			if c.BitDepth == 12 {
+				c.SubsamplingX = flag()
+				if c.SubsamplingX {
+					c.SubsamplingY = flag()
+				}
+			}
+		}
+		if c.SubsamplingX && c.SubsamplingY {
+			c.ChromaSamplePosition = av1.SequenceHeader_ChromaSamplePosition(r.read(2))
+			if c.ChromaSamplePosition == 3 {
+				return s, ErrCodec
+			}
+		}
+		r.read(1) // separate_uv_delta_q.
 	}
-	c.ColorRange = flag()
-	c.SubsamplingX = true
-	c.SubsamplingY = true
-	c.ChromaSamplePosition = av1.SequenceHeader_ChromaSamplePosition(r.read(2))
-	r.read(1) // separate_uv_delta_q.
 	s.FilmGrainParamsPresent = flag()
 	if s.FilmGrainParamsPresent {
 		return s, fmt.Errorf("%w: film grain", ErrCodec)

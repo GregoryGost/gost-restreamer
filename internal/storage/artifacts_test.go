@@ -19,7 +19,7 @@ func TestPreparationRequiresExactAttemptAndPreservesCurrentOnFailure(t *testing.
 	ctx := context.Background()
 	// g содержит новое зарезервированное поколение для проверки точной попытки. err сообщает об
 	// ошибке резервирования полного поколения подготовки.
-	g, err := f.service.ReservePreparation(ctx, core.PreparationRequest{AssetID: f.asset.ID, ExpectedRevision: f.asset.Revision, Kind: core.AssetImage, GeneratorVersion: "generator-v2"})
+	g, err := f.service.ReservePreparation(ctx, core.PreparationRequest{AssetID: f.asset.ID, ExpectedRevision: f.asset.Revision, Kind: core.AssetImage, GeneratorVersion: core.CurrentFallbackGeneratorVersion})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,9 +67,11 @@ func TestPreparationRequiresExactAttemptAndPreservesCurrentOnFailure(t *testing.
 
 // Проверяет отказ несовпадающих генератора, профиля, поколения и варианта без частичной Session и
 // квитанции.
+// t сообщает об ошибках проверяемого сценария.
 func TestStartRejectsEveryNonmatchingPreparedBindingAtomically(t *testing.T) {
 	// mismatch выбирает несовпадение генератора, профиля, поколения или варианта.
 	for _, mismatch := range []string{"generator", "profile", "generation", "variant"} {
+		// t сообщает об ошибках проверяемого сценария.
 		t.Run(mismatch, func(t *testing.T) {
 			// Проверяет атомарный отказ запуска с чужой версией генератора, изменённым профилем, прежним
 			// поколением либо отсутствующим вариантом.
@@ -91,7 +93,7 @@ func TestStartRejectsEveryNonmatchingPreparedBindingAtomically(t *testing.T) {
 			case "profile":
 				// p содержит полный именованный профиль для проверяемого изменения.
 				p := f.profile
-				p.Profile.Format.Video.Width++
+				p.Profile.Format.Video.Width += 2
 				// err сообщает об ошибке условного изменения полного профиля.
 				if _, err := f.service.UpdateProfile(ctx, p, p.Revision); err != nil {
 					t.Fatal(err)
@@ -104,6 +106,7 @@ func TestStartRejectsEveryNonmatchingPreparedBindingAtomically(t *testing.T) {
 			} else {
 				requireDomainError(t, err, core.ErrNotReady)
 			}
+			// r предоставляет репозитории согласованного чтения для проверки отсутствия частичных Session и квитанции.
 			if err = f.store.View(ctx, func(r core.Repositories) error {
 				// Проверяет отсутствие частичной Session и квитанции после отклонения привязки подготовленного файла.
 

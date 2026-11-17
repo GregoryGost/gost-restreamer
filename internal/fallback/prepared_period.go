@@ -28,8 +28,10 @@ func newPreparedPeriod(format core.MediaFormat) *preparedPeriod {
 	return &preparedPeriod{format: format, starts: map[media.Track]*big.Rat{}, ends: map[media.Track]*big.Rat{}, videoPTS: map[uint64]struct{}{}}
 }
 
-// Проверяет непрерывность DTS, полную длительность кадра и допустимые начальные метки; номера PTS
-// видео учитывает без дубликатов, сохраняя порядок декодирования.
+// add проверяет непрерывность DTS и полный размер единицы доступа, накапливая границы в p.
+// track выбирает дорожку, base задаёт секунды на отсчёт; pts, dts и duration выражены в этих отсчётах.
+// Аудио требует PTS=DTS и начала 0; первое видео имеет PTS=0 и DTS<=0. Номера PTS видео
+// учитываются без дубликатов, а фактический порядок декодирования сохраняется.
 func (p *preparedPeriod) add(track media.Track, base media.TimeBase, pts, dts, duration int64) error {
 	if duration <= 0 {
 		return core.ErrCorrupt
@@ -49,7 +51,7 @@ func (p *preparedPeriod) add(track media.Track, base media.TimeBase, pts, dts, d
 	}
 	switch track {
 	case media.TrackAudio:
-		if pts != dts || !exactAudioDuration(duration, base, p.format.Audio.SampleRateHz) {
+		if pts != dts || !exactPreparedAudioDuration(duration, base, p.format.Audio) {
 			return core.ErrCorrupt
 		}
 	case media.TrackVideo:

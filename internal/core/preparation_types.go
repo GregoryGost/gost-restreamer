@@ -115,8 +115,9 @@ type FallbackGeneration struct {
 	Failure string
 }
 
-// Validate проверяет владельца и состояние подготовки, уникальные полные профили и принадлежность всех
-// путей каталогу поколения. PUBLISHED требует непустого источника, а Issued — положительной попытки.
+// Validate проверяет владельца g, состояние, идентичности профилей и уникальные ID/пути внутри каталога.
+// Каждый канонический профиль, ID варианта и путь единственны. PUBLISHED требует непустого источника,
+// а Issued — положительной попытки.
 func (g FallbackGeneration) Validate() error {
 	// err содержит причину отказа проверки идентификатора заглушки.
 	if err := g.AssetID.Validate(); err != nil {
@@ -145,8 +146,15 @@ func (g FallbackGeneration) Validate() error {
 			return ErrInvalid
 		}
 	}
-	// seen отмечает уже встреченные канонические профили для запрета дублей.
+	// seen запрещает повтор любых канонических профилей в поколении.
 	seen := map[string]bool{}
+	// ids запрещает повтор идентификатора варианта в поколении.
+	ids := map[ID]bool{}
+	// paths запрещает повтор любого зарезервированного пути, включая пути оригинала.
+	paths := map[string]bool{g.OriginalPath: true, g.StagingPath: true}
+	if g.OriginalPath == g.StagingPath {
+		return ErrInvalid
+	}
 	// p содержит очередной требуемый профиль и пути его варианта.
 	for _, p := range g.RequiredProfiles {
 		// k содержит ключ профиля, b — его канонические байты, а e — причину отказа вычисления
@@ -155,19 +163,21 @@ func (g FallbackGeneration) Validate() error {
 		if e != nil {
 			return e
 		}
-		if k != p.ProfileKey || !bytes.Equal(b, p.CanonicalProfile) || seen[string(b)] || p.VariantID == "" {
+		if k != p.ProfileKey || !bytes.Equal(b, p.CanonicalProfile) || seen[string(b)] || p.VariantID.Validate() != nil || ids[p.VariantID] {
 			return ErrInvalid
 		}
 		seen[string(b)] = true
+		ids[p.VariantID] = true
 		// path содержит очередной окончательный или промежуточный путь варианта.
 		for _, path := range []string{p.ManagedPath, p.StagingPath} {
 			// err содержит причину отказа проверки пути варианта.
 			if err := ValidateManagedPath(path); err != nil {
 				return err
 			}
-			if !strings.HasPrefix(path, GenerationDirectory(g.ID)+"/") {
+			if !strings.HasPrefix(path, GenerationDirectory(g.ID)+"/") || paths[path] {
 				return ErrInvalid
 			}
+			paths[path] = true
 		}
 	}
 	// err содержит причину отказа проверки исходного формата поколения.

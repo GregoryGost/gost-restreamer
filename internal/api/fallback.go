@@ -19,7 +19,7 @@ type AssetListInput struct {
 	// PageParams содержит параметры ограниченной страницы и курсора списка заглушек.
 	PageParams
 	// State ограничивает список заглушек выбранным состоянием PREPARING, READY или FAILED.
-	State string `query:"state" enum:"PREPARING,READY,FAILED"`
+	State string `query:"state" enum:",PREPARING,READY,FAILED"`
 }
 
 // AssetCreate задаёт тело запроса создания именованной заглушки без загрузки содержимого.
@@ -48,7 +48,7 @@ type VariantListInput struct {
 	// GenerationID выбирает точное поколение; пустое значение оставляет текущее поколение заглушки.
 	GenerationID string `query:"generation_id"`
 	// State ограничивает варианты выбранным состоянием подготовки.
-	State string `query:"state" enum:"PREPARING,READY,FAILED"`
+	State string `query:"state" enum:",PREPARING,READY,FAILED"`
 }
 
 // RebuildInput задаёт заглушку и ожидаемую ревизию для повторной подготовки сохранённого оригинала.
@@ -110,7 +110,7 @@ func (r *nonemptyReader) Read(p []byte) (int, error) {
 		r.read = true
 	}
 	if e == io.EOF && !r.read {
-		return n, core.ErrInvalid
+		return n, reasonError(core.ErrInvalid, "empty_upload", "")
 	}
 	return n, e
 }
@@ -170,7 +170,7 @@ func (a *API) registerFallback() {
 			return nil, e
 		}
 		if g.AssetID != core.ID(i.ID) {
-			return nil, core.ErrNotFound
+			return nil, reasonError(core.ErrNotFound, "nested_resource_not_found", "")
 		}
 		return &Result[GenerationDTO]{generationDTO(g)}, nil
 	})
@@ -211,7 +211,7 @@ func (a *API) registerFallback() {
 			return nil, e
 		}
 		if g.AssetID != asset.ID {
-			return nil, core.ErrNotFound
+			return nil, reasonError(core.ErrNotFound, "nested_resource_not_found", "")
 		}
 		// p содержит страницу вариантов проверенного поколения заглушки.
 		p, e := c.ListVariants(ctx, q)
@@ -223,7 +223,7 @@ func (a *API) registerFallback() {
 		// Передаёт повторную подготовку с ожидаемой ревизией и возвращает адрес принятого поколения.
 
 		if i.Body.ExpectedRevision == 0 {
-			return nil, core.ErrInvalid
+			return nil, reasonError(core.ErrInvalid, "invalid_field", "expected_revision")
 		}
 		if a.config.Fallback == nil {
 			return nil, unavailable()
@@ -241,6 +241,7 @@ func (a *API) registerFallback() {
 	op = operation("PUT", "/fallback-assets/{id}/content", "upload-fallback-content", "Передать файл и продолжить подготовку в фоне.")
 	op.DefaultStatus = 202
 	op.RequestBody = &huma.RequestBody{Required: true, Content: map[string]*huma.MediaType{"application/octet-stream": {Schema: &huma.Schema{Type: "string", Format: "binary"}}}}
+	a.setProblemResponses(&op)
 	huma.Register(a.huma, op, func(ctx context.Context, i *UploadInput) (*Created[PreparationDTO], error) {
 		// Передаёт загрузку файла отдельному обработчику и переводит его ошибку в публичный ответ.
 
@@ -249,6 +250,7 @@ func (a *API) registerFallback() {
 		v, e := a.upload(ctx, i)
 		return v, a.problem(e)
 	})
+	a.setProblemResponses(&op)
 }
 
 // preparationAccepted формирует ответ принятия с AssetID, GenerationID и Location точного поколения.
@@ -278,10 +280,10 @@ func (a *API) upload(ctx context.Context, i *UploadInput) (*Created[PreparationD
 	// ограничивающего тело reader.
 	r, w := humachi.Unwrap(i.transport)
 	if r.ContentLength > a.config.Limits.UploadBytes {
-		return nil, statusError(413)
+		return nil, reasonError(statusError(413), "body_too_large", "")
 	}
 	if r.ContentLength == 0 {
-		return nil, core.ErrInvalid
+		return nil, reasonError(core.ErrInvalid, "empty_upload", "")
 	}
 	// cancel освобождает срок передачи файла после завершения upload.
 	ctx, cancel := context.WithTimeout(ctx, a.config.Limits.UploadReadTimeout)
@@ -312,8 +314,11 @@ func (a *API) upload(ctx context.Context, i *UploadInput) (*Created[PreparationD
 		// timeout принимает транспортную ошибку для отображения истечения срока передачи в HTTP
 		// 408.
 		var timeout net.Error
+		if errors.Is(e, context.Canceled) && !errors.Is(e, context.DeadlineExceeded) {
+			return nil, reasonError(statusError(408), "upload_canceled", "")
+		}
 		if errors.Is(e, context.DeadlineExceeded) || errors.Is(e, context.Canceled) || (errors.As(e, &timeout) && timeout.Timeout()) {
-			return nil, statusError(408)
+			return nil, reasonError(statusError(408), "upload_timeout", "")
 		}
 		return nil, e
 	}

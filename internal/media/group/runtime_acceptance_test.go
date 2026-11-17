@@ -194,6 +194,7 @@ func acceptanceRuntimeConfigs(t testing.TB, p core.GroupProfile, epoch uint64) (
 }
 
 // Создаёт профиль 60 FPS заданного размера: AV1 copy либо H.264 transcode с цветом bt709.
+// codec выбирает AV1 copy либо H.264 transcode; width и height задают размеры результата.
 func acceptanceRuntimeProfile(codec core.Codec, width, height uint32) core.GroupProfile {
 	// p содержит изменяемый контрольный профиль AV1 copy либо H.264 transcode заданных размеров.
 	p := switchAcceptanceConfig().Profile
@@ -202,6 +203,9 @@ func acceptanceRuntimeProfile(codec core.Codec, width, height uint32) core.Group
 	p.Format.Video.CodecProfile = "high"
 	if codec == core.CodecAV1 {
 		p.Mode = core.ModeCopy
+		p.LiveAudioMode = core.LiveAudioCopy
+		p.Encoding = core.DefaultEncoding(p.Mode, core.VideoEncoderSVTAV1, core.RateControlCBR)
+		p.VideoEncoding.MaxBitrateBPS = p.VideoEncoding.TargetBitrateBPS
 		p.Format.Video.CodecProfile = "main"
 	}
 	p.Format.Video.Width = width
@@ -407,7 +411,7 @@ func newRuntimeAcceptanceFixture(t *testing.T) acceptanceRuntimeFixture {
 		}
 	}
 	// g содержит поколение подготовки всех требуемых профилей контрольного Stream.
-	g, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: "runtime-generator"})
+	g, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: core.CurrentFallbackGeneratorVersion})
 	if err != nil {
 		t.Fatal(err)
 	}

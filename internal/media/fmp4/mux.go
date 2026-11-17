@@ -9,6 +9,7 @@ import (
 
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/media"
+	"github.com/GregoryGost/gost-restreamer/internal/media/codec"
 )
 
 // metadataID отличает собственный блок uuid с полным JSON-описанием конфигураций от посторонних блоков
@@ -59,6 +60,10 @@ func (m configMetadata) info(track media.Track) media.CodecConfigInfo {
 // Muxer пишет init сразу, затем отдельный moof/mdat для каждого пакета.
 // При ошибке ввода-вывода транспорт становится непригодным для дальнейших записей.
 type Muxer struct {
+	// audioInput разрешает клонирование FLAC только для приватного входа явного audio transcode.
+	audioInput bool
+	// flacCounter считает samples, полностью записанные в новый физический приватный поток.
+	flacCounter uint64
 	// w принимает сериализованные байты транспорта; закрытием Writer и ограничением ожидания владеет
 	// вызывающий.
 	w io.Writer
@@ -76,8 +81,23 @@ type Muxer struct {
 }
 
 // NewMuxer проверяет конфигурации и бюджеты, сериализует и сразу записывает инициализацию в переданный
-// Writer; закрытием Writer владеет вызывающий.
+// Writer; закрытием Writer владеет вызывающий. w принимает байты, init задаёт конфигурации,
+// limits ограничивает объём до записи; самостоятельный FLAC сохраняет исходные номера и блоки.
 func NewMuxer(w io.Writer, init Init, limits Limits) (*Muxer, error) {
+	return newMuxer(w, init, limits, false)
+}
+
+// NewAudioTranscodeInputMuxer пишет приватный вход FFmpeg для явно выбранного audio transcode.
+// w и limits задают транспорт и бюджеты; init остаётся неизменным. Только FLAC получает отдельные
+// STREAMINFO с неизвестной длиной и variable sample counter от нуля. FLACOwned не требуется,
+// поскольку этот поток предназначен для декодирования, а не публичного копирования.
+func NewAudioTranscodeInputMuxer(w io.Writer, init Init, limits Limits) (*Muxer, error) {
+	return newMuxer(w, init, limits, true)
+}
+
+// newMuxer проверяет init/limits до записи w; audioInput включает только приватную FLAC-перенумерацию.
+// Ошибка сериализации не выполняет I/O, закрытием w по-прежнему управляет вызывающий.
+func newMuxer(w io.Writer, init Init, limits Limits, audioInput bool) (*Muxer, error) {
 	if w == nil {
 		return nil, ErrInvalid
 	}
@@ -89,16 +109,29 @@ func NewMuxer(w io.Writer, init Init, limits Limits) (*Muxer, error) {
 	if err := init.Validate(); err != nil {
 		return nil, err
 	}
+	// wireInit содержит независимую конфигурацию физического входа; обычный вывод сохраняет init.
+	wireInit := init
+	if audioInput && init.Audio.Info().Audio.Codec == core.CodecFLAC {
+		// headers и prepareErr содержат отдельные STREAMINFO и отказ их проверки до I/O.
+		headers, prepareErr := codec.FLACContinuousHeaders(init.Audio.Headers())
+		if prepareErr != nil {
+			return nil, translateCodecError(prepareErr)
+		}
+		wireInit.Audio, prepareErr = media.NewCodecConfig(init.Audio.Info(), headers)
+		if prepareErr != nil {
+			return nil, prepareErr
+		}
+	}
 	// data содержит готовую инициализацию ftyp/moov; err сообщает об отказе её построения до первой
 	// записи.
-	data, err := marshalInit(init, limits)
+	data, err := marshalInit(wireInit, limits)
 	if err != nil {
 		return nil, err
 	}
 	if err = writeAll(w, data); err != nil {
 		return nil, err
 	}
-	return &Muxer{w: w, init: init, limits: limits, last: make(map[media.Track]int64)}, nil
+	return &Muxer{w: w, init: init, audioInput: audioInput, limits: limits, last: make(map[media.Track]int64)}, nil
 }
 
 // Сравнивает точные описания конфигураций и байты заголовков.
@@ -113,7 +146,7 @@ func sameHeaders(c media.CodecConfig, headers []byte) bool {
 
 // WritePacket записывает один пакет отдельной парой moof/mdat при неизменной конфигурации и
 // неубывающем DTS дорожки. Проверяет точный пересчёт, сдвиг и бюджеты до записи; ошибка ввода-вывода
-// сохраняется и запрещает дальнейшие записи.
+// сохраняется и запрещает дальнейшие записи. p содержит одну полную AU с её конфигурацией и временем.
 func (m *Muxer) WritePacket(p media.Packet) error {
 	if m.err != nil {
 		return m.err
@@ -138,8 +171,38 @@ func (m *Muxer) WritePacket(p media.Packet) error {
 	if !sameConfig(c, expected) {
 		return ErrConfigChanged
 	}
-	// size содержит размер сжатой нагрузки без заголовков конфигурации и обрамления MP4.
-	size := p.StoredBytes() - c.StoredBytes()
+	// sourceSize проверяет исходную нагрузку до её копирования и разбора AU.
+	sourceSize := p.StoredBytes() - c.StoredBytes()
+	if sourceSize > m.limits.MaxSampleBytes || sourceSize+8 > m.limits.MaxMdatBytes || sourceSize+8 > m.limits.MaxBoxBytes {
+		return ErrLimit
+	}
+	// payload содержит отдельную нагрузку; переписывается только копия приватного FLAC-входа.
+	payload := p.Payload()
+	// nextCounter хранит число записанных отсчётов приватного FLAC и остаётся локальным до полной успешной записи moof/mdat.
+	nextCounter := m.flacCounter
+	if info.Track == media.TrackAudio && newAudioCodec(info.Audio.Codec) {
+		// audioErr сообщает о несовпадении полной AU, конфигурации или фактической положительной длительности.
+		if audioErr := codec.ValidateAudioDuration(info.Audio.Codec, c.Headers(), payload, p.Info(), info.TimeBase); audioErr != nil {
+			return translateCodecError(audioErr)
+		}
+		if m.audioInput && info.Audio.Codec == core.CodecFLAC {
+			// frame и rewriteErr подтверждают фактический размер до перенумерации и проверки переполнения.
+			frame, rewriteErr := codec.FLACFrameInfo(c.Headers(), payload)
+			if rewriteErr != nil {
+				return translateCodecError(rewriteErr)
+			}
+			if m.flacCounter >= 1<<36 || uint64(frame.Samples) > (1<<36-1)-m.flacCounter {
+				return ErrLimit
+			}
+			payload, rewriteErr = codec.RewriteFLACFrame(c.Headers(), payload, m.flacCounter)
+			if rewriteErr != nil {
+				return translateCodecError(rewriteErr)
+			}
+			nextCounter += uint64(frame.Samples)
+		}
+	}
+	// size содержит размер окончательной нагрузки после возможного изменения длины FLAC-заголовка.
+	size := uint64(len(payload))
 	if size > m.limits.MaxSampleBytes || size+8 > m.limits.MaxMdatBytes || size+8 > m.limits.MaxBoxBytes {
 		return ErrLimit
 	}
@@ -158,6 +221,7 @@ func (m *Muxer) WritePacket(p media.Packet) error {
 	// пакета.
 	pi := p.Info()
 	// dts содержит точно переведённое в контейнерную шкалу время декодирования до общего сдвига.
+	// err сообщает о невозможности точной временной шкалы текущей дорожки.
 	dts, err := rescale(pi.DTS, info.TimeBase, base)
 	if err != nil {
 		return err
@@ -188,7 +252,7 @@ func (m *Muxer) WritePacket(p media.Packet) error {
 	if !cts.IsInt64() || cts.Int64() < math.MinInt32 || cts.Int64() > math.MaxInt32 || duration < 0 || duration > math.MaxUint32 {
 		return ErrUnsupportedTiming
 	}
-	if info.Track == media.TrackVideo && info.Video.Codec == core.CodecAV1 && pts != dts {
+	if info.Track == media.TrackVideo && (info.Video.Codec == core.CodecAV1 || info.Video.Codec == core.CodecVP9) && pts != dts {
 		return fmt.Errorf("%w: AV1SampleEntry требует PTS = DTS", ErrUnsupportedTiming)
 	}
 	// previous содержит последний записанный DTS этой дорожки; ok определяет, требуется ли сравнение
@@ -228,7 +292,7 @@ func (m *Muxer) WritePacket(p media.Packet) error {
 	be.PutUint32(moof[offsetPos:offsetPos+4], uint32(len(moof)+8))
 	// b обозначает очередную часть записи: moof, заголовок mdat либо собственную копию нагрузки
 	// пакета.
-	for _, b := range [][]byte{moof, join(u32(uint32(size+8)), []byte("mdat")), p.Payload()} {
+	for _, b := range [][]byte{moof, join(u32(uint32(size+8)), []byte("mdat")), payload} {
 		// err сообщает об отказе записи очередной части; он сохраняется в Muxer для запрета
 		// дальнейших записей.
 		if err := writeAll(m.w, b); err != nil {
@@ -237,6 +301,7 @@ func (m *Muxer) WritePacket(p media.Packet) error {
 		}
 	}
 	m.sequence++
+	m.flacCounter = nextCounter
 	m.last[info.Track] = dts
 	return nil
 }
@@ -284,6 +349,7 @@ func marshalInit(init Init, l Limits) ([]byte, error) {
 	putMatrix(mvhd[32:68])
 	be.PutUint32(mvhd[92:96], 3)
 	// video содержит сериализованный trak видеодорожки с идентификатором 1.
+	// err сохраняет отказ JSON-сериализации собственных метаданных.
 	video, err := marshalTrack(1, init.Video, init.Origin, l)
 	if err != nil {
 		return nil, err
@@ -299,6 +365,7 @@ func marshalInit(init Init, l Limits) ([]byte, error) {
 		return nil, ErrLimit
 	}
 	// top содержит верхние блоки готовой инициализации для проверки индивидуального бюджета каждого.
+	// err сообщает о невозможности представить точную общую шкалу A/V.
 	top, err := children(data)
 	if err != nil {
 		return nil, err
@@ -362,6 +429,7 @@ func marshalTrack(id uint32, c media.CodecConfig, origin OriginMapping, l Limits
 		mediaHeader = full("smhd", 0, 0, make([]byte, 4))
 	}
 	// entry содержит единственное описание кодека с его исходными заголовками для таблицы stsd.
+	// err сообщает о невозможности представить шкалу сериализуемой дорожки.
 	entry, err := marshalEntry(c, l)
 	if err != nil {
 		return nil, err
@@ -399,24 +467,21 @@ func descriptor(tag byte, data []byte) []byte {
 	return join([]byte{tag}, length[pos:], data)
 }
 
-// Собирает avc1, av01 либо mp4a с исходными заголовками; для H.264 сверяет SPS и размеры, для AAC —
-// ASC, частоту и каналы.
+// marshalEntry создаёт стандартную запись кодека из конфигурации c в пределах бюджетов l.
+// Для видео проверяет заголовки и размеры, для AAC — ASC и каналы; новые аудиопривязки
+// передаёт отдельному построителю стандартных записей.
 func marshalEntry(c media.CodecConfig, l Limits) ([]byte, error) {
-	// info содержит формат и роль дорожки для выбора записи avc1, av01 либо mp4a.
+	// info задаёт фактический формат и роль дорожки для выбора стандартной записи кодека.
 	info := c.Info()
-	// headers содержит отдельную копию avcC, av1C либо ASC, которая проверяется и включается в
-	// запись формата.
+	// headers содержит отдельную копию заголовков выбранного кодека для проверки и записи формата.
 	headers := c.Headers()
 	if uint64(len(headers)) > l.MaxExtradataBytes {
 		return nil, ErrLimit
 	}
 	if info.Track == media.TrackVideo {
-		if info.Video.Codec == core.CodecH264 {
-			// err сообщает о некорректном SPS либо несовпадении размеров H.264 с заданным
-			// форматом.
-			if _, err := spsFromAVCC(TrackDescription{Width: info.Video.Width, Height: info.Video.Height, Headers: headers}); err != nil {
-				return nil, err
-			}
+		// err сообщает о расхождении объявленного видео с фактическим SPS либо sequence.
+		if err := validateVideoConfig(c); err != nil {
+			return nil, err
 		}
 		// entry содержит фиксированную часть видеозаписи без вложенного блока конфигурации
 		// кодека.
@@ -429,16 +494,42 @@ func marshalEntry(c media.CodecConfig, l Limits) ([]byte, error) {
 		be.PutUint16(entry[40:42], 1)
 		be.PutUint16(entry[74:76], 0x18)
 		be.PutUint16(entry[76:78], 0xffff)
-		// kind выбирает тип видеозаписи avc1 либо av01, config — соответствующий вложенный блок
-		// avcC либо av1C.
+		// kind выбирает запись avc1/av01/hev1/vp09; config — соответствующий блок avcC/av1C/hvcC/vpcC.
 		kind, config := "avc1", "avcC"
-		if info.Video.Codec == core.CodecAV1 {
+		switch info.Video.Codec {
+		case core.CodecAV1:
 			kind, config = "av01", "av1C"
+		case core.CodecHEVC:
+			kind, config = "hev1", "hvcC"
+		case core.CodecVP9:
+			kind, config = "vp09", "vpcC"
 		}
 		if len(headers) < 4 {
 			return nil, ErrInvalid
 		}
-		return box(kind, entry, box(config, headers)), nil
+		// extra содержит цветовые и HDR-дескрипторы новых видеопривязок; прежние SDR сохраняют свои байты.
+		var extra []byte
+		if info.Video.Codec == core.CodecVP9 {
+			headers = join([]byte{1, 0, 0, 0}, headers)
+		}
+		if info.Video.Codec == core.CodecHEVC || info.Video.Codec == core.CodecVP9 || info.Video.Color.Transfer == "smpte2084" || info.Video.Color.Transfer == "arib-std-b67" {
+			// color содержит nclx фактического нового потока; err сообщает о неизвестном цвете сжатого потока.
+			color, err := marshalColor(info.Video.Color)
+			if err != nil {
+				return nil, err
+			}
+			extra = box("colr", color)
+			// hdr содержит отдельные блоки с направленными проекциями метаданных.
+			hdr, err := marshalHDRBoxes(info.HDR, info.Video.Codec == core.CodecVP9)
+			if err != nil {
+				return nil, err
+			}
+			extra = append(extra, hdr...)
+		}
+		return box(kind, entry, box(config, headers), extra), nil
+	}
+	if newAudioCodec(info.Audio.Codec) {
+		return marshalAudioEntry(c, l)
 	}
 	if info.Audio.SampleRateHz > 65535 {
 		return nil, ErrInvalid
@@ -449,7 +540,7 @@ func marshalEntry(c media.CodecConfig, l Limits) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if actual.SampleRateHz != info.Audio.SampleRateHz || actual.Channels != info.Audio.Channels {
+	if actual != info.Audio {
 		return nil, fmt.Errorf("%w: описание audio противоречит ASC", ErrInvalid)
 	}
 	if len(headers) > 0x0fffffff-32 {

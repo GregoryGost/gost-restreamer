@@ -72,11 +72,12 @@ func (f acceptanceRunFunc) Run(ctx context.Context, c Command, input *os.File, o
 
 // Возвращает конечные бюджеты менеджера и управляемые имена инструментов для приёмочных тестов.
 func acceptanceManagerConfig() Config {
-	return Config{ReconcileLimit: 10, GeneratorVersion: "acceptance-generator", FFmpeg: "controlled-ffmpeg", FFprobe: "controlled-ffprobe", MaxUploadBytes: 1 << 16, MaxOutputBytes: 1 << 16, PrepareTimeout: 5 * time.Second, ShutdownTimeout: time.Second, QueueInterval: time.Millisecond, Runner: RunnerLimits{Timeout: time.Second, MaxArgs: 256, MaxCommandBytes: 1 << 16, MaxDiagnosticBytes: 1 << 16}, Probe: ProbeLimits{MaxJSONBytes: 1 << 16, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 4096 * 4096, MaxDuration: time.Minute, ImageDuration: time.Second, MaxPackets: 1000, Container: fmp4.Limits{MaxBoxBytes: 1 << 20, MaxInitBytes: 1 << 20, MaxMoofBytes: 1 << 16, MaxMdatBytes: 1 << 20, MaxSampleBytes: 1 << 18, MaxExtradataBytes: 1 << 12, MaxSamples: 100}}}
+	return Config{ReconcileLimit: 10, GeneratorVersion: core.CurrentFallbackGeneratorVersion, FFmpeg: "controlled-ffmpeg", FFprobe: "controlled-ffprobe", MaxUploadBytes: 1 << 16, MaxOutputBytes: 1 << 16, PrepareTimeout: 5 * time.Second, ShutdownTimeout: time.Second, QueueInterval: time.Millisecond, Runner: RunnerLimits{Timeout: time.Second, MaxArgs: 256, MaxCommandBytes: 1 << 16, MaxDiagnosticBytes: 1 << 16}, Probe: ProbeLimits{MaxJSONBytes: 1 << 16, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 4096 * 4096, MaxDuration: time.Minute, ImageDuration: time.Second, MaxPackets: 1000, Container: fmp4.Limits{MaxBoxBytes: 1 << 20, MaxInitBytes: 1 << 20, MaxMoofBytes: 1 << 16, MaxMdatBytes: 1 << 20, MaxSampleBytes: 1 << 18, MaxExtradataBytes: 1 << 12, MaxSamples: 100}}}
 }
 
 // Открывает временную SQLite, создаёт Service, Asset и Stream с тремя группами на двух различных
 // профилях; хранилище закрывается после теста.
+// t сообщает об ошибках проверяемого сценария.
 func acceptanceManagerService(t *testing.T) (*core.Service, *storage.Store, core.FallbackAsset, core.Stream) {
 	t.Helper()
 	// ctx задаёт контекст создания изолированных доменных данных.
@@ -113,7 +114,7 @@ func acceptanceManagerService(t *testing.T) (*core.Service, *storage.Store, core
 	}
 	// profile содержит исходный профиль AV1/AAC, от которого строятся три группы с двумя различными
 	// форматами.
-	profile := core.GroupProfile{Mode: core.ModeCopy, Format: core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecAV1, Width: 640, Height: 360, FrameRate: core.FrameRate{Numerator: 30, Denominator: 1}, CodecProfile: "main", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 300000, MaxBitrateBPS: 400000, BufferBits: 600000, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 64000}}
+	profile := core.GroupProfile{Mode: core.ModeCopy, LiveAudioMode: core.LiveAudioCopy, Encoding: core.DefaultEncoding(core.ModeCopy, core.VideoEncoderSVTAV1, core.RateControlVBR), Format: core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecAV1, Width: 640, Height: 360, FrameRate: core.FrameRate{Numerator: 30, Denominator: 1}, CodecProfile: "main", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 300000, MaxBitrateBPS: 0, BufferBits: 0, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 64000}}
 	// i задаёт номер одной из трёх создаваемых групп.
 	for i := range 3 {
 		// p содержит копию профиля, заменяемую на H.264 transcode для третьей группы.
@@ -122,6 +123,8 @@ func acceptanceManagerService(t *testing.T) (*core.Service, *storage.Store, core
 			p.Mode = core.ModeTranscode
 			p.Format.Video.Codec = core.CodecH264
 			p.Format.Video.CodecProfile = "high"
+			p.Encoding = core.DefaultEncoding(p.Mode, core.VideoEncoderNVENC, core.RateControlVBR)
+			p.VideoEncoding.MaxBitrateBPS, p.VideoEncoding.BufferBits = 400000, 600000
 		}
 		// saved содержит сохранённый профиль текущей группы. err сообщает об отказе его
 		// создания.
@@ -492,7 +495,7 @@ func TestManagersShareExecutionSlotAndCancellationWaitsForPhysicalRunner(t *test
 }
 
 // Проверяет независимые позиции открытых дескрипторов и отказ чтения и очистки при изменении
-// содержимого без изменения размера.
+// содержимого без изменения размера. t регистрирует изолированные файлы и проверки их содержимого.
 func TestVerifiedReadersHaveIndependentPositionsAndRejectCorruption(t *testing.T) {
 	// s содержит файловое хранилище. dir содержит его корень для изменения тестового файла.
 	s, dir := acceptanceFileStore(t)
@@ -504,8 +507,15 @@ func TestVerifiedReadersHaveIndependentPositionsAndRejectCorruption(t *testing.T
 	if err := os.WriteFile(filepath.Join(dir, "media.mp4"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	// m содержит ожидаемые путь, размер и SHA256 проверяемого файла.
-	m := core.ArtifactManifest{ManagedPath: "media.mp4", SizeBytes: uint64(len(data)), ContentHash: acceptanceDigest(data)}
+	// profile задаёт поддержанный формат синтетического манифеста; разбор медиаданных здесь не проверяется.
+	profile := selfProfile(core.CodecH264)
+	// key и canonical связывают манифест с точным профилем; err сообщает об отказе вычисления.
+	key, canonical, err := core.ProfileIdentity(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// m содержит полное пригодное доказательство файла с ожидаемыми путём, размером и SHA256.
+	m := core.ArtifactManifest{AssetID: "asset", GenerationID: "generation", VariantID: "variant", SourceHash: acceptanceDigest(data), Profile: profile, ProfileKey: key, CanonicalProfile: canonical, VerifiedFormat: profile.Format, GeneratorVersion: core.CurrentFallbackGeneratorVersion, ManagedPath: "media.mp4", SizeBytes: uint64(len(data)), ContentHash: acceptanceDigest(data)}
 	// a содержит первый независимо открытый дескриптор. err сообщает об отказе проверки файла.
 	a, err := s.OpenVerified(ctx, m)
 	if err != nil {

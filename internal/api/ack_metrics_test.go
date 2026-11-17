@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"math"
 	"testing"
@@ -9,7 +10,7 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
-// Проверяет одинаковую проекцию ACK-метрик в снимок и событие: точные uint64-строки, начальные нули,
+// Проверяет одинаковую проекцию ACK-метрик в снимок и событие: точные uint64-числа, начальные нули,
 // null и UTC без дублирования в counters.
 func TestOutputACKProjectionPreservesDecimalNullAndUTCForSnapshotAndEvent(t *testing.T) {
 	// at задаёт точное наносекундное время вне UTC для проверки нормализации времени ACK.
@@ -21,11 +22,11 @@ func TestOutputACKProjectionPreservesDecimalNullAndUTCForSnapshotAndEvent(t *tes
 		// metrics содержит исходные счётчики ACK, включая MaxUint64 и значение за пределами
 		// точности JavaScript.
 		metrics core.OutputMetrics
-		// want задаёт обязательные ACK-поля с точными строками, null или UTC-временем.
+		// want задаёт обязательные ACK-поля с точными числами, null или UTC-временем.
 		want map[string]any
 	}{
-		{"initial", core.OutputMetrics{}, map[string]any{"ack_ahead_events_total": "0", "ack_ahead_bytes_last": "0", "ack_ahead_bytes_max": "0", "ack_last_anomaly_at": nil}},
-		{"measured", core.OutputMetrics{AckAheadEventsTotal: math.MaxUint64, AckAheadBytesLast: 9007199254740993, AckAheadBytesMax: math.MaxUint64, AckLastAnomalyAt: at}, map[string]any{"ack_ahead_events_total": "18446744073709551615", "ack_ahead_bytes_last": "9007199254740993", "ack_ahead_bytes_max": "18446744073709551615", "ack_last_anomaly_at": "2026-11-08T09:13:14.987654321Z"}},
+		{"initial", core.OutputMetrics{}, map[string]any{"ack_ahead_events_total": json.Number("0"), "ack_ahead_bytes_last": json.Number("0"), "ack_ahead_bytes_max": json.Number("0"), "ack_last_anomaly_at": nil}},
+		{"measured", core.OutputMetrics{AckAheadEventsTotal: math.MaxUint64, AckAheadBytesLast: 9007199254740993, AckAheadBytesMax: math.MaxUint64, AckLastAnomalyAt: at}, map[string]any{"ack_ahead_events_total": json.Number("18446744073709551615"), "ack_ahead_bytes_last": json.Number("9007199254740993"), "ack_ahead_bytes_max": json.Number("18446744073709551615"), "ack_last_anomaly_at": "2026-11-08T09:13:14.987654321Z"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Проверяет точные десятичные значения ACK, null и время UTC в проекциях снимка и события для
@@ -48,13 +49,16 @@ func TestOutputACKProjectionPreservesDecimalNullAndUTCForSnapshotAndEvent(t *tes
 				// wire принимает публичный JSON-объект для проверки точных типов и
 				// обязательных ACK-полей.
 				var wire map[string]any
-				if err = json.Unmarshal(data, &wire); err != nil {
+				// decoder сохраняет целочисленные токены ACK без округления.
+				decoder := json.NewDecoder(bytes.NewReader(data))
+				decoder.UseNumber()
+				if err = decoder.Decode(&wire); err != nil {
 					t.Fatal(err)
 				}
 				// counters содержит прежние счётчики отправителя, где ACK-поля не должны
 				// дублироваться.
 				counters := wire["counters"].(map[string]any)
-				if counters["attempts"] != "7" {
+				if counters["attempts"] != json.Number("7") {
 					t.Fatalf("существующие счётчики изменены: %s", data)
 				}
 				// name задаёт очередное ACK-поле; want содержит его точное ожидаемое

@@ -169,7 +169,7 @@ func newAPIAcceptanceUpload(t *testing.T, readTimeout time.Duration) (*apiAccept
 		})
 		// config задаёт конечные размеры, сроки и версию управляемого генератора тестовой
 		// подготовки.
-		config := fallback.Config{ReconcileLimit: 16, GeneratorVersion: "controlled-generator", FFmpeg: "controlled", FFprobe: "controlled", MaxUploadBytes: 1024, MaxOutputBytes: 1024, PrepareTimeout: 5 * time.Second, ShutdownTimeout: time.Second, QueueInterval: time.Millisecond, Runner: fallback.RunnerLimits{Timeout: time.Second, MaxArgs: 128, MaxCommandBytes: 4096, MaxDiagnosticBytes: 4096}, Probe: fallback.ProbeLimits{MaxJSONBytes: 4096, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 4096 * 4096, MaxDuration: time.Minute, ImageDuration: time.Second, MaxPackets: 1000, Container: fmp4.Limits{MaxBoxBytes: 1 << 20, MaxInitBytes: 1 << 20, MaxMoofBytes: 1 << 16, MaxMdatBytes: 1 << 20, MaxSampleBytes: 1 << 18, MaxExtradataBytes: 1 << 12, MaxSamples: 100}}}
+		config := fallback.Config{ReconcileLimit: 16, GeneratorVersion: core.CurrentFallbackGeneratorVersion, FFmpeg: "controlled", FFprobe: "controlled", MaxUploadBytes: 1024, MaxOutputBytes: 1024, PrepareTimeout: 5 * time.Second, ShutdownTimeout: time.Second, QueueInterval: time.Millisecond, Runner: fallback.RunnerLimits{Timeout: time.Second, MaxArgs: 128, MaxCommandBytes: 4096, MaxDiagnosticBytes: 4096}, Probe: fallback.ProbeLimits{MaxJSONBytes: 4096, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 4096 * 4096, MaxDuration: time.Minute, ImageDuration: time.Second, MaxPackets: 1000, Container: fmp4.Limits{MaxBoxBytes: 1 << 20, MaxInitBytes: 1 << 20, MaxMoofBytes: 1 << 16, MaxMdatBytes: 1 << 20, MaxSampleBytes: 1 << 18, MaxExtradataBytes: 1 << 12, MaxSamples: 100}}}
 		inspect = &apiAcceptanceUploadInspection{limits: config.Probe, entered: make(chan struct{}), release: release}
 		// manager содержит настоящий FallbackManager с подставленными генерацией и инспекцией.
 		manager, err := fallback.NewManagerWithTools(c.Core, files, config, fallback.Tools{Builder: func(fallback.GenerateRequest) (fallback.Command, error) {
@@ -296,7 +296,7 @@ func TestAcceptanceHTTPUploadOwnsTransferAndPreservesCurrentAfterIndependentFail
 		t.Fatal("pending изменил прежний current", current, err)
 	}
 	apiAcceptanceRequest(t, f.api, "DELETE", "/fallback-assets/"+id+"?expected_revision="+strconv.FormatUint(current.Revision, 10), "", 409)
-	apiAcceptanceRequest(t, f.api, "POST", "/fallback-assets/"+id+"/rebuild", `{"expected_revision":"`+strconv.FormatUint(current.Revision, 10)+`"}`, 409)
+	apiAcceptanceRequest(t, f.api, "POST", "/fallback-assets/"+id+"/rebuild", `{"expected_revision":`+strconv.FormatUint(current.Revision, 10)+`}`, 409)
 	// stale содержит тело дополнительной отвергаемой загрузки, которое не должно читаться при отказе
 	// в приёме задания.
 	stale := &apiAcceptanceUploadBody{reader: bytes.NewReader(apiAcceptancePNG(t)), closed: make(chan struct{})}

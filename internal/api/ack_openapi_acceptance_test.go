@@ -10,7 +10,7 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/api"
 )
 
-// Проверяет обязательные строковые поля ACK и время с допустимым null в опубликованном OpenAPI,
+// Проверяет обязательные целочисленные поля ACK и время с допустимым null в опубликованном OpenAPI,
 // точность JSON за пределами JavaScript и неизменность спецификации после сериализации DTO.
 func TestACKOpenAPIAcceptanceExplicitDecimalAndNullableTime(t *testing.T) {
 	// f содержит настоящий API, чья опубликованная спецификация проверяется до и после сериализации
@@ -35,11 +35,11 @@ func TestACKOpenAPIAcceptanceExplicitDecimalAndNullableTime(t *testing.T) {
 	for _, v := range schema["required"].([]any) {
 		required[v.(string)] = true
 	}
-	// name задаёт очередное ACK-поле, которое должно быть обязательной Decimal-строкой.
+	// name задаёт очередное ACK-поле, которое должно быть обязательным целым числом.
 	for _, name := range []string{"ack_ahead_events_total", "ack_ahead_bytes_last", "ack_ahead_bytes_max"} {
 		// v содержит схему текущего ACK-поля; ok подтверждает наличие описания свойства.
 		v, ok := props[name].(map[string]any)
-		if !ok || v["type"] != "string" || v["pattern"] != "^(0|[1-9][0-9]{0,19})$" || !required[name] {
+		if !ok || v["type"] != "integer" || v["minimum"] != json.Number("0") || v["maximum"] != json.Number("18446744073709551615") || !required[name] {
 			t.Fatalf("неверный контракт Decimal %s: %#v required=%v", name, v, required)
 		}
 	}
@@ -55,12 +55,12 @@ func TestACKOpenAPIAcceptanceExplicitDecimalAndNullableTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// wire принимает JSON-метрики для проверки точных десятичных строк и начального null времени.
+	// wire принимает JSON-метрики для проверки точных целочисленных токенов и начального null времени.
 	var wire map[string]any
-	if err = json.Unmarshal(raw, &wire); err != nil {
+	if err = apiAcceptanceDecodeJSON(raw, &wire); err != nil {
 		t.Fatal(err)
 	}
-	if wire["ack_ahead_events_total"] != "18446744073709551615" || wire["ack_ahead_bytes_last"] != "9007199254740993" || wire["ack_ahead_bytes_max"] != "18446744073709551615" || wire["ack_last_anomaly_at"] != nil {
+	if wire["ack_ahead_events_total"] != json.Number("18446744073709551615") || wire["ack_ahead_bytes_last"] != json.Number("9007199254740993") || wire["ack_ahead_bytes_max"] != json.Number("18446744073709551615") || wire["ack_last_anomaly_at"] != nil {
 		t.Fatalf("потеря точности либо неверное значение null: %s", raw)
 	}
 	// second сохраняет OpenAPI после сериализации DTO для побайтовой проверки неизменности

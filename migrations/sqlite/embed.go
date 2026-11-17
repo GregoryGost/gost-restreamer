@@ -1,9 +1,9 @@
-// Package sqlite содержит встроенную историю схемы SQLite.
+// Package sqlite содержит единственную начальную схему SQLite.
 package sqlite
 
 import "embed"
 
-// Files содержит неизменяемые последовательные SQL-миграции.
+// Files предъявляет Goose единственный начальный SQL-скрипт в корне файловой системы.
 //
-//go:embed *.sql
+//go:embed 00001_initial.sql
 var Files embed.FS

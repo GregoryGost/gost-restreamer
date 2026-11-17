@@ -58,7 +58,12 @@ func (p PageParams) request() (core.PageRequest, error) {
 			// отображаемый в плохой запрос.
 			t, err := time.Parse(time.RFC3339Nano, s)
 			if err != nil {
-				return core.PageRequest{}, badRequest()
+				// field указывает конкретную временную границу, которую не удалось разобрать.
+				field := "from"
+				if i == 1 {
+					field = "to"
+				}
+				return core.PageRequest{}, reasonError(badRequest(), "invalid_time", field)
 			}
 			if i == 0 {
 				q.From = &t
@@ -105,7 +110,7 @@ type SessionListInput struct {
 	// StreamID ограничивает историю выбранным потоком.
 	StreamID string `query:"stream_id"`
 	// State ограничивает историю выбранным долговечным состоянием Session.
-	State string `query:"state" enum:"STARTING,RUNNING,STOPPING,STOPPED,FAILED,INTERRUPTED"`
+	State string `query:"state" enum:",STARTING,RUNNING,STOPPING,STOPPED,FAILED,INTERRUPTED"`
 }
 
 // StreamSessionListInput адресует историю конкретного потока с необязательным состоянием.
@@ -115,7 +120,7 @@ type StreamSessionListInput struct {
 	// PageParams содержит ограничение страницы, курсор и временные границы истории потока.
 	PageParams
 	// State ограничивает запуски потока выбранным состоянием Session.
-	State string `query:"state" enum:"STARTING,RUNNING,STOPPING,STOPPED,FAILED,INTERRUPTED"`
+	State string `query:"state" enum:",STARTING,RUNNING,STOPPING,STOPPED,FAILED,INTERRUPTED"`
 }
 
 // NestedListInput сочетает идентификатор родительского ресурса и параметры вложенного списка.
@@ -355,7 +360,7 @@ func (a *API) registerConfiguration() {
 		// ревизией.
 
 		if i.Body.ExpectedRevision == 0 {
-			return nil, core.ErrInvalid
+			return nil, reasonError(core.ErrInvalid, "invalid_field", "expected_revision")
 		}
 		// s содержит текущий Stream для наложения PATCH; e содержит отказ его чтения.
 		s, e := c.GetStream(ctx, core.ID(i.ID))
@@ -453,7 +458,7 @@ func (a *API) registerConfiguration() {
 		// b содержит ожидаемую ревизию и присутствующие поля PATCH назначения.
 		b := i.Body
 		if b.ExpectedRevision == 0 {
-			return nil, core.ErrInvalid
+			return nil, reasonError(core.ErrInvalid, "invalid_field", "expected_revision")
 		}
 		// d содержит текущие настройки назначения для наложения частичного изменения; e содержит
 		// отказ чтения.
@@ -539,7 +544,7 @@ func (a *API) registerConfiguration() {
 		// b содержит ожидаемую ревизию и присутствующие изменения имени или полного профиля.
 		b := i.Body
 		if b.ExpectedRevision == 0 {
-			return nil, core.ErrInvalid
+			return nil, reasonError(core.ErrInvalid, "invalid_field", "expected_revision")
 		}
 		// p содержит текущий профиль для наложения PATCH; e содержит отказ его чтения.
 		p, e := c.GetProfile(ctx, core.ID(i.ID))
@@ -598,7 +603,7 @@ func (a *API) registerConfiguration() {
 		// b содержит ожидаемую ревизию и присутствующие изменения группы.
 		b := i.Body
 		if b.ExpectedRevision == 0 {
-			return nil, core.ErrInvalid
+			return nil, reasonError(core.ErrInvalid, "invalid_field", "expected_revision")
 		}
 		// g содержит текущую группу для наложения PATCH; e содержит отказ её чтения.
 		g, e := c.GetGroup(ctx, core.ID(i.ID))
@@ -636,8 +641,11 @@ func (a *API) registerConfiguration() {
 
 		// b содержит ожидаемую ревизию и обязательную замену либо очистку политики.
 		b := i.Body
-		if b.ExpectedRevision == 0 || !b.Fallback.Set {
-			return nil, core.ErrInvalid
+		if b.ExpectedRevision == 0 {
+			return nil, reasonError(core.ErrInvalid, "invalid_field", "expected_revision")
+		}
+		if !b.Fallback.Set {
+			return nil, reasonError(core.ErrInvalid, "invalid_field", "fallback")
 		}
 		// s содержит текущий Stream для изменения политики; e содержит отказ его чтения.
 		s, e := c.GetStream(ctx, core.ID(i.ID))

@@ -83,8 +83,8 @@ func (s SessionSnapshot) Validate() error {
 	return nil
 }
 
-// Validate сверяет идентификаторы, полный профиль и его канонические байты, совместимость проверенного
-// формата, ненулевой размер, хеши, версию генератора и управляемый путь.
+// Validate сверяет исторические идентичности, строгий профиль, структурный измеренный формат,
+// размер, хеши, версию генератора и путь m. Совместимость полного профиля обязательна.
 func (m ArtifactManifest) Validate() error {
 	// err сообщает об ошибке проверки идентификатора поколения manifest.
 	if err := m.GenerationID.Validate(); err != nil {
@@ -93,9 +93,6 @@ func (m ArtifactManifest) Validate() error {
 	// err сообщает об ошибке проверки фактического формата файла manifest.
 	if err := m.VerifiedFormat.Validate(); err != nil {
 		return err
-	}
-	if CompatibleFormat(m.VerifiedFormat, m.Profile.Format) != nil {
-		return ErrInvalid
 	}
 	// err сообщает об ошибке проверки идентификатора варианта manifest.
 	if err := m.VariantID.Validate(); err != nil {
@@ -108,6 +105,9 @@ func (m ArtifactManifest) Validate() error {
 	// err сообщает об ошибке проверки полного профиля manifest.
 	if err := m.Profile.Validate(); err != nil {
 		return err
+	}
+	if CompatibleProfileFormat(m.VerifiedFormat, m.Profile) != nil {
+		return ErrInvalid
 	}
 	// key содержит ключ полного профиля, content — его канонические байты, а err — результат
 	// вычисления идентичности.
@@ -165,6 +165,10 @@ func (s OutputSnapshot) Validate() error {
 // Validate проверяет запись и снимок Session, положительный Lifecycle и владельца; Failure разрешён
 // только в терминальном состоянии.
 func (s Session) Validate() error {
+	// err отклоняет неизвестную причину и её наличие вне результата отказа или прерывания.
+	if err := validateResultReason(s.FailureReason, s.Failure, s.State == SessionFailed || s.State == SessionInterrupted, s.State == SessionInterrupted); err != nil {
+		return err
+	}
 	if s.Failure != "" && !s.State.Terminal() {
 		return ErrInvalid
 	}
@@ -216,6 +220,10 @@ func (o SessionOutput) Validate() error {
 // Validate проверяет запись, вид и статус команды, идентификаторы и SHA-256 точных байтов Identity;
 // выходная команда требует положительного поколения.
 func (c CommandReceipt) Validate() error {
+	// err проверяет optional причину независимо от диагностической строки старых записей.
+	if err := c.ValidateFailureReason(); err != nil {
+		return err
+	}
 	// err сообщает об ошибке проверки общей записи квитанции.
 	if err := c.Record.Validate(); err != nil {
 		return err

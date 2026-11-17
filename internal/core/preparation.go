@@ -124,7 +124,7 @@ func runtimeIdleForPreparation(ctx context.Context, r Repositories) error {
 		// session содержит очередной запуск для проверки допустимости подготовки.
 		for _, session := range sessions {
 			if session.State.Active() || session.Issued || session.CleanupPending {
-				return ErrInUse
+				return WithFailureReason(ErrInUse, FailureReason{Code: FailureResourceInUse, Context: FailureContext{StreamID: session.StreamID, SessionID: session.ID}})
 			}
 		}
 		if len(sessions) < q.Limit {
@@ -197,7 +197,7 @@ func preparationIdleForRuntime(ctx context.Context, r Repositories, incarnation 
 			return err
 		}
 		if len(gs) > 0 {
-			return ErrNotReady
+			return WithFailureReason(ErrNotReady, FailureReason{Code: FailurePreparationActive, Context: FailureContext{AssetID: gs[0].AssetID, GenerationID: gs[0].ID}})
 		}
 	}
 	return nil
@@ -246,7 +246,7 @@ func (s *Service) ReservePreparation(ctx context.Context, request PreparationReq
 			return e
 		}
 		if a.Revision != request.ExpectedRevision {
-			return ErrConflict
+			return WithFailureReason(ErrConflict, FailureReason{Code: FailureRevisionConflict, Field: FailureFieldRevision, Context: FailureContext{AssetID: a.ID}})
 		}
 		if a.PendingGenerationID != "" {
 			return ErrConflict
@@ -356,10 +356,12 @@ func preparationFenced(ctx context.Context, r Repositories, f PreparationFence) 
 
 // ClaimPreparation захватывает самую раннюю по CreatedAt и ID QUEUED-подготовку текущей incarnation,
 // увеличивая попытку; эфир и незавершённая выданная подготовка блокируют захват.
+// ctx ограничивает транзакцию, id выбирает поколение. Полный набор профилей и путей проверяется перед захватом.
 func (s *Service) ClaimPreparation(ctx context.Context, id ID) (PreparationFence, error) {
 	// result принимает точную идентичность успешно захваченной подготовки.
 	var result PreparationFence
 	// err сообщает об ошибке транзакционного захвата подготовки.
+	// r предоставляет репозитории текущей транзакции захвата подготовки.
 	err := s.uow.Write(ctx, func(r Repositories) error {
 		// В транзакции допускает захват только своей QUEUED-подготовки с учётом порядка очереди и занятых
 		// исполнений, увеличивает Attempt и сохраняет CLAIMED.
@@ -372,6 +374,9 @@ func (s *Service) ClaimPreparation(ctx context.Context, id ID) (PreparationFence
 		// точного поколения подготовки.
 		g, e := r.Artifacts.Generation(ctx, id)
 		if e != nil {
+			return e
+		}
+		if e = g.Validate(); e != nil {
 			return e
 		}
 		if g.State != PreparationQueued || g.Incarnation != s.incarnation {
@@ -414,7 +419,9 @@ func (s *Service) ClaimPreparation(ctx context.Context, id ID) (PreparationFence
 
 // MarkPreparationIssued перед внешними действиями переводит точную CLAIMED-попытку в ISSUED и
 // сохраняет необходимость очистки.
+// ctx ограничивает транзакцию, f фиксирует владельца и попытку; профили и пути проверяются до выдачи.
 func (s *Service) MarkPreparationIssued(ctx context.Context, f PreparationFence) error {
+	// r предоставляет репозитории текущей транзакции выдачи попытки подготовки.
 	return s.uow.Write(ctx, func(r Repositories) error {
 		// В транзакции сверяет точный PreparationFence, отсутствие эфира и конкурирующей подготовки, затем
 		// сохраняет ISSUED и CleanupPending до внешнего действия.
@@ -427,6 +434,9 @@ func (s *Service) MarkPreparationIssued(ctx context.Context, f PreparationFence)
 		// точного владельца и попытки подготовки.
 		g, e := preparationFenced(ctx, r, f)
 		if e != nil {
+			return e
+		}
+		if e = g.Validate(); e != nil {
 			return e
 		}
 		if f.Incarnation != s.incarnation || g.State != PreparationClaimed {
@@ -458,10 +468,13 @@ func (s *Service) MarkPreparationIssued(ctx context.Context, f PreparationFence)
 
 // RegisterPreparationFile сохраняет происхождение дополнительного пути только для точной
 // ISSUED-подготовки текущей incarnation; владельцы и новая запись назначаются здесь.
+// ctx ограничивает запись, f выбирает попытку, value описывает новый путь.
+// Полный набор профилей и путей проверяется до добавления записи.
 func (s *Service) RegisterPreparationFile(ctx context.Context, f PreparationFence, value OwnedFile) (OwnedFile, error) {
 	// result принимает сохранённую дополнительную запись владения путём подготовки.
 	var result OwnedFile
 	// err сообщает об ошибке регистрации дополнительного файла в точной подготовке.
+	// r предоставляет репозитории текущей транзакции регистрации файла подготовки.
 	err := s.uow.Write(ctx, func(r Repositories) error {
 		// В транзакции сверяет свою выданную подготовку, назначает файлу точные AssetID и GenerationID и
 		// сохраняет проверенную запись журнала файлов.
@@ -470,6 +483,9 @@ func (s *Service) RegisterPreparationFile(ctx context.Context, f PreparationFenc
 		// точного владельца и попытки подготовки.
 		g, e := preparationFenced(ctx, r, f)
 		if e != nil {
+			return e
+		}
+		if e = g.Validate(); e != nil {
 			return e
 		}
 		if f.Incarnation != s.incarnation || g.State != PreparationIssued || !g.Issued {
@@ -496,6 +512,8 @@ func (s *Service) RegisterPreparationFile(ctx context.Context, f PreparationFenc
 // PublishPreparation атомарно публикует полный проверенный комплект точного поколения и переключает
 // Asset на него. Изменение требуемых профилей, неполный набор или несовпадение вариантов откатывают
 // публикацию; признаки выданной работы снимаются отдельной очисткой.
+// ctx ограничивает транзакцию, f выбирает попытку, p передаёт результаты.
+// Полный набор профилей и путей проверяется до публикации.
 func (s *Service) PublishPreparation(ctx context.Context, f PreparationFence, p GenerationPublication) (FallbackGeneration, error) {
 	// limits содержит проверенные общие пределы очереди и числа профилей. err сообщает об ошибке
 	// проверки общих бюджетов подготовки.
@@ -505,6 +523,7 @@ func (s *Service) PublishPreparation(ctx context.Context, f PreparationFence, p 
 	}
 	// result принимает опубликованное поколение после атомарной проверки полного комплекта.
 	var result FallbackGeneration
+	// r предоставляет репозитории текущей транзакции публикации полного поколения.
 	err = s.uow.Write(ctx, func(r Repositories) error {
 		// В одной транзакции повторно сверяет точный набор профилей, варианты и журнал файлов, затем публикует
 		// полное поколение и меняет CurrentGenerationID; ошибка не публикует частичный комплект.
@@ -517,6 +536,9 @@ func (s *Service) PublishPreparation(ctx context.Context, f PreparationFence, p 
 		// точного владельца и попытки подготовки.
 		g, e := preparationFenced(ctx, r, f)
 		if e != nil {
+			return e
+		}
+		if e = g.Validate(); e != nil {
 			return e
 		}
 		if f.Incarnation != s.incarnation || g.State != PreparationIssued || !g.Issued {
@@ -587,7 +609,7 @@ func (s *Service) PublishPreparation(ctx context.Context, f PreparationFence, p 
 			if e = v.VerifiedFormat.Validate(); e != nil {
 				return e
 			}
-			if CompatibleFormat(v.VerifiedFormat, v.Profile.Format) != nil {
+			if CompatibleProfileFormat(v.VerifiedFormat, v.Profile) != nil {
 				return ErrInvalid
 			}
 			if e = v.Validate(); e != nil {
@@ -821,7 +843,11 @@ func queueGenerationCleanup(ctx context.Context, r Repositories, g FallbackGener
 // DeleteGeneration при ожидаемой ревизии удаляет только невыбранное терминальное поколение без
 // незавершённой работы, заранее сохраняя файловую очистку; удержания репозитория препятствуют
 // удалению.
+// s предоставляет транзакции, ctx ограничивает запись, id выбирает поколение, expected задаёт
+// ожидаемую ревизию. Конфликт содержит ID прочитанного поколения и его заглушки без изменения данных.
 func (s *Service) DeleteGeneration(ctx context.Context, id ID, expected uint64) error {
+	// r предоставляет репозитории функции, которая сверяет поколение и удаляет его комплект
+	// в одной транзакции вместе с постановкой файлов на очистку.
 	return s.uow.Write(ctx, func(r Repositories) error {
 		// В транзакции запрещает удаление текущего, ожидающего, активного или неочищенного поколения, ставит
 		// очистку файлов и удаляет варианты и поколение.
@@ -832,8 +858,8 @@ func (s *Service) DeleteGeneration(ctx context.Context, id ID, expected uint64) 
 		if e != nil {
 			return e
 		}
-		if g.Revision != expected {
-			return ErrConflict
+		if e = checkRevision(g.Revision, expected, FailureContext{GenerationID: g.ID, AssetID: g.AssetID}); e != nil {
+			return e
 		}
 		// a содержит стабильную заглушку и её указатели поколений.
 		a, e := r.Artifacts.Asset(ctx, g.AssetID)

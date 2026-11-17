@@ -177,9 +177,15 @@ func (r *Reference) CloseContext(ctx context.Context) error {
 // Acquire сверяет снимок с текущей Session и её выходами, разделяет точную группу по профилю,
 // артефакту и политике и выдаёт учитываемую ссылку. Новые группы наследуют последнюю ревизию паузы;
 // закрывающаяся группа не переиспользуется до подтверждённого завершения.
+// ctx ограничивает проверку snapshot; live предоставляет входной Router. Непригодный snapshot
+// отклоняется до чтения репозиториев, регистрации наблюдений и повторного использования группы.
 func (r *Registry) Acquire(ctx context.Context, snapshot core.OutputSnapshot, live *media.Router) (*Reference, error) {
-	if live == nil || snapshot.Validate() != nil {
+	if live == nil {
 		return nil, core.ErrInvalid
+	}
+	// err содержит отказ пригодности снимка до обращения к репозиторию и регистрации группы.
+	if err := snapshot.ValidateUsable(); err != nil {
+		return nil, err
 	}
 	// session содержит текущую сохранённую Session; err сохраняет результаты её чтения, канонизации
 	// и сериализации ключа группы.
@@ -444,12 +450,19 @@ type Group struct {
 
 // Создаёт переключатель и наблюдения группы для поддержанной пары режима и видеокодека, применяет
 // паузу и запускает работников с отдельным контекстом жизни, ограниченным владельцем Session.
+// c задаёт порты и бюджеты; service и parent связывают работу с исполнением, owner отзывает её,
+// observer принимает измерения, id идентифицирует группу. manifest закрепляет пригодный файл,
+// live предоставляет вход, paused и revision задают исходную ревизию управления.
 func newGroup(c RuntimeConfig, service *core.Service, parent core.ExecutionFence, owner *core.RuntimeLease, observer *core.GroupObserver, id core.ID, manifest core.ArtifactManifest, live *media.Router, paused bool, revision uint64) (*Group, error) {
+	// err содержит отказ пригодности точного файла до создания переключателя и запуска работников.
+	if err := manifest.ValidateUsable(); err != nil {
+		return nil, err
+	}
 	// err сообщает об отказе проверки конфигурации выбранной группы.
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	if c.Switcher.Profile.Mode == core.ModeCopy && c.Switcher.Profile.Format.Video.Codec != core.CodecAV1 || c.Switcher.Profile.Mode == core.ModeTranscode && c.Switcher.Profile.Format.Video.Codec != core.CodecH264 {
+	if c.Switcher.Profile.Mode == core.ModeCopy && c.Switcher.Profile.Format.Video.Codec != core.CodecAV1 && c.Switcher.Profile.Format.Video.Codec != core.CodecHEVC && c.Switcher.Profile.Format.Video.Codec != core.CodecVP9 || c.Switcher.Profile.Mode == core.ModeTranscode && c.Switcher.Profile.Format.Video.Codec != core.CodecH264 && c.Switcher.Profile.Format.Video.Codec != core.CodecHEVC && c.Switcher.Profile.Format.Video.Codec != core.CodecVP9 {
 		return nil, core.ErrInvalid
 	}
 	// sw содержит новый переключатель; err сообщает об отказе его создания.
@@ -795,7 +808,7 @@ func delay(ctx context.Context, d time.Duration) bool {
 
 // Владеет наблюдателем проигрывателя заглушки и Supervisor, открывает проверенный файл для каждой
 // попытки и передаёт фактический fMP4 переключателю; окончательное завершение отзывает готовность
-// заглушки.
+// заглушки. ctx задаёт срок проигрывания группы g и отменяет все физические попытки.
 func (g *Group) play(ctx context.Context) {
 	// observer содержит наблюдателя роли проигрывателя заглушки; err сохраняет результаты открытия
 	// роли, Supervisor и запуска работника.
@@ -834,14 +847,18 @@ func (g *Group) play(ctx context.Context) {
 	if g.config.Sampler != nil {
 		defer g.config.Sampler.Remove(observer.Token())
 	}
+	// flacPlayer подтверждает выбор проверенного нативного FLAC-проигрывателя текущей попытки.
+	var flacPlayer atomic.Bool
 	// worker задаёт файловый вход, точного владельца и область процессов проигрывателя заглушки.
 	worker := ffmpeg.Worker{SessionID: string(g.parent.SessionID), GroupID: string(g.id), Owner: g.owner, ProcessScope: g.config.Scope, Topology: ffmpeg.FileInput}
 	worker.Command = func(ctx context.Context, a ffmpeg.Attempt) (ffmpeg.Command, error) {
+		// ctx ограничивает построение команды, a содержит UDS и номер физической попытки.
 		// Выдаёт новую fallback-попытку и наблюдение STARTING, запрашивает файл по манифесту и передаёт его
 		// как принадлежащий команде FD даже при ошибке построителя.
 
 		// current содержит новый номер fallback-попытки; err сохраняет результаты выделения
 		// номера, открытия наблюдателя, файла и команды.
+		flacPlayer.Store(false)
 		current, err := g.nextAttempt(Fallback)
 		if err != nil {
 			return ffmpeg.Command{}, err
@@ -864,6 +881,9 @@ func (g *Group) play(ctx context.Context) {
 		var command ffmpeg.Command
 		if g.config.Player != nil {
 			command, err = g.config.Player(ctx, g.config.Binary, file, a)
+		} else if g.manifest.VerifiedFormat.Audio.Codec == core.CodecFLAC {
+			command, err = buildVerifiedFLACPlayer(ctx, g.config.Binary, file, a, g.manifest, g.config.Switcher.Profile, g.config.Container)
+			flacPlayer.Store(err == nil)
 		} else {
 			command, err = ffmpeg.BuildFileCommand(g.config.Binary, file, a)
 		}
@@ -875,6 +895,7 @@ func (g *Group) play(ctx context.Context) {
 	}
 	worker.OnAttemptResult = g.observeAttemptResult(&binding)
 	worker.Output = func(ctx context.Context, c net.Conn, progress ffmpeg.Progress) error {
+		// ctx отменяет чтение соединения c, progress учитывает продвижение обеих дорожек.
 		// Получает текущую привязку попытки и разбирает её fallback-выход; отсутствие привязки возвращает
 		// ErrNotReady.
 
@@ -883,7 +904,7 @@ func (g *Group) play(ctx context.Context) {
 		if current == nil {
 			return core.ErrNotReady
 		}
-		return g.readOutputObserved(ctx, c, Fallback, current.coreID, g.manifest.VerifiedFormat, progress, current)
+		return g.readOutputOwned(ctx, c, Fallback, current.coreID, g.manifest.VerifiedFormat, progress, current, nil, flacPlayer.Load())
 	}
 	if err = supervisor.Start(ctx, worker); err != nil {
 		g.fail(Fallback, err)
@@ -957,6 +978,27 @@ func (g *Group) readOutput(ctx context.Context, c net.Conn, feed Feed, attempt u
 // Проверяет конфигурации и единицы доступа fMP4, сообщает прогресс по DTS и готовность после обеих
 // дорожек; любой возврат отзывает текущую попытку источника.
 func (g *Group) readOutputObserved(ctx context.Context, c net.Conn, feed Feed, attempt uint64, verified core.MediaFormat, progress ffmpeg.Progress, binding *attemptBinding) (result error) {
+	return g.readOutputWithHeaders(ctx, c, feed, attempt, verified, progress, binding, nil)
+}
+
+// readOutputWithHeaders проверяет выход одной попытки. normalizeHeaders ненулевой только у
+// свежего LIVE-кодирования; проигрывание готовой заглушки и обычные читатели заголовки не исправляют.
+// Единственный freshSource разрешён только собственному LIVE-кодировщику и проверяется до публикации
+// первого независимого AU; удержанный prefix сохраняет исходные байты, время и порядок.
+// Проверки AU, меток, прогресса и готовности общие для обоих источников.
+// g предоставляет профиль, ctx отменяет чтение c, feed и attempt обозначают источник и попытку.
+// verified хранит формат артефакта; progress и binding сообщают продвижение и связывают наблюдения.
+// result возвращает причину завершения после отзыва готовности источника.
+func (g *Group) readOutputWithHeaders(ctx context.Context, c net.Conn, feed Feed, attempt uint64, verified core.MediaFormat, progress ffmpeg.Progress, binding *attemptBinding, normalizeHeaders func(fmp4.TrackDescription) ([]byte, error), freshSource ...media.HDRMetadata) (result error) {
+	return g.readOutputOwned(ctx, c, feed, attempt, verified, progress, binding, normalizeHeaders, false, freshSource...)
+}
+
+// readOutputOwned проверяет выход соединения c группы g; ctx задаёт отмену, feed и attempt — источник.
+// verified содержит формат выбранного артефакта, progress сообщает продвижение, binding связывает
+// наблюдения попытки. normalizeHeaders обрабатывает заголовки только своего свежего результата;
+// freshSource закрепляет исходные HDR-сведения. trustedFLAC подтверждает проверенного вызывающего
+// собственного кодировщика. result сохраняет причину завершения и отзывает попытку через Fail.
+func (g *Group) readOutputOwned(ctx context.Context, c net.Conn, feed Feed, attempt uint64, verified core.MediaFormat, progress ffmpeg.Progress, binding *attemptBinding, normalizeHeaders func(fmp4.TrackDescription) ([]byte, error), trustedFLAC bool, freshSource ...media.HDRMetadata) (result error) {
 	// observation содержит наблюдателя точной FFmpeg-попытки, если передана её привязка.
 	var observation *core.FFmpegAttemptObserver
 	if binding != nil {
@@ -977,10 +1019,18 @@ func (g *Group) readOutputObserved(ctx context.Context, c net.Conn, feed Feed, a
 	seen := [2]bool{}
 	// ready исключает повторную публикацию READY одной попытки после появления обеих дорожек.
 	ready := false
+	// source закрепляет собственную копию исходного снимка только для свежего HDR-кодирования.
+	var source *media.HDRMetadata
+	if len(freshSource) == 1 && feed == Live {
+		// snapshot отделяет долгую попытку от среза, который мог сохранить вызывающий код.
+		snapshot := freshSource[0]
+		source = &snapshot
+	}
 	// d содержит демультиплексор выходного fMP4; err сообщает об отказе чтения и проверки его
 	// начальных заголовков.
-	d, err := fmp4.NewDemuxer(c, fmp4.DemuxOptions{Limits: g.config.Container, SourceEpoch: attempt, VideoRevision: 1, AudioRevision: 1, ResolveConfig: func(desc fmp4.TrackDescription) (media.CodecConfig, error) {
-		// Для AV1 использует подтверждённый формат с совпадающими размерами; остальные кодеки восстанавливает
+	d, err := fmp4.NewDemuxer(c, fmp4.DemuxOptions{Limits: g.config.Container, SourceEpoch: attempt, VideoRevision: 1, AudioRevision: 1, NormalizeHeaders: normalizeHeaders, FreshHDRSource: source, ResolveConfig: func(desc fmp4.TrackDescription) (media.CodecConfig, error) {
+		// desc содержит прочитанное описание дорожки. Для AV1 использует подтверждённый формат
+		// с совпадающими размерами; остальные кодеки восстанавливает
 		// из описания fMP4, назначая SourceEpoch текущей попытки.
 
 		if desc.Codec != core.CodecAV1 {
@@ -989,24 +1039,76 @@ func (g *Group) readOutputObserved(ctx context.Context, c net.Conn, feed Feed, a
 		if verified.Validate() != nil || desc.Width != verified.Video.Width || desc.Height != verified.Video.Height {
 			return media.CodecConfig{}, codec.ErrUnready
 		}
-		return media.NewCodecConfig(media.CodecConfigInfo{Track: media.TrackVideo, SourceEpoch: attempt, Revision: 1, TimeBase: desc.TimeBase, Video: verified.Video}, desc.Headers)
+		return media.NewCodecConfig(media.CodecConfigInfo{Track: media.TrackVideo, SourceEpoch: attempt, Revision: 1, TimeBase: desc.TimeBase, Video: verified.Video, HDR: desc.HDR}, desc.Headers)
 	}})
 	if err != nil {
 		return err
 	}
 	// init содержит подтверждённую пару конфигураций прочитанного fMP4.
 	init := d.Init()
+	// prefix удерживает начальные HDR-пакеты до первого независимого AU; containerHDR
+	// сохраняет реальные дескрипторы до дополнения из source для последующих проверок той же попытки.
+	var prefix []media.Packet
+	var containerHDR media.HDRMetadata
+	if source != nil {
+		init, prefix, containerHDR, err = completeGeneratedHDR(ctx, d, g.config.Switcher.Profile, *source, g.config.Container)
+		if err != nil {
+			return err
+		}
+	}
+	// Доверие назначается до первого Push: даже видео несёт полную пару конфигураций.
+	// description содержит первую аудиоединицу, удержанную ограниченным уточнением конфигурации.
+	if trustedFLAC && init.Audio.Info().Audio.Codec == core.CodecFLAC {
+		for _, description := range d.Descriptions() {
+			if description.Track != media.TrackAudio {
+				continue
+			}
+			// firstAudio связывает первую AU с проверенной конфигурацией; packetErr сообщает об отказе пакета.
+			firstAudio, packetErr := media.NewPacket(description.FirstSampleInfo, init.Audio, description.FirstSample)
+			if packetErr != nil {
+				return packetErr
+			}
+			init.Audio, err = ownFLACOutput(init.Audio, firstAudio, g.config.Switcher.Profile, true)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	// inspector проверяет структуру единиц доступа и признаки независимого видеостарта.
 	var inspector codec.Inspector
 	for {
 		// p содержит очередной пакет fMP4; err сохраняет результаты его чтения, проверки и
 		// передачи переключателю.
-		p, err := d.Next()
+		var p media.Packet
+		if len(prefix) > 0 {
+			p, prefix = prefix[0], prefix[1:]
+		} else {
+			p, err = d.Next()
+		}
 		if err != nil {
 			return err
 		}
-		if _, err = inspector.Inspect(p); err != nil {
+		if source != nil || trustedFLAC {
+			p, err = generatedPacketConfig(p, init)
+			if err != nil {
+				return err
+			}
+		}
+		// inband содержит только фактические устойчивые метаданные кодека текущего AU.
+		var inband media.HDRMetadata
+		if _, inband, err = inspector.InspectMetadata(p); err != nil {
 			return err
+		}
+		if source != nil && p.Config().Info().Track == media.TrackVideo {
+			// effective содержит согласованные сведения текущей попытки относительно исходного source.
+			// reconcileErr сообщает о противоречии исходному снимку до передачи пакета переключателю.
+			effective, reconcileErr := codec.ReconcileFreshHDR(*source, containerHDR, inband)
+			if reconcileErr != nil {
+				return reconcileErr
+			}
+			if effective != init.Video.Info().HDR {
+				return fmp4.ErrConfigChanged
+			}
 		}
 		if feed == Fallback {
 			g.noteInput(Fallback, p)
@@ -1031,33 +1133,25 @@ func (g *Group) readOutputObserved(ctx context.Context, c net.Conn, feed Feed, a
 	}
 }
 
-// Для LIVE copy сверяет фактический ASC одновременно с входным описанием и аудиоформатом профиля;
-// несовпадение возвращает и журналирует ошибку кодека.
+// validateLiveAudio проверяет audio до процесса и журналирует несовместимость фактических
+// заголовков с режимом профиля g. Прежняя диагностика LIVE AAC copy сохраняется.
 func (g *Group) validateLiveAudio(audio media.CodecConfig) error {
-	if g.config.Switcher.Profile.EffectiveLiveAudioMode() == core.LiveAudioCopy {
-		// actual содержит формат, разобранный из ASC; parseErr сообщает об отказе разбора
-		// фактических AAC-заголовков.
-		actual, parseErr := codec.AudioFormatASC(audio.Headers())
-		// expected содержит аудиоформат профиля, обязательный для LIVE AAC copy.
-		expected := g.config.Switcher.Profile.Format.Audio
-		if parseErr != nil || actual != audio.Info().Audio || actual != expected {
-			// err описывает несовместимость фактического ASC, входного описания и целевого
-			// аудиоформата.
-			err := fmt.Errorf("%w: LIVE AAC copy: ASC=%+v, входной формат=%+v, ожидаемый формат=%+v", codec.ErrCodec, actual, audio.Info().Audio, expected)
-			if parseErr != nil {
-				err = fmt.Errorf("%w: %w", err, parseErr)
-			}
-			if g.config.Logger != nil {
-				g.config.Logger.Error("group_live", "component", "group", "operation", "validate_audio", "session_id", g.parent.SessionID, "group_id", g.id, "group_instance_id", g.observer.Token(), "error", err)
-			}
-			return err
+	// err сохраняет первичную причину неподдержанного источника или несовместимого copy.
+	err := validateSourceAudio(g.config.Switcher.Profile, audio)
+	if err != nil {
+		if g.config.Switcher.Profile.EffectiveLiveAudioMode() == core.LiveAudioCopy && g.config.Switcher.Profile.Format.Audio.Codec == core.CodecAAC {
+			err = fmt.Errorf("%w: LIVE AAC copy: входной формат=%+v, ожидаемый формат=%+v: %w", codec.ErrCodec, audio.Info().Audio, g.config.Switcher.Profile.Format.Audio, err)
+		}
+		if g.config.Logger != nil {
+			g.config.Logger.Error("group_live", "component", "group", "operation", "validate_audio", "session_id", g.parent.SessionID, "group_id", g.id, "group_instance_id", g.observer.Token(), "error", err)
 		}
 	}
-	return nil
+	return err
 }
 
 // Получает актуальное начало LIVE, запускает один работник без внутренних повторов и передаёт вход
 // fMP4 до смены конфигурации; выход проходит проверку, завершение ждёт Supervisor и учитывает очистку.
+// ctx отменяет группу g, sub предоставляет актуальные выдачи, attempt идентифицирует эту попытку.
 func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt uint64) error {
 	// first содержит актуальное начало подписки LIVE; err сохраняет результаты получения данных,
 	// создания и ожидания работника перекодирования.
@@ -1070,6 +1164,9 @@ func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt 
 	}
 	g.noteInput(Live, first.Packet)
 	if err = g.validateLiveAudio(first.AudioConfig); err != nil {
+		return err
+	}
+	if err = validateTranscodeSource(g.config.Switcher.Profile, first); err != nil {
 		return err
 	}
 	// observer содержит наблюдателя роли LIVE-перекодирования группы.
@@ -1103,6 +1200,8 @@ func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt 
 	defer g.joinDiagnostics(supervisor, diagnostics)
 	// input содержит фактический формат видео и аудио первой актуальной выдачи LIVE.
 	input := core.MediaFormat{Video: first.VideoConfig.Info().Video, Audio: first.AudioConfig.Info().Audio}
+	// sourceHDR сохраняет неизменяемый снимок исходной конфигурации данной попытки FFmpeg.
+	sourceHDR := first.VideoConfig.Info().HDR
 	// binding атомарно связывает физическую попытку LIVE с доменным номером и наблюдателем.
 	var binding atomic.Pointer[attemptBinding]
 	// err сообщает об отказе регистрации progress-метрик LIVE-перекодирования.
@@ -1115,6 +1214,7 @@ func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt 
 	// worker задаёт дуплексную попытку LIVE с точным владельцем Session и областью процессов.
 	worker := ffmpeg.Worker{SessionID: string(g.parent.SessionID), GroupID: string(g.id), Owner: g.owner, ProcessScope: g.config.Scope}
 	worker.Command = func(ctx context.Context, a ffmpeg.Attempt) (ffmpeg.Command, error) {
+		// ctx ограничивает построение команды, a содержит выделенные UDS физической попытки.
 		// Создаёт наблюдение текущей LIVE-попытки и команду перекодирования по исходным конфигурациям и
 		// профилю через выбранный построитель либо BuildNVIDIACommand.
 
@@ -1125,7 +1225,7 @@ func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt 
 		}
 		_ = ao.Observe(ctx, core.FFmpegObservation{State: core.ObservationStarting})
 		binding.Store(bindFFmpegAttempt(a.ID, attempt, ao, logger))
-		// config задаёт аппаратную команду из фактического входа, целевого профиля и исходных
+		// config задаёт параметры команды из фактического входа, целевого профиля и исходных
 		// шкал обеих дорожек.
 		config := ffmpeg.NVIDIAConfig{Binary: g.config.Binary, Input: input, Profile: g.config.Switcher.Profile, VideoTimeBase: first.VideoConfig.Info().TimeBase, AudioTimeBase: first.AudioConfig.Info().TimeBase}
 		if g.config.Transcode != nil {
@@ -1135,6 +1235,7 @@ func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt 
 	}
 	worker.OnAttemptResult = g.observeAttemptResult(&binding)
 	worker.Input = func(ctx context.Context, c net.Conn, _ ffmpeg.Progress) error {
+		// ctx отменяет входное соединение c и ожидание новых выдач подписки.
 		// Передаёт LIVE через fMP4 с общим смещением начала, проверяя представимость времени и актуальность
 		// выдач; смена любой конфигурации завершает работника с ErrStaleSource.
 
@@ -1145,7 +1246,7 @@ func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt 
 			return err
 		}
 		// mux записывает входной LIVE в fMP4 с исходными конфигурациями и общим сдвигом начала.
-		mux, err := fmp4.NewMuxer(c, fmp4.Init{Video: first.VideoConfig, Audio: first.AudioConfig, Origin: origin}, g.config.Container)
+		mux, err := newTranscodeInputMuxer(c, fmp4.Init{Video: first.VideoConfig, Audio: first.AudioConfig, Origin: origin}, g.config.Container, g.config.Switcher.Profile)
 		if err != nil {
 			return err
 		}
@@ -1177,9 +1278,10 @@ func (g *Group) transcode(ctx context.Context, sub *media.Subscription, attempt 
 		}
 	}
 	worker.Output = func(ctx context.Context, c net.Conn, progress ffmpeg.Progress) error {
+		// ctx отменяет чтение соединения c, progress учитывает фактическое продвижение.
 		// Разбирает выход LIVE transcode с текущей привязкой наблюдения и сообщает прогресс проверенных AU.
 
-		return g.readOutputObserved(ctx, c, Live, attempt, core.MediaFormat{}, progress, binding.Load())
+		return g.readGeneratedLiveOutput(ctx, c, attempt, progress, binding.Load(), g.config.Switcher.Profile, sourceHDR)
 	}
 	if err = supervisor.Start(ctx, worker); err != nil {
 		return err

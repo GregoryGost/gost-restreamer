@@ -55,11 +55,13 @@ func TestDerivedLoopDurationUsesFullFramesAACAndExactCLITime(t *testing.T) {
 
 // Проверяет явное дополнение видео и аудио до длины петли без изменения измеренной длительности
 // источника.
+// t сообщает об ошибках проверяемого сценария.
 func TestProductionPaddingIsExplicitAndSourceDurationRemainsOriginal(t *testing.T) {
 	// source содержит проверенный секундный видеоисточник для явного дополнения до петли.
 	source := Source{Kind: core.AssetVideo, Duration: time.Second, Demuxer: "mov"}
 	// p содержит целевой профиль H.264 для подготовки.
 	p := selfProfile(core.CodecH264)
+	source.Format.Video = &p.Format.Video
 	// cmd содержит построенную команду подготовки петли 1,6 с. err сообщает об отказе построения.
 	cmd, err := ProductionBuilder("ffmpeg")(GenerateRequest{Source: source, Profile: p, LoopDuration: 1600 * time.Millisecond})
 	if err != nil {

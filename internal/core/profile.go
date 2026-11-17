@@ -22,7 +22,7 @@ const (
 type LiveAudioMode string
 
 const (
-	// LiveAudioCopy сохраняет AAC-дорожку LIVE без перекодирования.
+	// LiveAudioCopy сохраняет аудиодорожку LIVE без перекодирования.
 	LiveAudioCopy LiveAudioMode = "copy"
 	// LiveAudioTranscode включает перекодирование LIVE-аудио в режиме transcode.
 	LiveAudioTranscode LiveAudioMode = "transcode"
@@ -66,7 +66,7 @@ func (e VideoEncoding) Validate() error {
 
 // AudioEncoding задаёт битрейт подготовки аудио.
 type AudioEncoding struct {
-	// BitrateBPS задаёт выходной аудиобитрейт в битах в секунду.
+	// BitrateBPS задаёт целевой аудиобитрейт в битах в секунду; FLAC требует неприменимый ноль.
 	BitrateBPS uint64
 }
 
@@ -82,8 +82,7 @@ func (e AudioEncoding) Validate() error {
 type GroupProfile struct {
 	// Mode выбирает копирование или перекодирование LIVE-видео.
 	Mode GroupMode
-	// LiveAudioMode выбирает обработку LIVE-аудио; пустое значение сохраняет прежнюю семантику
-	// профиля.
+	// LiveAudioMode явно выбирает обработку LIVE-аудио; пустое значение недопустимо.
 	LiveAudioMode LiveAudioMode
 	// Format описывает требуемый формат обеих выходных дорожек.
 	Format MediaFormat
@@ -91,59 +90,31 @@ type GroupProfile struct {
 	VideoEncoding VideoEncoding
 	// AudioEncoding содержит параметры кодирования звука.
 	AudioEncoding AudioEncoding
-	// Encoding содержит версионированные настройки конкретных кодировщиков; нулевой блок обозначает
-	// прежний профиль.
+	// Encoding содержит полный материализованный запрос конкретных кодировщиков.
 	Encoding EncodingSettings
 }
 
 // Validate проверяет режим, обе дорожки и настройки их подготовки.
 func (p GroupProfile) Validate() error {
-	if p.LiveAudioMode != "" && p.LiveAudioMode != LiveAudioCopy && p.LiveAudioMode != LiveAudioTranscode {
+	// err содержит отказ общей проверки желаемых строк и их непосредственных зависимостей.
+	if err := p.validateDesiredStrings(); err != nil {
+		return err
+	}
+	if p.LiveAudioMode != LiveAudioCopy && p.LiveAudioMode != LiveAudioTranscode {
 		return invalidEncoding("live_audio_mode", "Допустимы только copy и transcode.")
 	}
 	if p.LiveAudioMode == LiveAudioTranscode && p.Mode != ModeTranscode {
 		return invalidEncoding("live_audio_mode", "Перекодирование LIVE-аудио доступно только в режиме transcode.")
 	}
-	if p.Encoding != (EncodingSettings{}) {
-		return p.validateEncodingProfile()
-	}
-	return p.validateLegacyProfile()
+	return p.validateEncodingProfile()
 }
 
-// EffectiveLiveAudioMode возвращает явный режим LIVE-аудио, а для прежнего пустого значения —
-// transcode в ModeTranscode и copy в остальных случаях.
-func (p GroupProfile) EffectiveLiveAudioMode() LiveAudioMode {
-	if p.LiveAudioMode != "" {
-		return p.LiveAudioMode
-	}
-	if p.Mode == ModeTranscode {
-		return LiveAudioTranscode
-	}
-	return LiveAudioCopy
-}
-
-// validateLegacyProfile проверяет прежний профиль без блока Encoding: режим, структуру обеих дорожек и
-// положительные параметры кодирования.
-func (p GroupProfile) validateLegacyProfile() error {
-	if p.Mode != ModeCopy && p.Mode != ModeTranscode {
-		return fmt.Errorf("%w: GroupProfile.Mode должен быть copy или transcode", ErrInvalidProfile)
-	}
-	// err содержит причину отказа проверки выходного медиаформата.
-	if err := p.Format.Validate(); err != nil {
-		return fmt.Errorf("%w: GroupProfile.Format: %w", ErrInvalidProfile, err)
-	}
-	// err содержит причину отказа проверки параметров видео.
-	if err := p.VideoEncoding.Validate(); err != nil {
-		return fmt.Errorf("GroupProfile.VideoEncoding: %w", err)
-	}
-	// err содержит причину отказа проверки аудиобитрейта.
-	if err := p.AudioEncoding.Validate(); err != nil {
-		return fmt.Errorf("GroupProfile.AudioEncoding: %w", err)
-	}
-	return nil
-}
+// EffectiveLiveAudioMode возвращает явно сохранённый режим p без назначения значений.
+// Использующий профиль код предварительно обязан проверить его через Validate.
+func (p GroupProfile) EffectiveLiveAudioMode() LiveAudioMode { return p.LiveAudioMode }
 
 // Equal сравнивает все параметры корректных профилей, а не пригодность источников.
+// other задаёт второй полный профиль для сравнения с p; некорректность любого из них даёт false.
 func (p GroupProfile) Equal(other GroupProfile) bool {
 	if p.Validate() != nil || other.Validate() != nil {
 		return false

@@ -144,7 +144,8 @@ func (r *repositories) Variants(ctx context.Context, q core.ListQuery) ([]core.F
 	return listValues[core.FallbackVariant](ctx, r, "fallback_variants", q)
 }
 
-// InsertVariant проверяет и сохраняет вариант с точным профилем и принадлежностью поколению.
+// InsertVariant сохраняет вариант v с точным профилем в транзакции ctx.
+// UNIQUE(generation_id,canonical_profile) запрещает дубли независимо от состояния.
 func (r *repositories) InsertVariant(ctx context.Context, v core.FallbackVariant) error {
 	return insertValue(ctx, r, "fallback_variants", v)
 }
@@ -192,7 +193,8 @@ func (r *repositories) Outputs(ctx context.Context, q core.ListQuery) ([]core.Se
 	return listValues[core.SessionOutput](ctx, r, "outputs", q)
 }
 
-// InsertOutput проверяет и сохраняет новый выход с его самостоятельным снимком.
+// InsertOutput проверяет и сохраняет новый выход v с его самостоятельным снимком в транзакции ctx.
+// Полное соответствие артефакта профилю проверяет текущий доменный кодек.
 func (r *repositories) InsertOutput(ctx context.Context, v core.SessionOutput) error {
 	return insertValue(ctx, r, "outputs", v)
 }
@@ -338,6 +340,7 @@ func (r *repositories) Generations(ctx context.Context, q core.ListQuery) ([]cor
 }
 
 // InsertGeneration проверяет и сохраняет новое поколение с полным комплектом требуемых профилей.
+// ctx задаёт текущую транзакцию, v содержит новое поколение с полной текущей идентичностью.
 func (r *repositories) InsertGeneration(ctx context.Context, v core.FallbackGeneration) error {
 	return insertValue(ctx, r, "fallback_generations", v)
 }

@@ -1,18 +1,20 @@
 package fmp4
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/media"
 	"github.com/GregoryGost/gost-restreamer/internal/media/codec"
-	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 )
 
-// ResolveCodecConfig восстанавливает описание прогрессивного H.264 и AAC-LC mono/stereo.
+// ResolveCodecConfig восстанавливает прогрессивный H.264, AAC-LC с точной картой ASC/PCE
+// и начальные Opus/FLAC/MP3/AC3 из полных фактических заголовков. Demuxer дополнительно проверяет первую AU.
 // FPS берётся из TimingInfo в VUI, цвет без сигнализации остаётся unspecified.
 // Для AV1 без подтверждённых фактических размеров кадров нужен ResolveConfig.
+// desc содержит фактическую запись контейнера, epoch и revision задают идентичность результата.
 func ResolveCodecConfig(desc TrackDescription, epoch, revision uint64) (media.CodecConfig, error) {
 	// err сообщает о недопустимой рациональной шкале прочитанной дорожки.
 	if err := desc.TimeBase.Validate(); err != nil {
@@ -26,13 +28,36 @@ func ResolveCodecConfig(desc TrackDescription, epoch, revision uint64) (media.Co
 	switch desc.Codec {
 	case core.CodecH264:
 		info.Video, err = videoFromAVCC(desc)
+	case core.CodecHEVC:
+		if desc.ActualVideo.Validate() == nil {
+			info.Video = desc.ActualVideo
+		} else {
+			info.Video, err = codec.HEVCFormat(codec.VideoDescription{Headers: desc.Headers, Width: desc.Width, Height: desc.Height})
+		}
+		if err != nil {
+			err = translateCodecError(err)
+		}
+	case core.CodecVP9:
+		if desc.ActualVideo.Validate() != nil {
+			err = ErrMetadataUnavailable
+		} else {
+			info.Video = desc.ActualVideo
+		}
 	case core.CodecAAC:
 		info.Audio, err = audioFromASC(desc.Headers)
+	case core.CodecOpus, core.CodecFLAC, core.CodecMP3, core.CodecAC3:
+		info.Audio, err = codec.AudioFormatHeaders(desc.Codec, desc.Headers)
+		if err != nil {
+			err = translateCodecError(err)
+		}
 	default:
 		err = fmt.Errorf("%w: описание %s требует codec resolver", ErrMetadataUnavailable, desc.Codec)
 	}
 	if err != nil {
 		return media.CodecConfig{}, err
+	}
+	if newAudioCodec(desc.Codec) && (desc.Track != media.TrackAudio || desc.SampleRateHz != info.Audio.SampleRateHz || desc.Channels != info.Audio.Channels) {
+		return media.CodecConfig{}, fmt.Errorf("%w: запись аудио противоречит конфигурации кодека", ErrInvalid)
 	}
 	if desc.Codec == core.CodecAAC && (desc.Track != media.TrackAudio || desc.SampleRateHz != info.Audio.SampleRateHz || desc.Channels != info.Audio.Channels) {
 		return media.CodecConfig{}, fmt.Errorf("%w: sample entry противоречит ASC", ErrInvalid)
@@ -40,11 +65,23 @@ func ResolveCodecConfig(desc TrackDescription, epoch, revision uint64) (media.Co
 	if desc.Codec == core.CodecH264 && desc.Track != media.TrackVideo {
 		return media.CodecConfig{}, ErrInvalid
 	}
-	return media.NewCodecConfig(info, desc.Headers)
+	// config сохраняет подтверждённый формат; err сообщает об отказе структурной проверки.
+	config, err := media.NewCodecConfig(info, desc.Headers)
+	if err != nil {
+		return media.CodecConfig{}, err
+	}
+	config, err = reconstructHDR(config, desc)
+	if err != nil {
+		return media.CodecConfig{}, err
+	}
+	if err = validateWireConfig(config, desc); err != nil {
+		return media.CodecConfig{}, err
+	}
+	return config, nil
 }
 
 // Сверяет конфигурацию с фактическими заголовками и полями записи MP4 и требует точного отображения
-// одного отсчёта в шкалу дорожки.
+// одного отсчёта в шкалу дорожки. c содержит проверяемую конфигурацию, desc — исходную запись MP4.
 func validateWireConfig(c media.CodecConfig, desc TrackDescription) error {
 	// info содержит полный формат, который сопоставляется с фактическими полями и заголовками записи
 	// MP4.
@@ -61,38 +98,53 @@ func validateWireConfig(c media.CodecConfig, desc TrackDescription) error {
 		return err
 	}
 	if info.Track == media.TrackVideo {
-		if info.Video.Codec != desc.Codec || info.Video.Width != desc.Width || info.Video.Height != desc.Height {
+		if info.Video.Codec != desc.Codec || (desc.Codec != core.CodecVP9 && (info.Video.Width != desc.Width || info.Video.Height != desc.Height)) || desc.Codec == core.CodecVP9 && (info.Video.Width > desc.Width || info.Video.Height > desc.Height) {
 			return ErrInvalid
 		}
-		if desc.Codec == core.CodecH264 {
-			// err сообщает о некорректном SPS или несовпадении размеров H.264 с записью MP4.
-			if _, err := spsFromAVCC(desc); err != nil {
-				return err
+		if desc.Codec == core.CodecHEVC && len(desc.FirstSample) > 0 {
+			// actual независимо перепроверяет измерение восстановителя по исходной записи и первой единице доступа.
+			// measureErr сообщает об отказе независимой проверки фактических сведений первого AU.
+			actual, measureErr := codec.CompleteVideoFormat(desc.Codec, codec.VideoDescription{Headers: desc.Headers, Width: desc.Width, Height: desc.Height}, desc.FirstSample, desc.FirstSampleInfo, desc.TimeBase)
+			if measureErr != nil {
+				return translateCodecError(measureErr)
+			}
+			if measureErr = codec.CompatibleVideoConstraints(actual, info.Video, info.HDR.ColorConfig); measureErr != nil {
+				return measureErr
+			}
+		}
+		// err сообщает о любом расхождении полного описания с исходным SPS либо sequence.
+		if err := validateVideoConfig(c); err != nil {
+			return err
+		}
+		if desc.Color != nil {
+			// color содержит nclx, построенный из проверенного формата; err сообщает об
+			// отсутствии точного числового представления цветовых полей.
+			color, err := marshalColor(info.Video.Color)
+			if err != nil || !bytes.Equal(color, desc.Color) {
+				return fmt.Errorf("%w: colr расходится с заголовками кодека", ErrInvalid)
 			}
 		}
 	} else {
+		if newAudioCodec(desc.Codec) {
+			return validateAudioWireConfig(c, desc)
+		}
 		// actual содержит формат AAC, восстановленный непосредственно из ASC; err сообщает об
 		// отказе его разбора.
 		actual, err := audioFromASC(desc.Headers)
 		if err != nil {
 			return err
 		}
-		if info.Audio.SampleRateHz != desc.SampleRateHz || info.Audio.Channels != desc.Channels || info.Audio.SampleRateHz != actual.SampleRateHz || info.Audio.Channels != actual.Channels {
+		if info.Audio.SampleRateHz != desc.SampleRateHz || info.Audio.Channels != desc.Channels || info.Audio != actual {
 			return fmt.Errorf("%w: описание audio противоречит ASC", ErrInvalid)
 		}
 	}
 	return nil
 }
 
-// Разбирает SPS и сверяет размеры через общий кодек, переводя его ошибки в категории fMP4.
-func spsFromAVCC(d TrackDescription) (h264.SPS, error) {
-	// s содержит разобранный SPS H.264; e сохраняет исходную ошибку общего кодека для перевода в
-	// категорию fMP4.
-	s, e := codec.H264SPS(codec.VideoDescription{Headers: d.Headers, Width: d.Width, Height: d.Height})
-	if e != nil {
-		return s, translateCodecError(e)
-	}
-	return s, nil
+// validateVideoConfig сверяет исходные headers конфигурации с effective actual и его внешними CICP.
+// Нулевое происхождение сохраняет строгое сравнение, включая прежний SDR.
+func validateVideoConfig(config media.CodecConfig) error {
+	return translateCodecResult(codec.ValidateVideoConfig(config))
 }
 
 // Восстанавливает формат H.264 из avcC через общий кодек с переводом категорий ошибок в fMP4.
@@ -121,6 +173,9 @@ func audioFromASC(b []byte) (core.AudioFormat, error) {
 func translateCodecError(e error) error {
 	// target выбирает категорию fMP4 для исходной ошибки кодека, сохраняя её в цепочке обёрток.
 	target := ErrInvalid
+	if errors.Is(e, codec.ErrUnsupported) {
+		target = ErrUnsupportedCodec
+	}
 	if errors.Is(e, codec.ErrUnready) {
 		target = ErrMetadataUnavailable
 	}
@@ -128,4 +183,12 @@ func translateCodecError(e error) error {
 		target = ErrUnsupportedTiming
 	}
 	return fmt.Errorf("%w: %w", target, e)
+}
+
+// translateCodecResult сохраняет nil при успехе и переводит только фактический отказ кодека.
+func translateCodecResult(err error) error {
+	if err == nil {
+		return nil
+	}
+	return translateCodecError(err)
 }

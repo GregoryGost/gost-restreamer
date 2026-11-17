@@ -160,7 +160,7 @@ func newPublisherPipeline(t *testing.T, profiles []core.GroupProfile, endpoints 
 		}
 	}
 	// gen содержит резерв подготовки и обязательные варианты всех используемых профилей.
-	gen, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: "controlled-generator"})
+	gen, err := svc.ReservePreparation(ctx, core.PreparationRequest{AssetID: asset.ID, ExpectedRevision: asset.Revision, Kind: core.AssetImage, GeneratorVersion: core.CurrentFallbackGeneratorVersion})
 	if err != nil {
 		t.Fatal(err)
 	}

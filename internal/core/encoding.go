@@ -4,33 +4,70 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"slices"
 )
 
 const (
-	// EncodingVersion задаёт версию полного блока настроек кодировщиков.
-	EncodingVersion = 2
+	// VideoEncoderX265 выбирает программный кодировщик HEVC с фиксированным рецептом.
+	VideoEncoderX265 = "libx265"
+	// VideoEncoderHEVCNVENC выбирает NVIDIA-кодировщик HEVC с фиксированным рецептом.
+	VideoEncoderHEVCNVENC = "hevc_nvenc"
+	// VideoEncoderVP9 выбирает программный кодировщик VP9.
+	VideoEncoderVP9 = "libvpx-vp9"
 	// VideoEncoderNVENC обозначает NVIDIA-кодировщик H.264.
 	VideoEncoderNVENC = "h264_nvenc"
 	// VideoEncoderSVTAV1 обозначает программный кодировщик SVT-AV1.
 	VideoEncoderSVTAV1 = "libsvtav1"
+	// VideoEncoderX264 обозначает программный кодировщик H.264.
+	VideoEncoderX264 = "libx264"
+	// VideoEncoderAOMAV1 обозначает программный кодировщик AOM AV1.
+	VideoEncoderAOMAV1 = "libaom-av1"
 	// AudioEncoderAAC обозначает поддерживаемый кодировщик AAC.
 	AudioEncoderAAC = "aac"
+	// AudioEncoderOpus выбирает фиксированный рецепт CELT.
+	AudioEncoderOpus = "libopus"
+	// AudioEncoderFLAC выбирает нативное кодирование PCM16 без целевого битрейта.
+	AudioEncoderFLAC = "flac"
+	// AudioEncoderMP3 выбирает MPEG1 Layer III без резервуара.
+	AudioEncoderMP3 = "libmp3lame"
+	// AudioEncoderAC3 выбирает обычный AC-3 stereo.
+	AudioEncoderAC3 = "ac3"
 	// RateControlCBR выбирает режим постоянного видеобитрейта.
 	RateControlCBR = "cbr"
 	// RateControlVBR выбирает режим переменного видеобитрейта.
 	RateControlVBR = "vbr"
+	// RateControlCQP выбирает постоянный квантователь поддерживающего его кодировщика.
+	RateControlCQP = "cqp"
+	// RateControlCRF выбирает постоянное качество поддерживающего его кодировщика.
+	RateControlCRF = "crf"
 )
 
-// EncodingSettings хранит полный запрос кодирования. Нулевое значение обозначает прежний профиль.
+// OptionalQP сохраняет присутствие и целый квантователь независимо от нулевого значения.
+type OptionalQP struct {
+	// Set отмечает явно выбранный квантователь.
+	Set bool
+	// Value содержит квантователь; при Set=false требуется ноль.
+	Value int
+}
+
+// OptionalCRF сохраняет присутствие и числовое качество независимо от нулевого значения.
+type OptionalCRF struct {
+	// Set отмечает явно выбранное качество.
+	Set bool
+	// ValueHundredths содержит качество в сотых долях; при Set=false требуется ноль.
+	ValueHundredths int
+}
+
+// EncodingSettings хранит полный материализованный запрос кодирования; нулевой блок недопустим.
 type EncodingSettings struct {
-	// Version фиксирует версию полного блока настроек кодировщиков.
-	Version int
+	// QP содержит явно заданный квантователь CQP.
+	QP OptionalQP
+	// CRF содержит явно заданное качество CRF.
+	CRF OptionalCRF
 	// VideoEncoder выбирает конкретный кодировщик видео для подготовки профиля.
 	VideoEncoder string
 	// AudioEncoder выбирает кодировщик аудиодорожки.
 	AudioEncoder string
-	// RateControl выбирает управление видеобитрейтом CBR или VBR.
+	// RateControl выбирает управление видеобитрейтом CBR/VBR либо качеством CQP/CRF.
 	RateControl string
 	// RescaleOutput разрешает масштабирование LIVE-видео в режиме transcode.
 	RescaleOutput bool
@@ -38,9 +75,9 @@ type EncodingSettings struct {
 	VideoCustom string
 	// AudioCustom сохраняет нормализованные дополнительные параметры аудиокодировщика.
 	AudioCustom string
-	// NVENC содержит параметры NVIDIA H.264; для SVT-AV1 блок должен быть нулевым.
+	// NVENC содержит параметры NVIDIA H.264; для остальных кодировщиков блок должен быть нулевым.
 	NVENC NVENCSettings
-	// SVTAV1 содержит параметры SVT-AV1; для NVIDIA блок должен быть нулевым.
+	// SVTAV1 содержит параметры SVT-AV1; для остальных кодировщиков блок должен быть нулевым.
 	SVTAV1 SVTAV1Settings
 }
 
@@ -75,17 +112,22 @@ type SVTAV1Settings struct {
 	LookaheadFrames int
 }
 
-// DefaultEncoding применяется только к новому запросу; результат требует Validate полного профиля.
+// DefaultEncoding материализует применимые настройки нового запроса mode/videoEncoder/rateControl.
+// AAC выбран первоначально; QP и CRF требуют явного присутствия. Сохранённые профили
+// не проходят через этот конструктор; результат требует Validate полного профиля.
 func DefaultEncoding(mode GroupMode, videoEncoder, rateControl string) EncodingSettings {
 	// e накапливает настройки нового запроса с начальными значениями выбранного кодировщика.
-	e := EncodingSettings{Version: EncodingVersion, VideoEncoder: videoEncoder, AudioEncoder: AudioEncoderAAC, RateControl: rateControl, RescaleOutput: mode == ModeTranscode}
+	e := EncodingSettings{VideoEncoder: videoEncoder, AudioEncoder: AudioEncoderAAC, RateControl: rateControl, RescaleOutput: mode == ModeTranscode}
 	switch videoEncoder {
 	case VideoEncoderNVENC:
 		e.NVENC = NVENCSettings{Preset: "p4", Tuning: "hq", Multipass: "disabled", AQStrength: 8}
 	case VideoEncoderSVTAV1:
 		e.SVTAV1 = SVTAV1Settings{Preset: 8, Tuning: "psnr", AQMode: 2}
-		if rateControl == RateControlVBR {
+		if rateControl == RateControlVBR || rateControl == RateControlCQP || rateControl == RateControlCRF {
 			e.SVTAV1.LookaheadFrames = -1
+		}
+		if rateControl == RateControlCQP {
+			e.SVTAV1.AQMode = 0
 		}
 	}
 	return e
@@ -121,172 +163,36 @@ func invalidEncoding(field, detail string) error {
 	return &ProfileError{code: "invalid_profile", field: "profile." + field, detail: detail}
 }
 
-// validateEncodingProfile проверяет полный профиль EncodingVersion, ограничения выбранного кодировщика
-// и нормализованные пользовательские параметры; значения по умолчанию не назначаются.
+// validateEncodingProfile проверяет полный p без назначения значений по умолчанию.
+// Геометрия, точные временные шкалы и GOP общие для всех кодировщиков; видео и аудио
+// затем проверяются независимо, без подстановки другого формата дорожки.
 func (p GroupProfile) validateEncodingProfile() error {
-	// e содержит настройки кодировщиков, v — выходной видеоформат, a — выходной аудиоформат, а ve —
-	// параметры видеобитрейта и GOP.
+	// e содержит кодировщики, v и a — реальные желаемые дорожки, ve — битрейты и GOP.
 	e, v, a, ve := p.Encoding, p.Format.Video, p.Format.Audio, p.VideoEncoding
-	if e.Version != EncodingVersion {
-		return invalidEncoding("encoding.version", "Объект encoding требует version=2; прежний профиль должен иметь полностью нулевой блок настроек.")
-	}
-	if p.Mode != ModeCopy && p.Mode != ModeTranscode {
-		return invalidEncoding("mode", "Поддерживаются режимы copy и transcode.")
-	}
-	if e.RateControl != RateControlCBR && e.RateControl != RateControlVBR {
-		return invalidEncoding("encoding.rate_control", "Требуется явный режим cbr или vbr.")
-	}
-	if e.AudioEncoder != AudioEncoderAAC {
-		return invalidEncoding("encoding.audio_encoder", "Поддерживается только кодировщик aac.")
-	}
-	if p.Mode == ModeTranscode && (e.VideoEncoder != VideoEncoderNVENC || v.Codec != CodecH264) ||
-		p.Mode == ModeCopy && (e.VideoEncoder != VideoEncoderSVTAV1 || v.Codec != CodecAV1) {
-		return invalidEncoding("encoding.video_encoder", "Для transcode/H.264 требуется h264_nvenc, для copy/AV1 — libsvtav1.")
-	}
-	if p.Mode == ModeCopy && e.RescaleOutput {
-		return invalidEncoding("encoding.rescale_output", "В режиме copy размеры описывают ожидаемый поток OBS; масштабирование LIVE недоступно.")
-	}
-	if v.Width == 0 || v.Height == 0 || v.Width%2 != 0 || v.Height%2 != 0 {
-		return invalidEncoding("format.video", "Требуются положительные чётные ширина и высота.")
-	}
-	if v.PixelFormat != "yuv420p" || v.BitDepth != 8 || v.Color.Primaries != "bt709" || v.Color.Transfer != "bt709" || v.Color.Matrix != "bt709" || !slices.Contains([]string{"limited", "full", "tv", "pc"}, v.Color.Range) {
-		return invalidEncoding("format.video", "Поддерживается yuv420p, 8 бит, SDR bt709 и диапазон limited/full/tv/pc.")
+	if p.Format.Validate() != nil || v.Width%2 != 0 || v.Height%2 != 0 || v.Width > 65534 || v.Height > 65534 {
+		return invalidEncoding("format", "Требуются обе дорожки и положительные чётные размеры не более 65534.")
 	}
 	if !validEncodingFrameRate(v.FrameRate, a.SampleRateHz) {
-		return invalidEncoding("format.video.frame_rate", "Частота должна быть положительной точной дробью с представимыми шкалами времени FFmpeg.")
+		return invalidEncoding("format.video.frame_rate", "Частота и временные шкалы должны точно представляться FFmpeg.")
 	}
 	if !ve.ClosedGOP || ve.GOPFrames == 0 || ve.GOPFrames > math.MaxInt32 {
 		return invalidEncoding("video_encoding.gop_frames", "Требуется закрытый GOP длиной от 1 до 2147483647 кадров.")
 	}
-	if e.VideoEncoder == VideoEncoderNVENC {
-		// err содержит причину отказа проверки настроек NVENC.
-		if err := p.validateNVENC(); err != nil {
-			return err
-		}
-	} else {
-		// err содержит причину отказа проверки настроек SVT-AV1.
-		if err := p.validateSVTAV1(); err != nil {
-			return err
-		}
+	if p.Mode == ModeCopy && e.RescaleOutput {
+		return invalidEncoding("encoding.rescale_output", "В режиме copy масштабирование LIVE недоступно.")
 	}
-	// validLayout показывает согласованность числа каналов со схемой mono или stereo.
-	validLayout := a.Channels == 1 && a.ChannelLayout == "mono" || a.Channels == 2 && a.ChannelLayout == "stereo"
-	if a.Codec != CodecAAC || a.CodecProfile != "LC" || !validLayout || !slices.Contains([]uint32{7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000}, a.SampleRateHz) {
-		return invalidEncoding("format.audio", "Требуется AAC LC mono/stereo с частотой 7350..64000 Гц из поддерживаемого набора.")
+	// err сообщает отказ конкретной аудиопривязки, включая применимость LIVE-режима FLAC.
+	if err := p.validateAudioEncoding(); err != nil {
+		return err
 	}
-	if p.AudioEncoding.BitrateBPS == 0 || p.AudioEncoding.BitrateBPS > 6*uint64(a.SampleRateHz)*uint64(a.Channels) {
-		return invalidEncoding("audio_encoding.bitrate_bps", "Битрейт AAC должен быть положительным и не превышать 6 × частота дискретизации × число каналов.")
+	switch v.Codec {
+	case CodecAV1, CodecH264:
+		return p.validateAV1H264Encoding()
+	case CodecHEVC, CodecVP9:
+		return p.validateHEVCVP9Encoding()
+	default:
+		return invalidEncoding("format.video.codec", "Видеокодек отсутствует в поддерживаемом наборе настроек.")
 	}
-	// custom содержит очередной кодировщик, его дополнительные параметры и поле для диагностики.
-	for _, custom := range []struct { /* encoder указывает проверяемый кодировщик, value содержит его дополнительные параметры, а field указывает поле профиля для диагностики. */
-		encoder, value, field string
-	}{{e.VideoEncoder, e.VideoCustom, "video_custom"}, {e.AudioEncoder, e.AudioCustom, "audio_custom"}} {
-		// normalized содержит каноническую строку параметров кодировщика, а err — причину отказа
-		// нормализации.
-		normalized, err := NormalizeCustom(custom.encoder, custom.value)
-		if err != nil {
-			return err
-		}
-		if normalized != custom.value {
-			return invalidEncoding("encoding."+custom.field, "Параметры должны храниться в нормализованном виде.")
-		}
-	}
-	return nil
-}
-
-// validateNVENC проверяет параметры H.264/NVENC, ограничения битрейта, GOP, буфера и AQ и отклоняет
-// неприменимый блок SVTAV1.
-func (p GroupProfile) validateNVENC() error {
-	// v содержит выходной видеоформат, ve — настройки видеобитрейта и GOP, а e — запрос кодировщиков
-	// для проверки NVENC.
-	v, ve, e := p.Format.Video, p.VideoEncoding, p.Encoding
-	if e.SVTAV1 != (SVTAV1Settings{}) {
-		return invalidEncoding("encoding.svt_av1", "Блок svt_av1 неприменим к h264_nvenc.")
-	}
-	if v.Width > 65534 || v.Height > 65534 {
-		return invalidEncoding("format.video", "Размеры H.264 не должны превышать 65534.")
-	}
-	if !slices.Contains([]string{"baseline", "main", "high"}, v.CodecProfile) || v.Tier != "" || !slices.Contains([]string{"", "auto", "1", "1.0", "1b", "1.0b", "1.1", "1.2", "1.3", "2", "2.0", "2.1", "2.2", "3", "3.0", "3.1", "3.2", "4", "4.0", "4.1", "4.2", "5", "5.0", "5.1", "5.2"}, v.Level) {
-		return invalidEncoding("format.video", "Для H.264 поддержаны baseline/main/high, известный Level и пустой Tier.")
-	}
-	if ve.MaxBFrames > 4 || ve.MaxBFrames >= ve.GOPFrames || v.CodecProfile == "baseline" && ve.MaxBFrames != 0 {
-		return invalidEncoding("video_encoding.max_b_frames", "Допустимы 0..4 B-кадра, меньше длины GOP; baseline требует 0.")
-	}
-	if ve.TargetBitrateBPS == 0 || ve.TargetBitrateBPS > ve.MaxBitrateBPS || ve.MaxBitrateBPS > math.MaxUint32 {
-		return invalidEncoding("video_encoding.max_bitrate_bps", "H.264 требует 1 ≤ target ≤ max ≤ 4294967295 бит/с.")
-	}
-	if ve.BufferBits == 0 || ve.BufferBits > math.MaxInt32 {
-		return invalidEncoding("video_encoding.buffer_bits", "Буфер H.264 должен быть от 1 до 2147483647 бит.")
-	}
-	if e.RateControl == RateControlCBR && ve.TargetBitrateBPS != ve.MaxBitrateBPS {
-		return invalidEncoding("video_encoding.max_bitrate_bps", "Для CBR максимальный битрейт должен совпадать с целевым.")
-	}
-	// n содержит параметры NVENC, проверяемые по поддерживаемому каталогу.
-	n := e.NVENC
-	if !slices.Contains([]string{"p1", "p2", "p3", "p4", "p5", "p6", "p7"}, n.Preset) {
-		return invalidEncoding("encoding.nvenc.preset", "Допустимы preset p1..p7.")
-	}
-	if !slices.Contains([]string{"hq", "ll", "ull"}, n.Tuning) {
-		return invalidEncoding("encoding.nvenc.tuning", "Допустимы tuning hq, ll и ull.")
-	}
-	if !slices.Contains([]string{"disabled", "qres", "fullres"}, n.Multipass) {
-		return invalidEncoding("encoding.nvenc.multipass", "Допустимы multipass disabled, qres и fullres.")
-	}
-	if n.LookaheadFrames < 0 || n.LookaheadFrames > 31 || n.LookaheadFrames > 0 && uint64(n.LookaheadFrames)+uint64(ve.MaxBFrames) > 31 {
-		return invalidEncoding("encoding.nvenc.lookahead_frames", "Допустимы 0..31; положительный lookahead вместе с B-кадрами не должен превышать 31.")
-	}
-	if n.AQStrength < 1 || n.AQStrength > 15 || !n.EnableSpatialAQ && n.AQStrength != 8 {
-		return invalidEncoding("encoding.nvenc.aq_strength", "Допустимы 1..15; без пространственного AQ требуется значение 8.")
-	}
-	return nil
-}
-
-// validateSVTAV1 проверяет размеры, частоту кадров и настройки AV1, включая различные ограничения
-// CBR/VBR; блок NVENC должен быть нулевым.
-func (p GroupProfile) validateSVTAV1() error {
-	// v содержит выходной видеоформат, ve — настройки видеобитрейта и GOP, а e — запрос кодировщиков
-	// для проверки SVT-AV1.
-	v, ve, e := p.Format.Video, p.VideoEncoding, p.Encoding
-	if e.NVENC != (NVENCSettings{}) {
-		return invalidEncoding("encoding.nvenc", "Блок nvenc неприменим к libsvtav1.")
-	}
-	if v.Width < 64 || v.Width > 16384 || v.Height < 64 || v.Height > 8704 || uint64(v.FrameRate.Numerator) > 240*uint64(v.FrameRate.Denominator) {
-		return invalidEncoding("format.video", "SVT-AV1 требует ширину 64..16384, высоту 64..8704 и FPS не выше 240.")
-	}
-	if v.CodecProfile != "main" || v.Tier != "" && v.Tier != "main" || !validAV1Level(v.Level) {
-		return invalidEncoding("format.video", "AV1 требует main, Tier пустой/main и Level auto либо 2.0..7.3 из поддерживаемого набора.")
-	}
-	if ve.GOPFrames < 2 || ve.MaxBFrames != 0 {
-		return invalidEncoding("video_encoding.gop_frames", "SVT-AV1 требует GOP не меньше 2 и нулевое число B-кадров.")
-	}
-	if ve.TargetBitrateBPS == 0 || ve.TargetBitrateBPS > 100000000 {
-		return invalidEncoding("video_encoding.target_bitrate_bps", "Битрейт AV1 должен быть от 1 до 100000000 бит/с.")
-	}
-	if e.RateControl == RateControlVBR {
-		if ve.MaxBitrateBPS != 0 || ve.BufferBits != 0 {
-			return invalidEncoding("video_encoding", "SVT-AV1 VBR не поддерживает заданный hard cap/VBV; max_bitrate_bps и buffer_bits должны быть 0.")
-		}
-	} else {
-		// Предварительный предел делает последующее умножение на 1000 безопасным.
-		if ve.MaxBitrateBPS != ve.TargetBitrateBPS || ve.BufferBits == 0 || ve.BufferBits > ve.TargetBitrateBPS*10 || ve.BufferBits*1000%ve.TargetBitrateBPS != 0 || ve.BufferBits*1000/ve.TargetBitrateBPS < 20 {
-			return invalidEncoding("video_encoding", "AV1 CBR требует max=target и точный целый буфер 20..10000 мс.")
-		}
-	}
-	// s содержит параметры SVT-AV1, проверяемые с учётом режима битрейта.
-	s := e.SVTAV1
-	if s.Preset < 0 || s.Preset > 13 {
-		return invalidEncoding("encoding.svt_av1.preset", "Допустимы preset 0..13.")
-	}
-	if s.Tuning != "psnr" && s.Tuning != "vq" || e.RateControl == RateControlCBR && s.Tuning != "psnr" {
-		return invalidEncoding("encoding.svt_av1.tuning", "Допустимы psnr/vq; CBR требует psnr.")
-	}
-	if s.AQMode != 2 {
-		return invalidEncoding("encoding.svt_av1.aq_mode", "Поддерживается только aq_mode=2.")
-	}
-	if e.RateControl == RateControlCBR && s.LookaheadFrames != 0 || e.RateControl == RateControlVBR && s.LookaheadFrames != -1 && (s.LookaheadFrames < 6 || s.LookaheadFrames > 120) {
-		return invalidEncoding("encoding.svt_av1.lookahead_frames", "CBR требует lookahead=0; VBR допускает auto (-1) либо 6..120.")
-	}
-	return nil
 }
 
 // validAV1Level разрешает пустой уровень, auto либо обозначение уровня от 2.0 до 7.3 с последней

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,15 +26,39 @@ type eventCursor struct {
 	Version int `json:"v"`
 	// Epoch содержит публичный идентификатор эпохи потока оперативных событий.
 	Epoch string `json:"epoch"`
-	// Sequence содержит точный номер события, представленный Decimal без потери разрядов JSON.
-	Sequence Decimal `json:"sequence"`
+	// Sequence сохраняет прежнее строковое представление номера внутри непрозрачного курсора v1.
+	Sequence cursorSequence `json:"sequence"`
+}
+
+// cursorSequence изолирует прежнее строковое кодирование позиции SSE от публичных JSON-чисел DTO.
+type cursorSequence uint64
+
+// MarshalJSON сохраняет каноническую строку sequence и прежние кодированные байты курсора v1.
+func (s cursorSequence) MarshalJSON() ([]byte, error) {
+	return json.Marshal(strconv.FormatUint(uint64(s), 10))
+}
+
+// UnmarshalJSON требует прежнюю каноническую строку uint64, включая допустимый ноль.
+func (s *cursorSequence) UnmarshalJSON(data []byte) error {
+	// text содержит строковое значение; err сообщает об отказе чтения JSON-строки.
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return core.ErrInvalid
+	}
+	// value содержит точный sequence; err сообщает о переполнении или неканонической записи.
+	value, err := parseDecimal(text)
+	if err != nil {
+		return err
+	}
+	*s = cursorSequence(value)
+	return nil
 }
 
 // encodeCursor кодирует публичный epoch и точную последовательность RAM-потока без раскрытия
 // внутреннего incarnation.
 func encodeCursor(c core.RuntimeCursor) string {
 	// b содержит JSON публичной позиции до кодирования base64url.
-	b, _ := json.Marshal(eventCursor{1, string(c.Epoch), Decimal(c.Sequence)})
+	b, _ := json.Marshal(eventCursor{1, string(c.Epoch), cursorSequence(c.Sequence)})
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
@@ -40,12 +66,12 @@ func encodeCursor(c core.RuntimeCursor) string {
 // incarnation отдельно от пользовательских данных.
 func decodeCursor(s string, current core.RuntimeCursor) (core.RuntimeCursor, error) {
 	if s == "" || len(s) > 512 {
-		return core.RuntimeCursor{}, badRequest()
+		return core.RuntimeCursor{}, reasonError(badRequest(), "invalid_cursor", "cursor")
 	}
 	// b содержит декодированные байты курсора; e содержит отказ строгого base64url-декодирования.
 	b, e := base64.RawURLEncoding.Strict().DecodeString(s)
 	if e != nil {
-		return core.RuntimeCursor{}, badRequest()
+		return core.RuntimeCursor{}, reasonError(badRequest(), "invalid_cursor", "cursor")
 	}
 	// v принимает публичные поля курсора для строгой проверки версии, эпохи и обязательной
 	// последовательности.
@@ -56,13 +82,13 @@ func decodeCursor(s string, current core.RuntimeCursor) (core.RuntimeCursor, err
 		Epoch string `json:"epoch"`
 		// Sequence отличает отсутствующую последовательность от допустимого нуля посредством
 		// указателя.
-		Sequence *Decimal `json:"sequence"`
+		Sequence *cursorSequence `json:"sequence"`
 	}
 	// dec разбирает ровно один JSON-объект курсора с запрещёнными неизвестными полями.
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if dec.Decode(&v) != nil || dec.Decode(new(any)) != io.EOF || v.Version != 1 || v.Sequence == nil || v.Epoch == "" || len(v.Epoch) > 128 || core.ID(v.Epoch).Validate() != nil {
-		return core.RuntimeCursor{}, badRequest()
+		return core.RuntimeCursor{}, reasonError(badRequest(), "invalid_cursor", "cursor")
 	}
 	return core.RuntimeCursor{Incarnation: current.Incarnation, Epoch: core.ID(v.Epoch), Sequence: uint64(*v.Sequence)}, nil
 }
@@ -77,6 +103,8 @@ type requestState struct {
 	// cleanup освобождает ресурсы, занятые при предварительной проверке запроса, после возврата
 	// обработчика.
 	cleanup func()
+	// problem удерживает типизированный отказ resolver до преобразования ответа текущего запроса.
+	problem huma.StatusError
 }
 
 // EventsInput принимает публичную позицию подписки из query или Last-Event-ID и переносит подготовленную
@@ -104,7 +132,10 @@ func (i *EventsInput) Resolve(ctx huma.Context) []error {
 	a := state.api
 	// e содержит отказ предварительной проверки курсора, источника событий или SSE-транспорта.
 	if e := a.preflightEvents(ctx, i); e != nil {
-		return []error{a.problem(e)}
+		// problem сохраняет типизированное представление до стирающего тип resolver-пути Huma.
+		problem := a.problem(e)
+		state.problem, _ = problem.(huma.StatusError)
+		return []error{problem}
 	}
 	return nil
 }
@@ -114,7 +145,7 @@ func (i *EventsInput) Resolve(ctx huma.Context) []error {
 // зарегистрированной очисткой запроса.
 func (a *API) preflightEvents(ctx huma.Context, i *EventsInput) error {
 	if i.Cursor != "" && i.LastEventID != "" && i.Cursor != i.LastEventID {
-		return badRequest()
+		return reasonError(badRequest(), "sse_cursor_conflict", "cursor")
 	}
 	// requested выбирает позицию из query или заголовка после проверки их согласованности.
 	requested := i.Cursor
@@ -144,7 +175,7 @@ func (a *API) preflightEvents(ctx huma.Context, i *EventsInput) error {
 		base, e = a.config.Core.RuntimeEvents(op, cursor, a.config.Limits.SSEPageSize)
 		if e != nil {
 			if errors.Is(e, core.ErrInvalid) {
-				return badRequest()
+				return reasonError(badRequest(), "invalid_cursor", "cursor")
 			}
 			return e
 		}
@@ -154,18 +185,23 @@ func (a *API) preflightEvents(ctx huma.Context, i *EventsInput) error {
 	// w содержит HTTP-транспорт, у которого проверяются Flush и сроки записи.
 	_, w := humachi.Unwrap(ctx)
 	if !supportsFlush(w) {
-		return unavailable()
+		return reasonError(unavailable(), "sse_transport_unavailable", "")
 	}
 	// control устанавливает и сбрасывает конечный срок записи SSE через HTTP-транспорт.
 	control := http.NewResponseController(w)
 	if e = control.SetWriteDeadline(time.Now().Add(a.config.Limits.SSEWriteTimeout)); e != nil {
-		return unavailable()
+		return reasonError(unavailable(), "sse_transport_unavailable", "")
 	}
 	a.mu.Lock()
-	if a.closed || a.streams >= a.config.Limits.SSEClients {
+	if a.closed {
 		a.mu.Unlock()
 		_ = control.SetWriteDeadline(time.Time{})
-		return unavailable()
+		return reasonError(unavailable(), "api_closed", "")
+	}
+	if a.streams >= a.config.Limits.SSEClients {
+		a.mu.Unlock()
+		_ = control.SetWriteDeadline(time.Time{})
+		return reasonError(unavailable(), "sse_client_limit", "")
 	}
 	a.streams++
 	a.mu.Unlock()
@@ -267,6 +303,18 @@ func (a *API) registerRuntime() {
 	// op описывает SSE-маршрут с потоковым типом text/event-stream вместо обычного JSON-ответа.
 	op := operation("GET", "/events", "subscribe-events", "Ограниченный поток текущих событий RAM.")
 	op.Responses = map[string]*huma.Response{"200": {Description: "Поток событий; при пропуске требуется новый снимок.", Content: map[string]*huma.MediaType{"text/event-stream": {Schema: &huma.Schema{Type: "string"}}}}}
+	// registry публикует схемы JSON-данных независимо от строкового транспорта SSE.
+	registry := a.huma.OpenAPI().Components.Schemas
+	// eventSchema описывает данные текущих событий; resyncSchema — управляющее уведомление.
+	eventSchema := registry.Schema(reflect.TypeFor[RuntimeEventDTO](), true, "")
+	resyncSchema := registry.Schema(reflect.TypeFor[ResyncRequiredDTO](), true, "")
+	op.Extensions = map[string]any{"x-sse-events": map[string]any{
+		string(core.RuntimeStateEvent): eventSchema, string(core.RuntimeMetricsEvent): eventSchema,
+		string(core.RuntimeInputEvent): eventSchema, string(core.RuntimeGPUEvent): eventSchema,
+		string(core.RuntimeRemovedEvent): eventSchema, string(core.RuntimeAttemptEvent): eventSchema,
+		"resync_required": resyncSchema,
+	}}
+	a.setProblemResponses(&op)
 	huma.Register(a.huma, op, func(_ context.Context, i *EventsInput) (*huma.StreamResponse, error) {
 		// Создаёт потоковый ответ из страницы событий, подготовленной до отправки заголовков.
 
@@ -279,6 +327,7 @@ func (a *API) registerRuntime() {
 			a.streamEvents(ctx, page)
 		}}, nil
 	})
+	a.setProblemResponses(&op)
 }
 
 // streamEvents передаёт ограниченные страницы событий без удержания RuntimeAuthority во время сети.
@@ -319,13 +368,7 @@ func (a *API) streamEvents(ctx huma.Context, page core.RuntimeEventPage) {
 
 		// frame содержит кадр обязательной повторной синхронизации; e содержит отказ его
 		// формирования в пределах бюджета.
-		frame, e := makeFrame("resync_required", "", struct {
-			// Reason сообщает причину обязательного повторного получения снимка.
-			Reason string `json:"reason"`
-			// SnapshotURL указывает публичный маршрут атомарного снимка для восстановления
-			// позиции.
-			SnapshotURL string `json:"snapshot_url"`
-		}{reason, Prefix + "/events/snapshot"}, a.config.Limits.SSEFrameBytes)
+		frame, e := makeFrame("resync_required", "", ResyncRequiredDTO{reason, Prefix + "/events/snapshot"}, a.config.Limits.SSEFrameBytes)
 		if e == nil {
 			_ = write(frame)
 		}

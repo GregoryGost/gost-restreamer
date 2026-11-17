@@ -10,7 +10,7 @@ import (
 func NormalizeCustom(encoder, value string) (string, error) {
 	// field указывает поле профиля, к которому относится ошибка пользовательских параметров.
 	field := "profile.encoding.video_custom"
-	if encoder == AudioEncoderAAC {
+	if encoder == AudioEncoderAAC || encoder == AudioEncoderOpus || encoder == AudioEncoderFLAC || encoder == AudioEncoderMP3 || encoder == AudioEncoderAC3 {
 		field = "profile.encoding.audio_custom"
 	}
 	// fail формирует отказ нормализации с кодом, описанием и выбранным полем профиля.
@@ -22,6 +22,18 @@ func NormalizeCustom(encoder, value string) (string, error) {
 	}
 	if len(value) > 4096 {
 		return fail("invalid_custom", "Строка параметров не должна превышать 4096 байт.")
+	}
+	if encoder == AudioEncoderOpus || encoder == AudioEncoderFLAC || encoder == AudioEncoderMP3 || encoder == AudioEncoderAC3 {
+		if value == "" {
+			return "", nil
+		}
+		return fail("invalid_custom", "Выбранный аудиокодировщик использует фиксированный рецепт без дополнительных параметров.")
+	}
+	if encoder == VideoEncoderX264 || encoder == VideoEncoderAOMAV1 || encoder == VideoEncoderX265 || encoder == VideoEncoderHEVCNVENC || encoder == VideoEncoderVP9 {
+		if value == "" {
+			return "", nil
+		}
+		return fail("invalid_custom", "Выбранный кодировщик использует фиксированный рецепт без дополнительных видеопараметров.")
 	}
 	if encoder != VideoEncoderNVENC && encoder != VideoEncoderSVTAV1 && encoder != AudioEncoderAAC {
 		return fail("invalid_custom", "Для этого кодировщика каталог пользовательских параметров не определён.")

@@ -135,6 +135,7 @@ func applicationFlowDemux(file *os.File) (*fmp4.Demuxer, error) {
 // Verify проверяет совместимость формата и каждую единицу доступа подготовленного файла; ожидает ровно
 // 96 видеопакетов и 75 аудиопакетов. Ошибка чтения, проверки или отмена прерывает проверку, а неверное
 // количество пакетов возвращает ErrNotReady.
+// ctx ограничивает проверку, file содержит подготовленный контейнер, profile задаёт ожидаемый полный профиль.
 func (i applicationFlowInspection) Verify(ctx context.Context, file *os.File, profile core.GroupProfile) (core.MediaFormat, error) {
 	// d содержит демультиплексор подготовленного файла; err содержит отказ его открытия.
 	d, err := applicationFlowDemux(file)
@@ -144,7 +145,7 @@ func (i applicationFlowInspection) Verify(ctx context.Context, file *os.File, pr
 	// actual содержит фактические описания обеих дорожек контейнера для проверки совместимости с
 	// профилем.
 	actual := core.MediaFormat{Video: d.Init().Video.Info().Video, Audio: d.Init().Audio.Info().Audio}
-	if err = codec.Compatible(actual, profile.Format); err != nil {
+	if err = core.CompatibleProfileFormat(actual, profile); err != nil {
 		return actual, err
 	}
 	// inspector проверяет структуру каждой единицы доступа подготовленного файла.
@@ -260,13 +261,13 @@ func newApplicationFlowFixture(t *testing.T, helper string) *sessionAcceptanceFi
 	// profile задаёт исходный AV1 1440p профиль настроек переключателя до выбора сохранённых групп.
 	profile := applicationFlowProfiles()[0]
 	// Функциональный сценарий использует стандартный бюджет операции сервера.
-	f.config = session.Config{Core: f.service, Files: f.files, Processes: f.processes, GeneratorVersion: "controlled-generator", Router: publisherRouterLimits(), Publisher: publisher.Options{Queue: publisherQueue(), RetryInitial: 10 * time.Millisecond, RetryMax: 50 * time.Millisecond, ResubscribeDelay: 5 * time.Millisecond, Transport: publisherTransportOptions(nil)}, Logger: slog.New(slog.NewJSONHandler(&f.logs, nil)), MaxSessions: 1, MaxOutputs: 8, MaxCommands: 8, PageSize: 8, MaxGroups: 4, MaxReferences: 8, ReconcileInterval: 5 * time.Millisecond, StartupTimeout: 4 * time.Second, OperationTimeout: config.Default().Session.OperationTimeout, ShutdownTimeout: 4 * time.Second,
+	f.config = session.Config{Core: f.service, Files: f.files, Processes: f.processes, GeneratorVersion: core.CurrentFallbackGeneratorVersion, Router: publisherRouterLimits(), Publisher: publisher.Options{Queue: publisherQueue(), RetryInitial: 10 * time.Millisecond, RetryMax: 50 * time.Millisecond, ResubscribeDelay: 5 * time.Millisecond, Transport: publisherTransportOptions(nil)}, Logger: slog.New(slog.NewJSONHandler(&f.logs, nil)), MaxSessions: 1, MaxOutputs: 8, MaxCommands: 8, PageSize: 8, MaxGroups: 4, MaxReferences: 8, ReconcileInterval: 5 * time.Millisecond, StartupTimeout: 4 * time.Second, OperationTimeout: config.Default().Session.OperationTimeout, ShutdownTimeout: 4 * time.Second,
 		Monitoring: monitoring.SamplerConfig{MaxSources: 128, StaleAfter: 5 * time.Second, ShutdownTimeout: 4 * time.Second}, Telemetry: core.TelemetryLimits{Events: core.EventLimits{MaxEvents: 128, MaxBytes: 1 << 20, MaxEventBytes: 65536, MaxPageSize: 64}, MediaStaleAfter: 5 * time.Second, MaxGPUDevices: 8, MaxGPUUUIDBytes: 256, MaxGPUBytes: 1 << 20},
 		Group: group.RuntimeConfig{Switcher: group.SwitcherConfig{Profile: profile, Watchdog: watchdog, Queue: publisherQueue(), Router: publisherRouterLimits(), MaxAVSkew: 100 * time.Millisecond, MaxTransitionGap: 100 * time.Millisecond}, Container: integrationLimits(), Binary: helper, ResubscribeBackoff: 5 * time.Millisecond, ControlInterval: 5 * time.Millisecond, ShutdownTimeout: 3 * time.Second, FFmpeg: ffmpeg.Config{BaseDir: filepath.Join(base, "r"), StartupTimeout: 3 * time.Second, VideoTimeout: 2 * time.Second, AudioTimeout: 2 * time.Second, WatchdogInterval: 10 * time.Millisecond, MaxRestarts: 0, RestartBackoff: time.Millisecond, GracePeriod: 50 * time.Millisecond, KillTimeout: time.Second, ShutdownTimeout: 3 * time.Second, DiagnosticEvents: 64, DiagnosticBytes: 65536, DiagnosticChunkBytes: 1024, MaxCommandBytes: 8192, MaxCommandArgs: 128, Progress: ffmpeg.ProgressConfig{MaxLineBytes: 4096, MaxReportBytes: 65536, MaxFields: 64}}}}
 	// probe задаёт конечные пределы реальной проверки исходника и структурного выходного контейнера.
 	probe := fallback.ProbeLimits{MaxJSONBytes: 65536, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 4096 * 4096, MaxDuration: time.Minute, ImageDuration: 1600 * time.Millisecond, MaxPackets: 1000, Container: integrationLimits()}
 	// preparation содержит рабочий FallbackManager с заменённым кодированием и настоящими файлами.
-	preparation, err := fallback.NewManagerWithTools(f.service, f.files, fallback.Config{ReconcileLimit: 16, GeneratorVersion: "controlled-generator", FFmpeg: helper, FFprobe: helper, MaxUploadBytes: 1 << 20, MaxOutputBytes: 1 << 20, PrepareTimeout: 5 * time.Second, ShutdownTimeout: 3 * time.Second, QueueInterval: time.Millisecond, Runner: fallback.RunnerLimits{Timeout: 3 * time.Second, MaxArgs: 128, MaxCommandBytes: 8192, MaxDiagnosticBytes: 65536}, Probe: probe}, fallback.Tools{Builder: func(r fallback.GenerateRequest) (fallback.Command, error) {
+	preparation, err := fallback.NewManagerWithTools(f.service, f.files, fallback.Config{ReconcileLimit: 16, GeneratorVersion: core.CurrentFallbackGeneratorVersion, FFmpeg: helper, FFprobe: helper, MaxUploadBytes: 1 << 20, MaxOutputBytes: 1 << 20, PrepareTimeout: 5 * time.Second, ShutdownTimeout: 3 * time.Second, QueueInterval: time.Millisecond, Runner: fallback.RunnerLimits{Timeout: 3 * time.Second, MaxArgs: 128, MaxCommandBytes: 8192, MaxDiagnosticBytes: 65536}, Probe: probe}, fallback.Tools{Builder: func(r fallback.GenerateRequest) (fallback.Command, error) {
 		// Сериализует профиль в аргумент управляемого генератора, сохраняя настоящую файловую подготовку.
 
 		// data содержит JSON полного профиля, передаваемый генератору; err содержит отказ
@@ -323,26 +324,48 @@ func newApplicationFlowFixture(t *testing.T, helper string) *sessionAcceptanceFi
 	return f
 }
 
-// Переводит формат и параметры кодирования профиля в DTO для запросов API, сохраняя точные строковые
-// представления численных полей.
+// Переводит формат и параметры кодирования профиля в DTO для запросов API, сохраняя точные числовые
+// значения полей. p задаёт полный доменный профиль для тела запроса.
 func applicationFlowProfileJSON(p core.GroupProfile) api.GroupProfileDTO {
 	// v содержит формат видео; a содержит формат аудио; e содержит общие видеонастройки для точного
 	// API-представления профиля.
 	v, a, e := p.Format.Video, p.Format.Audio, p.VideoEncoding
+	// encoding переносит полный текущий рецепт без повторной материализации значений по умолчанию.
+	encoding := api.EncodingDTO{VideoEncoder: p.Encoding.VideoEncoder, AudioEncoder: p.Encoding.AudioEncoder, RateControl: p.Encoding.RateControl, RescaleOutput: p.Encoding.RescaleOutput, VideoCustom: p.Encoding.VideoCustom, AudioCustom: p.Encoding.AudioCustom}
+	if p.Encoding.QP.Set {
+		encoding.QP = &p.Encoding.QP.Value
+	}
+	if p.Encoding.CRF.Set {
+		// quality сохраняет сотые доли CRF для точной публичной сериализации.
+		quality := api.CRFNumber(p.Encoding.CRF.ValueHundredths)
+		encoding.CRF = &quality
+	}
+	if p.Encoding.VideoEncoder == core.VideoEncoderNVENC {
+		// settings содержит полный запрос NVENC для переноса применимых полей.
+		settings := p.Encoding.NVENC
+		encoding.NVENC = &api.NVENCDTO{Preset: settings.Preset, Tuning: settings.Tuning, Multipass: settings.Multipass, LookaheadFrames: settings.LookaheadFrames, EnableSpatialAQ: settings.EnableSpatialAQ, EnableTemporalAQ: settings.EnableTemporalAQ, AQStrength: settings.AQStrength}
+	}
+	if p.Encoding.VideoEncoder == core.VideoEncoderSVTAV1 {
+		// settings содержит полный запрос SVT-AV1 для переноса применимых полей.
+		settings := p.Encoding.SVTAV1
+		encoding.SVTAV1 = &api.SVTAV1DTO{Preset: settings.Preset, Tuning: settings.Tuning, AQMode: settings.AQMode, LookaheadFrames: settings.LookaheadFrames}
+	}
 	return api.GroupProfileDTO{
-		Mode: string(p.Mode),
+		Mode:          string(p.Mode),
+		LiveAudioMode: string(p.LiveAudioMode),
 		Format: api.FormatDTO{
 			Video: api.VideoFormatDTO{
 				Codec: string(v.Codec), Width: v.Width, Height: v.Height,
 				FrameRate:    api.FrameRateDTO{Numerator: v.FrameRate.Numerator, Denominator: v.FrameRate.Denominator},
-				CodecProfile: api.ProfileText(v.CodecProfile), Level: api.ProfileText(v.Level), Tier: api.ProfileText(v.Tier),
-				PixelFormat: api.ProfileText(v.PixelFormat), BitDepth: v.BitDepth,
-				Color: api.ColorDTO{Range: api.ProfileText(v.Color.Range), Primaries: api.ProfileText(v.Color.Primaries), Transfer: api.ProfileText(v.Color.Transfer), Matrix: api.ProfileText(v.Color.Matrix)},
+				CodecProfile: v.CodecProfile, Level: v.Level, Tier: v.Tier,
+				PixelFormat: v.PixelFormat, BitDepth: v.BitDepth,
+				Color: api.ColorDTO{Range: v.Color.Range, Primaries: v.Color.Primaries, Transfer: v.Color.Transfer, Matrix: v.Color.Matrix},
 			},
-			Audio: api.AudioFormatDTO{Codec: string(a.Codec), CodecProfile: api.ProfileText(a.CodecProfile), SampleRateHz: a.SampleRateHz, Channels: a.Channels, ChannelLayout: api.ProfileText(a.ChannelLayout)},
+			Audio: api.AudioFormatDTO{Codec: string(a.Codec), CodecProfile: a.CodecProfile, SampleRateHz: a.SampleRateHz, Channels: a.Channels, ChannelLayout: a.ChannelLayout},
 		},
 		VideoEncoding: api.VideoEncodingDTO{TargetBitrateBPS: api.Decimal(e.TargetBitrateBPS), MaxBitrateBPS: api.Decimal(e.MaxBitrateBPS), BufferBits: api.Decimal(e.BufferBits), GOPFrames: e.GOPFrames, MaxBFrames: e.MaxBFrames, ClosedGOP: e.ClosedGOP},
 		AudioEncoding: api.AudioEncodingDTO{BitrateBPS: api.Decimal(p.AudioEncoding.BitrateBPS)},
+		Encoding:      encoding,
 	}
 }
 

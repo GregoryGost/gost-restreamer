@@ -127,11 +127,12 @@ func integrationLimits() fmp4.Limits {
 
 // Создаёт разрешитель конфигураций для fMP4: AV1 сверяется с независимым ffprobe по размерам, кодеку и
 // пиксельному формату, а остальные кодеки используют штатный ResolveCodecConfig.
+// t связывает разрешитель с тестом, probe содержит независимо измеренные параметры дорожек.
 func truthfulResolver(t *testing.T, probe mediaProbe) func(fmp4.TrackDescription) (media.CodecConfig, error) {
 	t.Helper()
 	return func(d fmp4.TrackDescription) (media.CodecConfig, error) {
 		// Для AV1 сверяет описание контейнера с независимым ffprobe, а остальные кодеки разбирает штатным
-		// способом.
+		// способом; d содержит описание очередной дорожки fMP4.
 
 		if d.Codec != core.CodecAV1 {
 			return fmp4.ResolveCodecConfig(d, 11, 1)
@@ -149,7 +150,12 @@ func truthfulResolver(t *testing.T, probe mediaProbe) func(fmp4.TrackDescription
 				if d.Width != s.Width || d.Height != s.Height || s.CodecName != "av1" || s.PixelFormat != "yuv420p" {
 					return media.CodecConfig{}, errors.New("init не совпадает с независимым ffprobe")
 				}
-				return media.NewCodecConfig(media.CodecConfigInfo{Track: media.TrackVideo, SourceEpoch: 11, Revision: 1, TimeBase: d.TimeBase, Video: core.VideoFormat{Codec: core.CodecAV1, Width: s.Width, Height: s.Height, FrameRate: core.FrameRate{Numerator: n, Denominator: den}, CodecProfile: s.Profile, PixelFormat: s.PixelFormat, BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "unspecified", Transfer: "unspecified", Matrix: "unspecified"}}}, d.Headers)
+				// codecProfile сопоставляет только имя ffprobe "Main" с контрактным значением AV1 "main"; остальные значения сохраняет для строгой сверки.
+				codecProfile := s.Profile
+				if codecProfile == "Main" {
+					codecProfile = "main"
+				}
+				return media.NewCodecConfig(media.CodecConfigInfo{Track: media.TrackVideo, SourceEpoch: 11, Revision: 1, TimeBase: d.TimeBase, Video: core.VideoFormat{Codec: core.CodecAV1, Width: s.Width, Height: s.Height, FrameRate: core.FrameRate{Numerator: n, Denominator: den}, CodecProfile: codecProfile, PixelFormat: s.PixelFormat, BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "unspecified", Transfer: "unspecified", Matrix: "unspecified"}}}, d.Headers)
 			}
 		}
 		return media.CodecConfig{}, errors.New("ffprobe не дал видеодорожку")

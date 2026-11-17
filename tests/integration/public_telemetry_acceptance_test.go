@@ -39,18 +39,18 @@ func publicTelemetryMedia(t *testing.T, value any) map[string]any {
 	return publicTelemetryObject(t, publicTelemetryObject(t, value)["media"])
 }
 
-// Проверяет строковое десятичное представление счётчика и разбирает его в точный uint64 без
+// Проверяет числовой JSON-токен счётчика и разбирает его в точный uint64 без
 // промежуточного преобразования во float64.
 func publicTelemetryUint(t *testing.T, value any) uint64 {
 	t.Helper()
-	// text содержит точную десятичную строку счётчика, а ok подтверждает строковое представление без
+	// text содержит точный числовой токен счётчика, а ok подтверждает отсутствие строки и
 	// float64.
-	text, ok := value.(string)
+	text, ok := value.(json.Number)
 	if !ok {
-		t.Fatalf("точный счётчик не передан строкой: %#v", value)
+		t.Fatalf("точный счётчик не передан JSON-числом: %#v", value)
 	}
 	// n содержит точное значение счётчика uint64, а err сообщает об ошибке его десятичного разбора.
-	n, err := strconv.ParseUint(text, 10, 64)
+	n, err := strconv.ParseUint(text.String(), 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,13 +106,13 @@ func publicTelemetryCheckOutput(t *testing.T, metrics map[string]any, receiver *
 	if publicTelemetryUint(t, media["payload_bytes"]) != payload || publicTelemetryUint(t, media["written_bytes"]) != receiver.bytes.Load() || publicTelemetryUint(t, media["video_frames"]) != videos || publicTelemetryUint(t, media["audio_units"]) != units-videos || publicTelemetryUint(t, counters["access_units"]) != units {
 		t.Fatalf("REST/SSE не совпал с независимым RTMP-приёмником: media=%v counters=%v wire payload=%d units=%d video=%d bytes=%d", media, counters, payload, units, videos, receiver.bytes.Load())
 	}
-	if counters["attempts"] != "1" || counters["connections"] != "1" || counters["reconnects"] != "0" || receiver.accepted.Load() != 1 {
+	if counters["attempts"] != json.Number("1") || counters["connections"] != json.Number("1") || counters["reconnects"] != json.Number("0") || receiver.accepted.Load() != 1 {
 		t.Fatal("конечный источник вызвал лишнее подключение", counters)
 	}
 	// reason обозначает причину потери отправки, а count содержит её публичный счётчик, который
 	// ожидается нулевым.
 	for reason, count := range publicTelemetryObject(t, metrics["delivery_drops"]) {
-		if count != "0" {
+		if count != json.Number("0") {
 			t.Fatalf("неожиданная потеря отправки %s=%v", reason, count)
 		}
 	}
@@ -131,9 +131,9 @@ func publicTelemetryCheckGroup(t *testing.T, metrics map[string]any) {
 	// сценарии.
 	live := publicTelemetryObject(t, metrics["live_input"])
 	// За одну секунду источник выдаёт 60 видео-AU и 47 AAC-AU по 1024 сэмпла при 48 kHz.
-	// payload содержит ожидаемое строковое число байтов 60 видео-AU и 47 AAC-AU конечного источника.
-	payload := strconv.Itoa(60*len(publisherPayload(video, 10)) + 47*len(publisherPayload(audio, 0)))
-	if fallback["video_frames"] != "60" || fallback["audio_units"] != "47" || fallback["payload_bytes"] != payload || live["video_frames"] != "0" || live["audio_units"] != "0" || live["payload_bytes"] != "0" {
+	// payload содержит ожидаемое число байтов 60 видео-AU и 47 AAC-AU конечного источника.
+	payload := json.Number(strconv.Itoa(60*len(publisherPayload(video, 10)) + 47*len(publisherPayload(audio, 0))))
+	if fallback["video_frames"] != json.Number("60") || fallback["audio_units"] != json.Number("47") || fallback["payload_bytes"] != payload || live["video_frames"] != json.Number("0") || live["audio_units"] != json.Number("0") || live["payload_bytes"] != json.Number("0") {
 		t.Fatal("группа смешала фактические входы LIVE и FALLBACK", metrics)
 	}
 }
@@ -198,8 +198,8 @@ func TestAcceptancePublicTelemetryMatchesKnownIngressAndNativeWrites(t *testing.
 	// client публикует синтетический RTMP-вход, остающийся неготовым для потребления LIVE.
 	client := acceptanceMonitoringClient(t, f, listener, videoConfig)
 	acceptanceMonitoringBeforeReady(t, client, audioConfig, video, audio, 3)
-	// wantInputBytes содержит строковое число полезных байтов трёх синтетических A/V-пар входа.
-	wantInputBytes := strconv.Itoa(3 * (len(video) + len(audio)))
+	// wantInputBytes содержит точное число полезных байтов трёх синтетических A/V-пар входа.
+	wantInputBytes := json.Number(strconv.Itoa(3 * (len(video) + len(audio))))
 	sessionAcceptanceWait(t, func() bool {
 		// Ожидает завершение передачи конечного источника по файловому маркеру.
 		// err показывает, появился ли маркер окончания подачи конечного источника.
@@ -238,7 +238,7 @@ func TestAcceptancePublicTelemetryMatchesKnownIngressAndNativeWrites(t *testing.
 		media := publicTelemetryMedia(t, outputMetrics)
 		// units содержит число независимо принятых единиц доступа для проверки счётчика выхода.
 		_, units, _ := publicTelemetryWireTotals(t, receiver)
-		return units >= 16 && publicTelemetryUint(t, publicTelemetryObject(t, outputMetrics["counters"])["access_units"]) == units && publicTelemetryUint(t, media["written_bytes"]) == receiver.bytes.Load() && publicTelemetryObject(t, publicTelemetryObject(t, media["rates"])["fps"])["value"] == float64(0)
+		return units >= 16 && publicTelemetryUint(t, publicTelemetryObject(t, outputMetrics["counters"])["access_units"]) == units && publicTelemetryUint(t, media["written_bytes"]) == receiver.bytes.Load() && publicTelemetryObject(t, publicTelemetryObject(t, media["rates"])["fps"])["value"] == json.Number("0")
 	})
 	// input содержит согласованное публичное наблюдение входной публикации до готовности LIVE.
 	input := publicTelemetryObject(t, snapshot["input"])
@@ -246,7 +246,7 @@ func TestAcceptancePublicTelemetryMatchesKnownIngressAndNativeWrites(t *testing.
 	inputMedia := publicTelemetryMedia(t, input["metrics"])
 	// format содержит публичное описание кодеков и размеров входа для проверки AV1/AAC 640×360.
 	format := publicTelemetryObject(t, inputMedia["format"])
-	if input["connected"] != true || inputMedia["video_frames"] != "3" || inputMedia["audio_units"] != "3" || inputMedia["payload_bytes"] != wantInputBytes || format["video_codec"] != "av1" || format["audio_codec"] != "aac" || format["width"] != float64(640) || format["height"] != float64(360) {
+	if input["connected"] != true || inputMedia["video_frames"] != json.Number("3") || inputMedia["audio_units"] != json.Number("3") || inputMedia["payload_bytes"] != wantInputBytes || format["video_codec"] != "av1" || format["audio_codec"] != "aac" || format["width"] != json.Number("640") || format["height"] != json.Number("360") {
 		t.Fatal("REST потерял известный вход до готовности LIVE", input)
 	}
 	// groups содержит наблюдаемые группы согласованного снимка, где ожидается одна группа.
@@ -259,7 +259,7 @@ func TestAcceptancePublicTelemetryMatchesKnownIngressAndNativeWrites(t *testing.
 	// live содержит счётчики потреблённого LIVE для проверки отсутствия смешения с принятыми
 	// входными пакетами.
 	live := publicTelemetryObject(t, publicTelemetryObject(t, group["metrics"])["live_input"])
-	if group["source"] != "FALLBACK" || live["video_frames"] != "0" || live["payload_bytes"] != "0" {
+	if group["source"] != "FALLBACK" || live["video_frames"] != json.Number("0") || live["payload_bytes"] != json.Number("0") {
 		t.Fatal("полученный OBS ошибочно посчитан потреблённым LIVE", group)
 	}
 	publicTelemetryCheckGroup(t, publicTelemetryObject(t, group["metrics"]))
@@ -267,7 +267,7 @@ func TestAcceptancePublicTelemetryMatchesKnownIngressAndNativeWrites(t *testing.
 	// fps содержит измеренное окно частоты кадров после окончания источника для проверки доступного
 	// нулевого значения.
 	fps := publicTelemetryObject(t, publicTelemetryObject(t, publicTelemetryMedia(t, outputMetrics)["rates"])["fps"])
-	if fps["status"] != "available" || fps["value"] != float64(0) || publicTelemetryUint(t, fps["duration_ns"]) == 0 {
+	if fps["status"] != "available" || fps["value"] != json.Number("0") || publicTelemetryUint(t, fps["duration_ns"]) == 0 {
 		t.Fatal("наблюдённый интервал без новых кадров не представлен измеренным нулём", fps)
 	}
 	// seenInput отмечает получение известных входных счётчиков по SSE, seenOutput — проверенных
@@ -291,7 +291,7 @@ func TestAcceptancePublicTelemetryMatchesKnownIngressAndNativeWrites(t *testing.
 				// известной нагрузкой.
 				media := publicTelemetryMedia(t, observed["metrics"])
 				if media["payload_bytes"] == wantInputBytes {
-					if media["video_frames"] != "3" || media["audio_units"] != "3" || observed["connected"] != true {
+					if media["video_frames"] != json.Number("3") || media["audio_units"] != json.Number("3") || observed["connected"] != true {
 						t.Fatal("SSE изменил известные входные AU", observed)
 					}
 					seenInput = true
@@ -302,7 +302,7 @@ func TestAcceptancePublicTelemetryMatchesKnownIngressAndNativeWrites(t *testing.
 			// metrics содержит измерения группы из SSE для проверки 60 кадров заглушки и
 			// нулевого LIVE.
 			metrics := publicTelemetryObject(t, frame.data["group"])
-			if publicTelemetryObject(t, metrics["fallback_input"])["video_frames"] == "60" {
+			if publicTelemetryObject(t, metrics["fallback_input"])["video_frames"] == json.Number("60") {
 				publicTelemetryCheckGroup(t, metrics)
 				seenGroup = true
 			}
@@ -534,7 +534,7 @@ func TestAcceptancePublicTelemetryResyncSnapshotAndResubscribe(t *testing.T) {
 	// at задаёт начало возрастающих времён синтетических GPU-измерений.
 	at := time.Now()
 	// base задаёт счётчик байтов выше точного целочисленного диапазона float64 для проверки
-	// строковой сериализации.
+	// точной числовой сериализации.
 	const base uint64 = 9007199254740993
 	// i задаёт номер одного из двенадцати GPU-наблюдений, переполняющих восьмисобытийный журнал.
 	for i := range uint64(12) {
@@ -547,7 +547,7 @@ func TestAcceptancePublicTelemetryResyncSnapshotAndResubscribe(t *testing.T) {
 	publicTelemetryResync(t, server, stale["cursor"].(string), "gap")
 	// fresh содержит новый снимок после вытеснения с последним GPU-значением и актуальным курсором.
 	fresh := integrationAPIRequest(t, a, "GET", "/events/snapshot", "", 200)
-	if fresh["cursor"] == stale["cursor"] || publicTelemetryGPUValue(t, fresh["gpu"]) != strconv.FormatUint(base+11, 10) {
+	if fresh["cursor"] == stale["cursor"] || publicTelemetryGPUValue(t, fresh["gpu"]) != json.Number(strconv.FormatUint(base+11, 10)) {
 		t.Fatal("новый снимок не восстановил последнее состояние", fresh)
 	}
 	// stream читает события после нового снимка для проверки первого последующего GPU-измерения.
@@ -558,7 +558,7 @@ func TestAcceptancePublicTelemetryResyncSnapshotAndResubscribe(t *testing.T) {
 	}
 	// frame содержит следующее событие GPU, а ok подтверждает его получение после снимка.
 	frame, ok := stream.next(t)
-	if !ok || frame.kind != "gpu" || publicTelemetryGPUValue(t, frame.data["gpu"]) != strconv.FormatUint(base+12, 10) || frame.id == fresh["cursor"] {
+	if !ok || frame.kind != "gpu" || publicTelemetryGPUValue(t, frame.data["gpu"]) != json.Number(strconv.FormatUint(base+12, 10)) || frame.id == fresh["cursor"] {
 		t.Fatal("подписка после снимка потеряла следующее событие", frame)
 	}
 	// lastID сохраняет курсор полученного GPU-события для продолжения через Last-Event-ID.
@@ -571,7 +571,7 @@ func TestAcceptancePublicTelemetryResyncSnapshotAndResubscribe(t *testing.T) {
 	// resumed читает события после lastID через HTTP-заголовок Last-Event-ID.
 	resumed := publicTelemetrySubscribe(t, server, "/events", lastID)
 	frame, ok = resumed.next(t)
-	if !ok || frame.kind != "gpu" || publicTelemetryGPUValue(t, frame.data["gpu"]) != strconv.FormatUint(base+13, 10) || frame.id == lastID {
+	if !ok || frame.kind != "gpu" || publicTelemetryGPUValue(t, frame.data["gpu"]) != json.Number(strconv.FormatUint(base+13, 10)) || frame.id == lastID {
 		t.Fatal("Last-Event-ID повторил прежнее либо пропустил следующее событие", frame)
 	}
 	resumed.close(t)
@@ -608,7 +608,7 @@ func TestAcceptancePublicTelemetryResyncSnapshotAndResubscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 	frame, ok = newStream.next(t)
-	if !ok || frame.kind != "gpu" || publicTelemetryGPUValue(t, frame.data["gpu"]) != strconv.FormatUint(base+14, 10) {
+	if !ok || frame.kind != "gpu" || publicTelemetryGPUValue(t, frame.data["gpu"]) != json.Number(strconv.FormatUint(base+14, 10)) {
 		// encoded содержит JSON неудачно проверенного SSE-кадра для диагностики теста.
 		encoded, _ := json.Marshal(frame.data)
 		t.Fatalf("новая подписка после reset не получила новое состояние: %s", encoded)

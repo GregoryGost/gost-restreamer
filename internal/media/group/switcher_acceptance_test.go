@@ -3,7 +3,6 @@ package group
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"errors"
 	"math/big"
 	"testing"
@@ -16,23 +15,18 @@ import (
 
 // Возвращает полный профиль H.264/AAC и конечные бюджеты переключения для приёмочных тестов.
 func switchAcceptanceConfig() SwitcherConfig {
-	return SwitcherConfig{Profile: core.GroupProfile{Mode: core.ModeTranscode, Format: core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecH264, Width: 128, Height: 128, FrameRate: core.FrameRate{Numerator: 30, Denominator: 1}, CodecProfile: "high", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "unspecified", Transfer: "unspecified", Matrix: "unspecified"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 200000, MaxBitrateBPS: 300000, BufferBits: 400000, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 64000}}, Watchdog: media.WatchdogPolicy{VideoTimeout: time.Second, AudioTimeout: time.Second, RecoveryWindow: 100 * time.Millisecond, KeyframeTimeout: time.Second}, Queue: media.QueueLimits{MaxPackets: 100, MaxBytes: 1 << 20, MaxPacketBytes: 1 << 16, MaxConfigBytes: 1 << 12, ResyncTimeout: time.Second}, Router: media.RouterLimits{MaxConsumers: 4, MaxRetainedBytes: 5 << 20, MaxConfigBytes: 1 << 12}, MaxAVSkew: 100 * time.Millisecond, MaxTransitionGap: 100 * time.Millisecond}
+	return SwitcherConfig{Profile: core.GroupProfile{Mode: core.ModeTranscode, Encoding: core.DefaultEncoding(core.ModeTranscode, core.VideoEncoderNVENC, core.RateControlVBR), LiveAudioMode: core.LiveAudioTranscode, Format: core.MediaFormat{Video: core.VideoFormat{Codec: core.CodecH264, Width: 128, Height: 128, FrameRate: core.FrameRate{Numerator: 30, Denominator: 1}, CodecProfile: "high", PixelFormat: "yuv420p", BitDepth: 8, Color: core.ColorInfo{Range: "limited", Primaries: "bt709", Transfer: "bt709", Matrix: "bt709"}}, Audio: core.AudioFormat{Codec: core.CodecAAC, CodecProfile: "LC", SampleRateHz: 48000, Channels: 2, ChannelLayout: "stereo"}}, VideoEncoding: core.VideoEncoding{TargetBitrateBPS: 200000, MaxBitrateBPS: 300000, BufferBits: 400000, GOPFrames: 30, ClosedGOP: true}, AudioEncoding: core.AudioEncoding{BitrateBPS: 64000}}, Watchdog: media.WatchdogPolicy{VideoTimeout: time.Second, AudioTimeout: time.Second, RecoveryWindow: 100 * time.Millisecond, KeyframeTimeout: time.Second}, Queue: media.QueueLimits{MaxPackets: 100, MaxBytes: 1 << 20, MaxPacketBytes: 1 << 16, MaxConfigBytes: 1 << 12, ResyncTimeout: time.Second}, Router: media.RouterLimits{MaxConsumers: 4, MaxRetainedBytes: 5 << 20, MaxConfigBytes: 1 << 12}, MaxAVSkew: 100 * time.Millisecond, MaxTransitionGap: 100 * time.Millisecond}
 }
 
 // Создаёт согласованную пару конфигураций H.264/AAC с заданными эпохой и ревизией и контрольными
 // заголовками.
 func switchAcceptanceConfigs(t *testing.T, epoch, revision uint64) (media.CodecConfig, media.CodecConfig) {
 	t.Helper()
-	// Заголовки libx264 из транспортного тестового набора описывают High/yuv420p, 128×128, 30 FPS.
-	// headers содержит контрольный avcC; err сохраняет результаты декодирования заголовков и
-	// создания конфигураций.
-	headers, err := hex.DecodeString("0164000bffe100186764000bacd942046c0440000003004000000f03c50a658001000668ebe3cb22c0fdf8f800")
-	if err != nil {
-		t.Fatal(err)
-	}
+	// headers содержит синтетический avcC High/yuv420p, 128×128, 30 FPS с явным bt709.
+	headers := acceptanceVideoHeaders(core.CodecH264, 128, 128, 30)
 	// f содержит ожидаемый контрольный H.264/AAC-формат.
 	f := switchAcceptanceConfig().Profile.Format
-	// v содержит H.264-конфигурацию заданной эпохи и ревизии со шкалой 1/30.
+	// v содержит H.264-конфигурацию заданной эпохи и ревизии со шкалой 1/30; err сообщает отказ создания.
 	v, err := media.NewCodecConfig(media.CodecConfigInfo{Track: media.TrackVideo, SourceEpoch: epoch, Revision: revision, TimeBase: media.TimeBase{Numerator: 1, Denominator: 30}, Video: f.Video}, headers)
 	if err != nil {
 		t.Fatal(err)
