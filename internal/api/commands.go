@@ -90,7 +90,7 @@ func (a *API) output(ctx context.Context, sessionID, outputID string) (core.Sess
 		return o, e
 	}
 	if o.SessionID != core.ID(sessionID) {
-		return core.SessionOutput{}, core.ErrNotFound
+		return core.SessionOutput{}, reasonError(core.ErrNotFound, "nested_resource_not_found", "")
 	}
 	return o, nil
 }

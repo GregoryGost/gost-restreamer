@@ -39,6 +39,7 @@ func (s *Service) FailVariant(context.Context, ID, uint64, string) error {
 // RenameAsset меняет только имя заглушки при ожидаемой ревизии, проверяя значение и увеличивая
 // ревизию.
 func (s *Service) RenameAsset(ctx context.Context, id ID, expected uint64, name string) (FallbackAsset, error) {
+	// result возвращает переименованную заглушку только после успешной условной записи.
 	var result FallbackAsset
 	// err сообщает об ошибке транзакционного переименования заглушки.
 	err := s.uow.Write(ctx, func(r Repositories) error {
@@ -51,7 +52,7 @@ func (s *Service) RenameAsset(ctx context.Context, id ID, expected uint64, name 
 			return e
 		}
 		if a.Revision != expected {
-			return ErrConflict
+			return WithFailureReason(ErrConflict, FailureReason{Code: FailureRevisionConflict, Field: FailureFieldRevision, Context: FailureContext{AssetID: a.ID}})
 		}
 		a.Name = name
 		if e = a.Validate(); e != nil {
@@ -83,7 +84,7 @@ func (s *Service) DeleteVariant(ctx context.Context, id ID, expected uint64) err
 			return e
 		}
 		if v.Revision != expected {
-			return ErrConflict
+			return WithFailureReason(ErrConflict, FailureReason{Code: FailureRevisionConflict, Field: FailureFieldRevision, Context: FailureContext{AssetID: v.AssetID, GenerationID: v.GenerationID, VariantID: v.ID}})
 		}
 		// a содержит заглушку-владельца для проверки current/pending поколения варианта.
 		a, e := r.Artifacts.Asset(ctx, v.AssetID)
@@ -91,7 +92,7 @@ func (s *Service) DeleteVariant(ctx context.Context, id ID, expected uint64) err
 			return e
 		}
 		if a.CurrentGenerationID == v.GenerationID || a.PendingGenerationID == v.GenerationID {
-			return ErrInUse
+			return WithFailureReason(ErrInUse, FailureReason{Code: FailureResourceInUse, Context: FailureContext{AssetID: a.ID, GenerationID: v.GenerationID, VariantID: v.ID}})
 		}
 		return fmt.Errorf("%w: удаляется только полный комплект поколения", ErrInUse)
 	})
@@ -111,10 +112,10 @@ func (s *Service) DeleteAsset(ctx context.Context, id ID, expected uint64) error
 			return e
 		}
 		if a.Revision != expected {
-			return ErrConflict
+			return WithFailureReason(ErrConflict, FailureReason{Code: FailureRevisionConflict, Field: FailureFieldRevision, Context: FailureContext{AssetID: a.ID}})
 		}
 		if a.PendingGenerationID != "" {
-			return ErrInUse
+			return WithFailureReason(ErrInUse, FailureReason{Code: FailureResourceInUse, Context: FailureContext{AssetID: a.ID}})
 		}
 		// Снятие текущего поколения и удаление всего комплекта откатываются при любом удержании.
 		// old сохраняет ожидаемую ревизию перед снятием текущего поколения.
@@ -138,7 +139,7 @@ func (s *Service) DeleteAsset(ctx context.Context, id ID, expected uint64) error
 			// очистку.
 			for _, g := range gs {
 				if g.State.Active() || g.Issued || g.CleanupPending {
-					return ErrInUse
+					return WithFailureReason(ErrInUse, FailureReason{Code: FailureResourceInUse, Context: FailureContext{AssetID: a.ID, GenerationID: g.ID}})
 				}
 				if e = queueGenerationCleanup(ctx, r, g); e != nil {
 					return e
@@ -180,15 +181,18 @@ func (s *Service) DeleteAsset(ctx context.Context, id ID, expected uint64) error
 func exactManifest(ctx context.Context, r Repositories, policy FallbackPolicy, profile GroupProfile, binding PreparedBinding) (ArtifactManifest, error) {
 	// err сообщает об ошибке проверки политики выбранной заглушки.
 	if err := policy.Validate(); err != nil {
-		return ArtifactManifest{}, fmt.Errorf("%w: заглушка не настроена", ErrNotReady)
+		return ArtifactManifest{}, WithFailureReason(fmt.Errorf("%w: заглушка не настроена", ErrNotReady), FailureReason{Code: FailureFallbackNotConfigured, Field: FailureFieldFallback})
 	}
 	// a содержит заглушку и указатель её текущего поколения, а err — результат их чтения.
 	a, err := r.Artifacts.Asset(ctx, policy.AssetID)
 	if err != nil {
 		return ArtifactManifest{}, err
 	}
-	if a.CurrentGenerationID == "" || binding.GenerationID != a.CurrentGenerationID {
-		return ArtifactManifest{}, ErrNotReady
+	if a.CurrentGenerationID == "" {
+		return ArtifactManifest{}, WithFailureReason(ErrNotReady, FailureReason{Code: FailureFallbackNotPrepared, Context: FailureContext{AssetID: a.ID}})
+	}
+	if binding.GenerationID != a.CurrentGenerationID {
+		return ArtifactManifest{}, WithFailureReason(ErrNotReady, FailureReason{Code: FailureFallbackVariantNotReady, Context: FailureContext{AssetID: a.ID}})
 	}
 	// g содержит поколение, точно указанное привязкой запуска.
 	g, err := r.Artifacts.Generation(ctx, binding.GenerationID)
@@ -196,7 +200,7 @@ func exactManifest(ctx context.Context, r Repositories, policy FallbackPolicy, p
 		return ArtifactManifest{}, err
 	}
 	if g.AssetID != a.ID || g.State != PreparationPublished {
-		return ArtifactManifest{}, ErrNotReady
+		return ArtifactManifest{}, WithFailureReason(ErrNotReady, FailureReason{Code: FailureFallbackNotPrepared, Context: FailureContext{AssetID: a.ID, GenerationID: g.ID}})
 	}
 	// v содержит конкретный вариант, который сверяется с поколением и полным профилем.
 	v, err := r.Artifacts.Variant(ctx, binding.VariantID)
@@ -210,7 +214,7 @@ func exactManifest(ctx context.Context, r Repositories, policy FallbackPolicy, p
 		return ArtifactManifest{}, err
 	}
 	if v.State != VariantReady || v.AssetID != a.ID || v.GenerationID != g.ID || v.SourceHash != g.SourceHash || v.GeneratorVersion != binding.GeneratorVersion || v.GeneratorVersion != g.GeneratorVersion || v.ProfileKey != key || !bytes.Equal(v.CanonicalProfile, b) || !v.Profile.Equal(profile) {
-		return ArtifactManifest{}, fmt.Errorf("%w: вариант не соответствует точному поколению и профилю", ErrNotReady)
+		return ArtifactManifest{}, WithFailureReason(fmt.Errorf("%w: вариант не соответствует точному поколению и профилю", ErrNotReady), FailureReason{Code: FailureFallbackVariantNotReady, Context: FailureContext{AssetID: a.ID, GenerationID: g.ID, VariantID: v.ID}})
 	}
 	// manifest содержит точную независимую копию доказательства файла для проверки перед выдачей.
 	manifest := ArtifactManifest{GenerationID: g.ID, VerifiedFormat: v.VerifiedFormat, VariantID: v.ID, AssetID: a.ID, SourceHash: v.SourceHash, Profile: v.Profile, ProfileKey: v.ProfileKey, CanonicalProfile: bytes.Clone(v.CanonicalProfile), GeneratorVersion: v.GeneratorVersion, ManagedPath: v.ManagedPath, SizeBytes: v.SizeBytes, ContentHash: v.ContentHash}

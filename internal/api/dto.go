@@ -68,7 +68,7 @@ func revision(s string) (uint64, error) {
 	// нуля.
 	v, err := parseDecimal(s)
 	if err != nil || v == 0 {
-		return 0, core.ErrInvalid
+		return 0, reasonError(core.ErrInvalid, "invalid_field", "expected_revision")
 	}
 	return v, nil
 }
@@ -132,21 +132,26 @@ func recordDTO(r core.Record) RecordDTO {
 	return RecordDTO{string(r.ID), Decimal(r.Revision), r.CreatedAt.UTC(), r.UpdatedAt.UTC()}
 }
 
-// FailureDTO сообщает безопасный код неуспешной операции без внутренней диагностики.
+// FailureDTO сообщает безопасную причину долговечного отказа и отдельный следующий шаг.
 type FailureDTO struct {
 	// Code содержит стабильное публичное обозначение причины неуспеха.
-	Code string `json:"code" enum:"session_failed,session_interrupted,command_failed,command_interrupted,preparation_failed,preparation_interrupted,observation_failed"`
-	// Message содержит безопасное пояснение с указанием журнала приложения для подробностей.
+	Code string `json:"code"`
+	// Message объясняет проверенную причину без внутренней диагностики.
 	Message string `json:"message"`
+	// Action предлагает подготовленный следующий шаг, если он достоверно известен.
+	Action string `json:"action,omitempty"`
+	// Field указывает известное публичное поле, связанное с отказом.
+	Field string `json:"field,omitempty"`
+	// Context сохраняет публичные идентификаторы исходной причины, независимо от текущих настроек.
+	Context *ProblemContextDTO `json:"context,omitempty"`
 }
 
-// failure создаёт безопасное описание неуспешной операции по коду; пустой код означает отсутствие
-// ошибки.
+// failure сохраняет прежнее общее объяснение старых данных, не разбирая диагностическую строку.
 func failure(code string) *FailureDTO {
 	if code == "" {
 		return nil
 	}
-	return &FailureDTO{code, "Операция не завершена успешно. Подробности доступны в журнале приложения."}
+	return &FailureDTO{Code: code, Message: "Операция не завершена успешно. Подробности доступны в журнале приложения."}
 }
 
 // WatchdogDTO передаёт сроки контроля источника точными десятичными наносекундами.
@@ -461,10 +466,10 @@ func sessionDTO(s core.Session) SessionDTO {
 	// f содержит безопасную терминальную причину Session либо nil при отсутствии отказа.
 	var f *FailureDTO
 	if s.State == core.SessionFailed {
-		f = failure("session_failed")
+		f = failureReasonDTO(s.FailureReason, "session_failed")
 	}
 	if s.State == core.SessionInterrupted {
-		f = failure("session_interrupted")
+		f = failureReasonDTO(s.FailureReason, "session_interrupted")
 	}
 	return SessionDTO{recordDTO(s.Record), string(s.StreamID), string(s.State), s.DesiredPaused, streamDTO(s.Snapshot.Stream), groups, utcPointer(s.EndedAt), f}
 }
@@ -522,10 +527,10 @@ func receiptDTO(r core.CommandReceipt) ReceiptDTO {
 	// f содержит безопасный отказ FAILED или INTERRUPTED без внутренней диагностики квитанции.
 	var f *FailureDTO
 	if r.Status == core.CommandFailed {
-		f = failure("command_failed")
+		f = failureReasonDTO(r.FailureReason, "command_failed")
 	}
 	if r.Status == core.CommandInterrupted {
-		f = failure("command_interrupted")
+		f = failureReasonDTO(r.FailureReason, "command_interrupted")
 	}
 	return ReceiptDTO{recordDTO(r.Record), r.RequestID, string(r.Kind), string(r.TargetID), string(r.SessionID), string(r.OutputID), string(r.Status), f}
 }

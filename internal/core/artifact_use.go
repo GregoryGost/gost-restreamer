@@ -12,7 +12,7 @@ func (m ArtifactManifest) ValidateUsable() error {
 		return err
 	}
 	if m.GeneratorVersion != CurrentFallbackGeneratorVersion || CompatibleProfileFormat(m.VerifiedFormat, m.Profile) != nil {
-		return ErrNotReady
+		return WithFailureReason(ErrNotReady, FailureReason{Code: FailureFallbackVariantNotReady, Context: FailureContext{AssetID: m.AssetID, GenerationID: m.GenerationID, VariantID: m.VariantID}})
 	}
 	return nil
 }

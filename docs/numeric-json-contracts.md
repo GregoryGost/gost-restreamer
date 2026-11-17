@@ -75,7 +75,7 @@
 | `watchdog.recovery_window_ns` | `Decimal` → `time.Duration` / `integer` | Окно восстановления LIVE, `1…D.max` нс. |
 | `watchdog.keyframe_timeout_ns` | `Decimal` → `time.Duration` / `integer` | Ожидание ключевого кадра, `1…D.max` нс. |
 | `size_bytes` Asset/Generation/Variant | `Decimal` / `integer` | Размер файла в байтах, `U64`; исходный 0 допустим по состоянию, готовый Variant требует положительный размер. |
-| Problem Details `status` | `int` / `integer` | Числовой код HTTP-ошибки; остальные поля ошибки строковые. |
+| Problem Details `status` | `int` / `integer` | Числовой код HTTP-ошибки. `code`, `detail`, `action` и `field` — строки; необязательный `context` содержит строковые идентификаторы. Числовых «ожидалось / получено» в контексте ошибки нет. |
 
 ## Полный профиль и медиаформат
 

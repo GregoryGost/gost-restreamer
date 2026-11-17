@@ -564,6 +564,8 @@ type Session struct {
 	CleanupPending bool
 	// Failure сохраняет итоговую причину терминального отказа или прерывания запуска.
 	Failure string
+	// FailureReason сохраняет доказанную публичную причину; при nil поле отсутствует в сериализованной записи.
+	FailureReason *FailureReason `json:",omitempty"`
 	// EndedAt содержит время завершения запуска либо nil до его завершения.
 	EndedAt *time.Time
 }
@@ -688,6 +690,8 @@ type CommandReceipt struct {
 	Status CommandStatus
 	// Failure сохраняет причину неуспешного результата команды.
 	Failure string
+	// FailureReason сохраняет машинную причину результата независимо от диагностической строки.
+	FailureReason *FailureReason `json:",omitempty"`
 }
 
 // ExecutionFence идентифицирует точную команду и попытку исполнения сессии или выхода.

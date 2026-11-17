@@ -124,7 +124,7 @@ func runtimeIdleForPreparation(ctx context.Context, r Repositories) error {
 		// session содержит очередной запуск для проверки допустимости подготовки.
 		for _, session := range sessions {
 			if session.State.Active() || session.Issued || session.CleanupPending {
-				return ErrInUse
+				return WithFailureReason(ErrInUse, FailureReason{Code: FailureResourceInUse, Context: FailureContext{StreamID: session.StreamID, SessionID: session.ID}})
 			}
 		}
 		if len(sessions) < q.Limit {
@@ -197,7 +197,7 @@ func preparationIdleForRuntime(ctx context.Context, r Repositories, incarnation 
 			return err
 		}
 		if len(gs) > 0 {
-			return ErrNotReady
+			return WithFailureReason(ErrNotReady, FailureReason{Code: FailurePreparationActive, Context: FailureContext{AssetID: gs[0].AssetID, GenerationID: gs[0].ID}})
 		}
 	}
 	return nil
@@ -246,7 +246,7 @@ func (s *Service) ReservePreparation(ctx context.Context, request PreparationReq
 			return e
 		}
 		if a.Revision != request.ExpectedRevision {
-			return ErrConflict
+			return WithFailureReason(ErrConflict, FailureReason{Code: FailureRevisionConflict, Field: FailureFieldRevision, Context: FailureContext{AssetID: a.ID}})
 		}
 		if a.PendingGenerationID != "" {
 			return ErrConflict
@@ -843,7 +843,11 @@ func queueGenerationCleanup(ctx context.Context, r Repositories, g FallbackGener
 // DeleteGeneration при ожидаемой ревизии удаляет только невыбранное терминальное поколение без
 // незавершённой работы, заранее сохраняя файловую очистку; удержания репозитория препятствуют
 // удалению.
+// s предоставляет транзакции, ctx ограничивает запись, id выбирает поколение, expected задаёт
+// ожидаемую ревизию. Конфликт содержит ID прочитанного поколения и его заглушки без изменения данных.
 func (s *Service) DeleteGeneration(ctx context.Context, id ID, expected uint64) error {
+	// r предоставляет репозитории функции, которая сверяет поколение и удаляет его комплект
+	// в одной транзакции вместе с постановкой файлов на очистку.
 	return s.uow.Write(ctx, func(r Repositories) error {
 		// В транзакции запрещает удаление текущего, ожидающего, активного или неочищенного поколения, ставит
 		// очистку файлов и удаляет варианты и поколение.
@@ -854,8 +858,8 @@ func (s *Service) DeleteGeneration(ctx context.Context, id ID, expected uint64) 
 		if e != nil {
 			return e
 		}
-		if g.Revision != expected {
-			return ErrConflict
+		if e = checkRevision(g.Revision, expected, FailureContext{GenerationID: g.ID, AssetID: g.AssetID}); e != nil {
+			return e
 		}
 		// a содержит стабильную заглушку и её указатели поколений.
 		a, e := r.Artifacts.Asset(ctx, g.AssetID)

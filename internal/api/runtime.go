@@ -66,12 +66,12 @@ func encodeCursor(c core.RuntimeCursor) string {
 // incarnation отдельно от пользовательских данных.
 func decodeCursor(s string, current core.RuntimeCursor) (core.RuntimeCursor, error) {
 	if s == "" || len(s) > 512 {
-		return core.RuntimeCursor{}, badRequest()
+		return core.RuntimeCursor{}, reasonError(badRequest(), "invalid_cursor", "cursor")
 	}
 	// b содержит декодированные байты курсора; e содержит отказ строгого base64url-декодирования.
 	b, e := base64.RawURLEncoding.Strict().DecodeString(s)
 	if e != nil {
-		return core.RuntimeCursor{}, badRequest()
+		return core.RuntimeCursor{}, reasonError(badRequest(), "invalid_cursor", "cursor")
 	}
 	// v принимает публичные поля курсора для строгой проверки версии, эпохи и обязательной
 	// последовательности.
@@ -88,7 +88,7 @@ func decodeCursor(s string, current core.RuntimeCursor) (core.RuntimeCursor, err
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if dec.Decode(&v) != nil || dec.Decode(new(any)) != io.EOF || v.Version != 1 || v.Sequence == nil || v.Epoch == "" || len(v.Epoch) > 128 || core.ID(v.Epoch).Validate() != nil {
-		return core.RuntimeCursor{}, badRequest()
+		return core.RuntimeCursor{}, reasonError(badRequest(), "invalid_cursor", "cursor")
 	}
 	return core.RuntimeCursor{Incarnation: current.Incarnation, Epoch: core.ID(v.Epoch), Sequence: uint64(*v.Sequence)}, nil
 }
@@ -103,6 +103,8 @@ type requestState struct {
 	// cleanup освобождает ресурсы, занятые при предварительной проверке запроса, после возврата
 	// обработчика.
 	cleanup func()
+	// problem удерживает типизированный отказ resolver до преобразования ответа текущего запроса.
+	problem huma.StatusError
 }
 
 // EventsInput принимает публичную позицию подписки из query или Last-Event-ID и переносит подготовленную
@@ -130,7 +132,10 @@ func (i *EventsInput) Resolve(ctx huma.Context) []error {
 	a := state.api
 	// e содержит отказ предварительной проверки курсора, источника событий или SSE-транспорта.
 	if e := a.preflightEvents(ctx, i); e != nil {
-		return []error{a.problem(e)}
+		// problem сохраняет типизированное представление до стирающего тип resolver-пути Huma.
+		problem := a.problem(e)
+		state.problem, _ = problem.(huma.StatusError)
+		return []error{problem}
 	}
 	return nil
 }
@@ -140,7 +145,7 @@ func (i *EventsInput) Resolve(ctx huma.Context) []error {
 // зарегистрированной очисткой запроса.
 func (a *API) preflightEvents(ctx huma.Context, i *EventsInput) error {
 	if i.Cursor != "" && i.LastEventID != "" && i.Cursor != i.LastEventID {
-		return badRequest()
+		return reasonError(badRequest(), "sse_cursor_conflict", "cursor")
 	}
 	// requested выбирает позицию из query или заголовка после проверки их согласованности.
 	requested := i.Cursor
@@ -170,7 +175,7 @@ func (a *API) preflightEvents(ctx huma.Context, i *EventsInput) error {
 		base, e = a.config.Core.RuntimeEvents(op, cursor, a.config.Limits.SSEPageSize)
 		if e != nil {
 			if errors.Is(e, core.ErrInvalid) {
-				return badRequest()
+				return reasonError(badRequest(), "invalid_cursor", "cursor")
 			}
 			return e
 		}
@@ -180,18 +185,23 @@ func (a *API) preflightEvents(ctx huma.Context, i *EventsInput) error {
 	// w содержит HTTP-транспорт, у которого проверяются Flush и сроки записи.
 	_, w := humachi.Unwrap(ctx)
 	if !supportsFlush(w) {
-		return unavailable()
+		return reasonError(unavailable(), "sse_transport_unavailable", "")
 	}
 	// control устанавливает и сбрасывает конечный срок записи SSE через HTTP-транспорт.
 	control := http.NewResponseController(w)
 	if e = control.SetWriteDeadline(time.Now().Add(a.config.Limits.SSEWriteTimeout)); e != nil {
-		return unavailable()
+		return reasonError(unavailable(), "sse_transport_unavailable", "")
 	}
 	a.mu.Lock()
-	if a.closed || a.streams >= a.config.Limits.SSEClients {
+	if a.closed {
 		a.mu.Unlock()
 		_ = control.SetWriteDeadline(time.Time{})
-		return unavailable()
+		return reasonError(unavailable(), "api_closed", "")
+	}
+	if a.streams >= a.config.Limits.SSEClients {
+		a.mu.Unlock()
+		_ = control.SetWriteDeadline(time.Time{})
+		return reasonError(unavailable(), "sse_client_limit", "")
 	}
 	a.streams++
 	a.mu.Unlock()
@@ -304,6 +314,7 @@ func (a *API) registerRuntime() {
 		string(core.RuntimeRemovedEvent): eventSchema, string(core.RuntimeAttemptEvent): eventSchema,
 		"resync_required": resyncSchema,
 	}}
+	a.setProblemResponses(&op)
 	huma.Register(a.huma, op, func(_ context.Context, i *EventsInput) (*huma.StreamResponse, error) {
 		// Создаёт потоковый ответ из страницы событий, подготовленной до отправки заголовков.
 
@@ -316,6 +327,7 @@ func (a *API) registerRuntime() {
 			a.streamEvents(ctx, page)
 		}}, nil
 	})
+	a.setProblemResponses(&op)
 }
 
 // streamEvents передаёт ограниченные страницы событий без удержания RuntimeAuthority во время сети.

@@ -138,10 +138,12 @@ DTO, схемы и единая доменная проверка описыва
 | Те же компоненты `.reason` | Тот же поставщик, проверка HTTP-границы | `not_configured`, `executable_unavailable`, `executable_resolved`, `hardware_not_verified`, `unsupported_platform`. Неизвестный результат поставщика не сериализуется как допустимая возможность. |
 | `GET /health/live`, `/health/ready`: `status` | API | `live`, `ready`; неуспешная readiness возвращает Problem Details с 503. |
 | Те же успешные ответы: `reason` | API | `""`. |
-| Любой `failure.code` истории/квитанций/наблюдений | Безопасная HTTP-проекция | `session_failed`, `session_interrupted`, `command_failed`, `command_interrupted`, `preparation_failed`, `preparation_interrupted`, `observation_failed`. При отсутствии failure весь объект null. |
+| `failure.code` Session и квитанций | Сохранённая типизированная причина и безопасная HTTP-проекция | Предметные коды из [каталога ошибок](api-error-contracts.md); для старого результата без причины — `session_failed`, `session_interrupted`, `command_failed`, `command_interrupted`. При отсутствии failure весь объект null. |
+| `failure.code` подготовки и наблюдений | Безопасная HTTP-проекция | `preparation_failed`, `preparation_interrupted`, `observation_failed`. Исходная диагностическая строка не превращается в новый код. |
+| Problem Details `.code` любого маршрута | Каталог публичных ошибок API | Подготовленные коды разбора, состояния, доступности и предметных причин из [каталога ошибок](api-error-contracts.md); неизвестный внутренний отказ — `internal_error`. |
 | Ошибка полного профиля `.code` | `core.ProfileError.Code()` и безопасная HTTP-проекция | `invalid_profile`, `invalid_custom`, `duplicate_custom`, `custom_conflict`, `unknown_custom`. |
 
-`message`, `title`, `detail`, `field`, `type` и `instance` ошибок сохраняют своё назначение пояснения, пути либо URI, а не превращаются в перечисления. Внешняя диагностика и отклонённые значения в ответ не переносятся. `name`, ID, публикационные ключи, stream keys, endpoint, platform, cursor и даты также не являются enum.
+`message`, `title`, `detail`, `action`, `field`, `type` и `instance` ошибок сохраняют своё назначение пояснения, пути либо URI. `detail` и `failure.message` объясняют причину, отдельное необязательное `action` подсказывает достоверно известный следующий шаг. `field` содержит только проверенное публичное имя, а не произвольный присланный ключ. Необязательный `context` состоит из известных строковых ID фиксированных видов; он не является словарём произвольной диагностики. Внешние ошибки и отклонённые значения в ответ не переносятся. `name`, ID, публикационные ключи, stream keys, endpoint, platform, cursor и даты также не являются enum.
 
 ## Граница формата хранилища
 

@@ -120,7 +120,11 @@ func (m *Manager) cleanupRuntime(ctx context.Context, intent core.CleanupIntent)
 				}
 			}
 			m.mu.Lock()
-			if m.sessions[intent.SessionID] == node {
+			node.mu.Lock()
+			// retirementPending удерживает исходный отказ до подтверждения результата команды.
+			retirementPending := node.retirementNeeded
+			node.mu.Unlock()
+			if m.sessions[intent.SessionID] == node && !retirementPending {
 				delete(m.sessions, intent.SessionID)
 			}
 			m.mu.Unlock()
@@ -250,11 +254,11 @@ func (m *Manager) advanceRecovery(ctx context.Context) {
 			node := m.sessions[probe.intent.SessionID]
 			if node != nil {
 				node.mu.Lock()
-				// joined сохраняет признак уже завершённой очистки узла для допустимого
-				// удаления его из Manager.
-				joined := node.joined
+				// joined подтверждает физическую очистку; retirementPending удерживает
+				// узел до подтверждённого долговечного результата команды.
+				joined, retirementPending := node.joined, node.retirementNeeded
 				node.mu.Unlock()
-				if joined {
+				if joined && !retirementPending {
 					delete(m.sessions, probe.intent.SessionID)
 				}
 			}

@@ -165,6 +165,10 @@ func (s OutputSnapshot) Validate() error {
 // Validate проверяет запись и снимок Session, положительный Lifecycle и владельца; Failure разрешён
 // только в терминальном состоянии.
 func (s Session) Validate() error {
+	// err отклоняет неизвестную причину и её наличие вне результата отказа или прерывания.
+	if err := validateResultReason(s.FailureReason, s.Failure, s.State == SessionFailed || s.State == SessionInterrupted, s.State == SessionInterrupted); err != nil {
+		return err
+	}
 	if s.Failure != "" && !s.State.Terminal() {
 		return ErrInvalid
 	}
@@ -216,6 +220,10 @@ func (o SessionOutput) Validate() error {
 // Validate проверяет запись, вид и статус команды, идентификаторы и SHA-256 точных байтов Identity;
 // выходная команда требует положительного поколения.
 func (c CommandReceipt) Validate() error {
+	// err проверяет optional причину независимо от диагностической строки старых записей.
+	if err := c.ValidateFailureReason(); err != nil {
+		return err
+	}
 	// err сообщает об ошибке проверки общей записи квитанции.
 	if err := c.Record.Validate(); err != nil {
 		return err

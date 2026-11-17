@@ -12,6 +12,8 @@ type Completion struct {
 	Success bool
 	// Failure содержит обязательное объяснение неуспешного результата.
 	Failure string
+	// FailureReason передаёт необязательную проверенную причину; Complete сохраняет собственную копию.
+	FailureReason *FailureReason
 }
 
 // CleanupFence фиксирует точную принадлежность очищаемого исполнения или файла.
@@ -246,6 +248,7 @@ func (s *Service) MarkIssued(ctx context.Context, f ExecutionFence) error {
 // отзыв неуспешного выхода, квитанция и событие записываются вместе; успех выхода не создаёт
 // наблюдение PUBLISHING.
 func (s *Service) Complete(ctx context.Context, f ExecutionFence, result Completion) error {
+	result.FailureReason = CloneFailureReason(result.FailureReason)
 	return s.uow.Write(ctx, func(r Repositories) error {
 		// В транзакции принимает результат только актуальной попытки, обновляет жизненный цикл и квитанцию,
 		// при отказе отзывает намерение и сохраняет необходимость очистки; успех выхода не создаёт наблюдаемое
@@ -262,6 +265,14 @@ func (s *Service) Complete(ctx context.Context, f ExecutionFence, result Complet
 		}
 		if !result.Success && result.Failure == "" {
 			return fmt.Errorf("%w: требуется причина отказа", ErrInvalid)
+		}
+		if result.FailureReason != nil {
+			if result.Success {
+				return ErrInvalid
+			}
+			if err = validateResultReason(result.FailureReason, result.Failure, true, false); err != nil {
+				return err
+			}
 		}
 		switch c.Kind {
 		case CommandStartSession:
@@ -281,6 +292,7 @@ func (s *Service) Complete(ctx context.Context, f ExecutionFence, result Complet
 				}
 				session.State = SessionFailed
 				session.Failure = result.Failure
+				session.FailureReason = CloneFailureReason(result.FailureReason)
 				// now содержит время окончательного отказа запуска в UTC с
 				// микросекундной точностью.
 				now := time.Now().UTC().Truncate(time.Microsecond)
@@ -304,6 +316,7 @@ func (s *Service) Complete(ctx context.Context, f ExecutionFence, result Complet
 			} else {
 				session.State = SessionFailed
 				session.Failure = result.Failure
+				session.FailureReason = CloneFailureReason(result.FailureReason)
 			}
 			// now содержит время завершения остановки сессии в UTC.
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -370,6 +383,7 @@ func (s *Service) Complete(ctx context.Context, f ExecutionFence, result Complet
 		} else {
 			c.Status = CommandFailed
 			c.Failure = result.Failure
+			c.FailureReason = CloneFailureReason(result.FailureReason)
 		}
 		c.Record, err = revise(c.Record)
 		if err != nil {
@@ -538,6 +552,7 @@ func (s *Service) Recover(ctx context.Context) error {
 				}
 				session.State = SessionInterrupted
 				session.Failure = "Потерян владелец исполнения"
+				session.FailureReason = &FailureReason{Code: FailureExecutionInterrupted, Context: FailureContext{StreamID: session.StreamID, SessionID: session.ID}}
 				// now содержит время фиксации прерывания прежнего запуска.
 				now := time.Now().UTC().Truncate(time.Microsecond)
 				session.EndedAt = &now
@@ -577,6 +592,7 @@ func (s *Service) Recover(ctx context.Context) error {
 				old := c.Revision
 				c.Status = CommandInterrupted
 				c.Failure = "Потерян владелец исполнения"
+				c.FailureReason = &FailureReason{Code: FailureExecutionInterrupted, Context: FailureContext{SessionID: c.SessionID, OutputID: c.OutputID, CommandID: c.ID}}
 				c.Record, err = revise(c.Record)
 				if err != nil {
 					return err
@@ -620,6 +636,7 @@ func settleSessionStops(ctx context.Context, r Repositories, sessionID, exclude 
 			} else {
 				c.Status = CommandFailed
 				c.Failure = result.Failure
+				c.FailureReason = CloneFailureReason(result.FailureReason)
 			}
 			c.Record, err = revise(c.Record)
 			if err != nil {

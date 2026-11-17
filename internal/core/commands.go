@@ -102,7 +102,7 @@ func priorReceipt(ctx context.Context, r Repositories, requestID string, content
 		// sum содержит SHA-256 канонического запроса для сравнения или записи Fingerprint.
 		sum := sha256.Sum256(content)
 		if prior.Fingerprint != hex.EncodeToString(sum[:]) || !bytes.Equal(prior.Identity, content) {
-			return CommandReceipt{}, false, ErrConflict
+			return CommandReceipt{}, false, WithFailureReason(ErrConflict, FailureReason{Code: FailureRequestIDConflict, Field: FailureFieldRequestID, Context: FailureContext{SessionID: prior.SessionID, OutputID: prior.OutputID, CommandID: prior.ID}})
 		}
 		return prior, true, nil
 	}
@@ -244,7 +244,7 @@ func bindingMap(bindings []PreparedBinding) (map[ID]PreparedBinding, error) {
 // артефакта политики Session; принадлежность Stream проверяется.
 func newOutput(ctx context.Context, r Repositories, session Session, d Destination, binding PreparedBinding) (SessionOutput, error) {
 	if d.StreamID != session.StreamID {
-		return SessionOutput{}, ErrConflict
+		return SessionOutput{}, WithFailureReason(ErrConflict, FailureReason{Code: FailureResourceOwnershipConflict, Context: FailureContext{SessionID: session.ID, StreamID: session.StreamID, DestinationID: d.ID}})
 	}
 	// g содержит группу назначения для проверки принадлежности потоку. err сообщает об ошибке чтения
 	// группы назначения.
@@ -253,7 +253,7 @@ func newOutput(ctx context.Context, r Repositories, session Session, d Destinati
 		return SessionOutput{}, err
 	}
 	if g.StreamID != session.StreamID || binding.GroupID != g.ID {
-		return SessionOutput{}, ErrConflict
+		return SessionOutput{}, WithFailureReason(ErrConflict, FailureReason{Code: FailureResourceOwnershipConflict, Context: FailureContext{SessionID: session.ID, StreamID: session.StreamID, DestinationID: d.ID, GroupID: g.ID}})
 	}
 	// p содержит полный текущий профиль группы.
 	p, err := r.Config.Profile(ctx, g.ProfileID)
@@ -341,13 +341,15 @@ func (s *Service) StartSession(ctx context.Context, request StartSessionRequest)
 		if err != nil {
 			return err
 		}
-		if _, err = r.Runtime.ActiveSession(ctx, stream.ID); err == nil {
-			return ErrInUse
+		// active содержит найденный запуск, чтобы публичный контекст опирался на прочитанную запись.
+		active, err := r.Runtime.ActiveSession(ctx, stream.ID)
+		if err == nil {
+			return WithFailureReason(ErrInUse, FailureReason{Code: FailureSessionActive, Context: FailureContext{StreamID: stream.ID, SessionID: active.ID}})
 		} else if !errors.Is(err, ErrNotFound) {
 			return err
 		}
 		if err = stream.Fallback.Validate(); err != nil {
-			return fmt.Errorf("%w: заглушка не настроена", ErrNotReady)
+			return WithFailureReason(fmt.Errorf("%w: заглушка не настроена", ErrNotReady), FailureReason{Code: FailureFallbackNotConfigured, Field: FailureFieldFallback, Context: FailureContext{StreamID: stream.ID}})
 		}
 		// asset содержит выбранную заглушку и указатель опубликованного поколения.
 		asset, err := r.Artifacts.Asset(ctx, stream.Fallback.AssetID)
@@ -355,7 +357,7 @@ func (s *Service) StartSession(ctx context.Context, request StartSessionRequest)
 			return err
 		}
 		if asset.CurrentGenerationID == "" {
-			return ErrNotReady
+			return WithFailureReason(ErrNotReady, FailureReason{Code: FailureFallbackNotPrepared, Context: FailureContext{StreamID: stream.ID, AssetID: asset.ID}})
 		}
 		// currentGeneration содержит текущее поколение заглушки для проверки готовности запуска.
 		currentGeneration, err := r.Artifacts.Generation(ctx, asset.CurrentGenerationID)
@@ -363,7 +365,7 @@ func (s *Service) StartSession(ctx context.Context, request StartSessionRequest)
 			return err
 		}
 		if currentGeneration.AssetID != asset.ID || currentGeneration.State != PreparationPublished {
-			return ErrNotReady
+			return WithFailureReason(ErrNotReady, FailureReason{Code: FailureFallbackNotPrepared, Context: FailureContext{StreamID: stream.ID, AssetID: asset.ID, GenerationID: currentGeneration.ID}})
 		}
 		// groups содержит все группы потока, включаемые в начальный снимок.
 		groups, err := allGroups(ctx, r, stream.ID)
@@ -567,7 +569,7 @@ func (s *Service) sessionCommandFenced(ctx context.Context, request SessionComma
 			}
 		} else {
 			if session.State != SessionRunning {
-				return ErrConflict
+				return WithFailureReason(ErrConflict, FailureReason{Code: FailureSessionStateConflict, Field: FailureFieldState, Context: FailureContext{SessionID: session.ID, StreamID: session.StreamID}})
 			}
 			// old сохраняет ожидаемую ревизию изменяемой записи управления.
 			old := session.Revision
@@ -631,7 +633,7 @@ func (s *Service) AddOutput(ctx context.Context, request AddOutputRequest) (Comm
 			return err
 		}
 		if session.State != SessionRunning {
-			return ErrConflict
+			return WithFailureReason(ErrConflict, FailureReason{Code: FailureSessionStateConflict, Field: FailureFieldState, Context: FailureContext{SessionID: session.ID, StreamID: session.StreamID}})
 		}
 		// d содержит текущее назначение, выбранное для проверки или создания выхода.
 		d, err := r.Config.Destination(ctx, request.DestinationID)
@@ -646,7 +648,7 @@ func (s *Service) AddOutput(ctx context.Context, request AddOutputRequest) (Comm
 		// o содержит сохраняемый выход текущей операции управления.
 		for _, o := range outputs {
 			if o.Attached && o.Snapshot.Destination.ID == d.ID {
-				return ErrInUse
+				return WithFailureReason(ErrInUse, FailureReason{Code: FailureDestinationAttached, Field: FailureFieldDestinationID, Context: FailureContext{SessionID: session.ID, OutputID: o.ID, DestinationID: d.ID}})
 			}
 		}
 		// o содержит новый выход со свежим снимком текущих настроек назначения.
@@ -769,8 +771,17 @@ func (s *Service) outputCommandFenced(ctx context.Context, request OutputCommand
 			if err = o.Snapshot.ValidateUsable(); err != nil {
 				return err
 			}
-			if session.State != SessionRunning || !o.Attached || o.DesiredRunning || o.CleanupPending {
-				return ErrConflict
+			if session.State != SessionRunning {
+				return WithFailureReason(ErrConflict, FailureReason{Code: FailureSessionStateConflict, Field: FailureFieldState, Context: FailureContext{SessionID: session.ID, OutputID: o.ID}})
+			}
+			if !o.Attached {
+				return WithFailureReason(ErrConflict, FailureReason{Code: FailureOutputDetached, Field: FailureFieldState, Context: FailureContext{SessionID: session.ID, OutputID: o.ID}})
+			}
+			if o.DesiredRunning {
+				return WithFailureReason(ErrConflict, FailureReason{Code: FailureOutputAlreadyRunning, Field: FailureFieldState, Context: FailureContext{SessionID: session.ID, OutputID: o.ID}})
+			}
+			if o.CleanupPending {
+				return WithFailureReason(ErrConflict, FailureReason{Code: FailureOutputCleanupPending, Field: FailureFieldState, Context: FailureContext{SessionID: session.ID, OutputID: o.ID}})
 			}
 			o.Generation, err = NextRevision(o.Generation)
 			if err != nil {
@@ -783,7 +794,7 @@ func (s *Service) outputCommandFenced(ctx context.Context, request OutputCommand
 				return ErrStale
 			}
 			if !o.Attached && kind != CommandDetachOutput {
-				return ErrConflict
+				return WithFailureReason(ErrConflict, FailureReason{Code: FailureOutputDetached, Field: FailureFieldState, Context: FailureContext{SessionID: session.ID, OutputID: o.ID}})
 			}
 			if err = stopOutput(ctx, r, session, &o, true); err != nil {
 				return err
@@ -974,6 +985,7 @@ func cancelCommands(ctx context.Context, r Repositories, sessionID, outputID, ex
 			old := c.Revision
 			c.Status = CommandInterrupted
 			c.Failure = "Команда отменена последующим управлением"
+			c.FailureReason = &FailureReason{Code: FailureCommandSuperseded, Context: FailureContext{SessionID: c.SessionID, OutputID: c.OutputID, CommandID: c.ID}}
 			c.Record, err = revise(c.Record)
 			if err != nil {
 				return err

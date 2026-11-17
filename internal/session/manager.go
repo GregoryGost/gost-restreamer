@@ -343,10 +343,11 @@ func (m *Manager) addAfterFailure(request core.AddOutputRequest, cause error) (c
 }
 
 // checkBinding сверяет версию генератора и поколение варианта, затем открывает файл с проверкой
-// размера и хеша до принятия команды.
+// размера и хеша до принятия команды. ctx ограничивает чтение; b получена из выбора Core,
+// поэтому её идентификаторы допустимы в причине ещё до чтения самого варианта.
 func (m *Manager) checkBinding(ctx context.Context, b core.PreparedBinding) error {
 	if b.GeneratorVersion != m.config.GeneratorVersion {
-		return core.ErrNotReady
+		return core.WithFailureReason(core.ErrNotReady, core.FailureReason{Code: core.FailureFallbackVariantNotReady, Context: core.FailureContext{GroupID: b.GroupID, GenerationID: b.GenerationID, VariantID: b.VariantID}})
 	}
 	// variant содержит сохранённый вариант привязки; err сохраняет результаты его чтения и
 	// проверенного открытия файла.
@@ -355,13 +356,13 @@ func (m *Manager) checkBinding(ctx context.Context, b core.PreparedBinding) erro
 		return err
 	}
 	if variant.GenerationID != b.GenerationID || variant.GeneratorVersion != b.GeneratorVersion {
-		return core.ErrStale
+		return core.WithFailureReason(core.ErrStale, core.FailureReason{Code: core.FailureFallbackVariantNotReady, Context: core.FailureContext{GroupID: b.GroupID, AssetID: variant.AssetID, GenerationID: variant.GenerationID, VariantID: variant.ID}})
 	}
 	// file содержит проверенный по размеру и хешу дескриптор варианта, закрываемый до принятия
 	// команды.
 	file, err := m.config.Files.OpenExact(ctx, variant.ManagedPath, variant.SizeBytes, variant.ContentHash)
 	if err != nil {
-		return err
+		return core.WithFailureReason(err, core.FailureReason{Code: core.FailureFallbackVariantNotReady, Context: core.FailureContext{GroupID: b.GroupID, AssetID: variant.AssetID, GenerationID: variant.GenerationID, VariantID: variant.ID}})
 	}
 	return file.Close()
 }
@@ -773,8 +774,9 @@ func receiptFence(c core.CommandReceipt) core.ExecutionFence {
 	return core.ExecutionFence{CommandID: c.ID, Incarnation: c.Incarnation, SessionID: c.SessionID, Lifecycle: c.Lifecycle, OutputID: c.OutputID, OutputGeneration: c.OutputGeneration, Attempt: c.Attempt}
 }
 
-// complete сохраняет успех либо текст отказа команды и после ошибки проверяет, не был ли тот же
-// результат уже записан для точной попытки.
+// complete сохраняет успех либо полную диагностику и доказанную публичную причину отказа команды.
+// ctx ограничивает запись, f фиксирует попытку; после ошибки независимое чтение подтверждает только
+// тот же терминальный результат, не подменяя чужой исход.
 func (m *Manager) complete(ctx context.Context, f core.ExecutionFence, success bool, failure error) error {
 	// completion содержит сохраняемый успех либо полную причину отказа точной команды.
 	completion := core.Completion{Success: success}
@@ -783,6 +785,7 @@ func (m *Manager) complete(ctx context.Context, f core.ExecutionFence, success b
 			failure = core.ErrNotReady
 		}
 		completion.Failure = failure.Error()
+		completion.FailureReason = core.FailureReasonFrom(failure)
 	}
 	// err содержит результат записи завершения, который при ошибке перепроверяется чтением.
 	err := m.config.Core.Complete(ctx, f, completion)
@@ -833,6 +836,9 @@ func (m *Manager) control(c core.CommandReceipt) {
 			fence, err = m.issue(ctx, current)
 			if err == nil {
 				failure, applied = m.applyControl(ctx, c)
+				if applied {
+					failure = commandFailure(c, failure)
+				}
 				if !applied {
 					err = failure
 				}
