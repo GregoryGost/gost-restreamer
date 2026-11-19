@@ -39,7 +39,7 @@ func TestMediaExpansionQualityHistoryAndReopen(t *testing.T) {
 	}
 	// version получает фактический независимый формат хранения новой схемы.
 	var version int
-	if err = s.sqlDB.QueryRowContext(ctx, "SELECT version FROM storage_format").Scan(&version); err != nil || version != 4 {
+	if err = s.sqlDB.QueryRowContext(ctx, "SELECT version FROM storage_format").Scan(&version); err != nil || version != 5 {
 		t.Fatalf("storage_format: %d %v", version, err)
 	}
 	if err = s.Close(); err != nil {

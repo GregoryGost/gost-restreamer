@@ -124,6 +124,8 @@ HTTP API доступен под `/api/v1`; стандартные адреса 
 
 Поставка для Debian 13/amd64 содержит `.deb`, `.tar.gz` и `SHA256SUMS`. Сборки разработки доступны через GitHub Actions → нужный запуск → Artifacts; срок хранения — 14 дней.
 
+Текущий формат SQLite — `storage_format=5`, рассчитанный на новую установку без переноса прежних БД. Существующий неподдерживаемый файл сервер отклоняет до миграций и восстановления; автоматически он не преобразуется и не пересоздаётся. Сохранение БД пакетным менеджером при обновлении не означает совместимости форматов.
+
 Устанавливайте `.deb` на Debian 13/amd64: проверьте `sha256sum -c gost-restreamer-<Git-версия>-SHA256SUMS`, затем выполните `apt install ./gost-restreamer_<Debian-версия>_amd64.deb` от root. Оба бинарника устанавливаются в `/opt/gost-restreamer`, конфигурация — в `/etc/gost-restreamer/config.yaml`. После настройки службу нужно явно запустить через `systemctl enable --now gost-restreamer`. Обновление останавливает службу; после проверки настроек запустите её вручную. Debian conffiles сохраняют изменённые YAML и unit; SQLite и медиа сохраняются при обновлении и удалении. [Инструкция установки, обновления и диагностики](docs/deployment.md) описывает точные команды и зависимости FFmpeg/NVIDIA.
 
 Если сервис установлен вручную из `.tar.gz`, перед первой установкой `.deb` явно остановите `gost-restreamer` и используйте `apt -o Dpkg::Options::=--force-confold install ./<пакет>.deb`, чтобы сохранить локальные YAML и unit. В инструкции описаны [скачивание dev-поставки прямо на VM](docs/deployment.md#скачивание-dev-поставки-прямо-на-vm) и [обновление с проверкой версий и readiness](docs/deployment.md#обновление-и-переход-с-ручной-установки).
@@ -170,6 +172,7 @@ go test -count=1 ./tests/integration -run '^TestAcceptanceProfileConversionCPUAn
 - [Архитектура и принципы работы](gost-restreamer-architecture.md).
 - [Медиатракт, форматы, временные метки и переключения](docs/media-contracts.md).
 - [Домен, хранение и жизненный цикл данных](docs/domain-storage-contracts.md).
+- [Контракты домена, полномочий и последующей интеграции чатов](docs/chat-contracts.md).
 - [Сессии, процессы и восстановление ресурсов](docs/session-manager-contracts.md).
 - [Оперативные измерения, события, NVML и журнал](docs/monitoring-contracts.md).
 - [Управляющий REST/SSE API](docs/api-contracts.md).

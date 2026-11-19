@@ -1,0 +1,8 @@
+{
+  "source_revision": "95f5245cd704e088d64defde99337b9a22c970c2",
+  "storage_format": 4,
+  "goose_version": 1,
+  "initial_sql_sha256": "ed442e3b416a33ece10d0716bbcdf011e693762f1e8ec03446d65cab515b3853",
+  "database_sha256": "d629b54a8589fb968b3a96d0188223b69ad39cfa98b426e2b28428276986cd07",
+  "generation": "Файловая SQLite создана неизменённым storage.Open с рабочим Goose и заполнена openCurrentEncodingState до изменения активной схемы. Сохранена после Store.Close, включая текущие конфигурации, опубликованные поколения, Session/Output-снимки, квитанции и удержания. Начальный SQL побайтно совпадает с указанной ревизией."
+}

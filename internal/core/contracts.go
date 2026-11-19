@@ -29,6 +29,8 @@ type Repositories struct {
 	Runtime RuntimeRepository
 	// Artifacts предоставляет доступ к поколениям заглушек и журналу принадлежащих им файлов.
 	Artifacts ArtifactRepository
+	// Chat предоставляет конфигурации чатов и отдельные серверные операции с полномочиями.
+	Chat ChatRepository
 }
 
 // ConfigRepository задаёт операции чтения и условного изменения текущей конфигурации.

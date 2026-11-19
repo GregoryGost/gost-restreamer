@@ -1,9 +1,9 @@
 -- +goose Up
 
 -- storage_format хранит единственный маркер совместимости данных. singleton=1 задаёт ключ этой строки,
--- version=4 — поддерживаемый формат управления, проверяемый отдельно от версии Goose.
+-- version=5 — поддерживаемый формат управления, проверяемый отдельно от версии Goose.
 CREATE TABLE storage_format (singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL);
-INSERT INTO storage_format(singleton,version) VALUES(1,4);
+INSERT INTO storage_format(singleton,version) VALUES(1,5);
 
 -- fallback_assets хранит стабильные объекты заглушек и выбор текущего либо подготавливаемого поколения.
 -- Составные внешние ключи связывают оба указателя с той же заглушкой, а текущему и ожидающему поколениям
@@ -576,3 +576,67 @@ CREATE UNIQUE INDEX cleanup_intents_one_file ON cleanup_intents(file_id) WHERE k
 -- cleanup_intents_artifact_generation индексирует страницы очистки файлов конкретного поколения
 -- заглушки.
 CREATE INDEX cleanup_intents_artifact_generation ON cleanup_intents(artifact_generation_id,created_at,id);
+
+-- chat_accounts разделяет конфигурацию аккаунта и атомарный полный набор полномочий.
+-- Отдельные ревизии не позволяют обычному переименованию затереть результат refresh.
+CREATE TABLE chat_accounts (
+    -- id идентифицирует конфигурацию и соответствующий полный набор полномочий.
+    id TEXT PRIMARY KEY NOT NULL CHECK(length(id)>0),
+    -- revision содержит положительный config uint64 в точном упорядоченном представлении.
+    revision TEXT COLLATE BINARY NOT NULL CHECK(length(revision)=20 AND revision NOT GLOB '*[^0-9]*' AND revision>'00000000000000000000' AND revision<='18446744073709551615'),
+    -- created_at содержит неизменное время создания в микросекундах Unix.
+    created_at INTEGER NOT NULL,
+    -- updated_at содержит время последнего изменения конфигурации в микросекундах Unix.
+    updated_at INTEGER NOT NULL,
+    -- payload содержит отдельную Version1-оболочку конфигурации без полномочий.
+    payload BLOB NOT NULL,
+    -- provider задаёт закрытый способ авторизации и составной ключ для Sources.
+    provider TEXT NOT NULL CHECK(provider IN ('youtube','twitch','vk_video_live')),
+    -- credential_revision содержит независимый положительный uint64 полного набора.
+    credential_revision TEXT COLLATE BINARY NOT NULL CHECK(length(credential_revision)=20 AND credential_revision NOT GLOB '*[^0-9]*' AND credential_revision>'00000000000000000000' AND credential_revision<='18446744073709551615'),
+    -- credential_updated_at содержит время принятия полного набора в микросекундах Unix.
+    credential_updated_at INTEGER NOT NULL,
+    -- credential_write_id хранит квитанцию последней принятой записи для сверки COMMIT.
+    credential_write_id TEXT NOT NULL CHECK(length(credential_write_id)>0),
+    -- credential_payload содержит отдельную Version1-оболочку полного серверного набора.
+    credential_payload BLOB NOT NULL,
+    UNIQUE(id,provider)
+);
+
+-- chat_sources хранит только конфигурацию чтения; сообщения и состояния соединений остаются в RAM.
+CREATE TABLE chat_sources (
+    -- id идентифицирует один источник чтения чата.
+    id TEXT PRIMARY KEY NOT NULL CHECK(length(id)>0),
+    -- revision содержит положительный uint64 конфигурации источника.
+    revision TEXT COLLATE BINARY NOT NULL CHECK(length(revision)=20 AND revision NOT GLOB '*[^0-9]*' AND revision>'00000000000000000000' AND revision<='18446744073709551615'),
+    -- created_at содержит неизменное время создания в микросекундах Unix.
+    created_at INTEGER NOT NULL,
+    -- updated_at содержит время последней замены конфигурации в микросекундах Unix.
+    updated_at INTEGER NOT NULL,
+    -- payload содержит полную Version1-конфигурацию с типизированными options.
+    payload BLOB NOT NULL,
+    -- provider задаётся независимо от свободного Destination.Platform.
+    provider TEXT NOT NULL CHECK(provider IN ('youtube','twitch','vk_video_live')),
+    -- destination_id закрепляет родителя и удаляется каскадно только после разрешённого DELETE.
+    destination_id TEXT NOT NULL REFERENCES destinations(id) ON DELETE CASCADE,
+    -- account_id обязательно указывает аккаунт того же provider.
+    account_id TEXT NOT NULL,
+    -- enabled сохраняет явное разрешение чтения, включая false.
+    enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+    FOREIGN KEY(account_id,provider) REFERENCES chat_accounts(id,provider) ON DELETE RESTRICT
+);
+
+-- chat_accounts_created поддерживает стабильные страницы аккаунтов.
+CREATE INDEX chat_accounts_created ON chat_accounts(created_at,id);
+-- chat_accounts_provider_created поддерживает страницы аккаунтов выбранной платформы.
+CREATE INDEX chat_accounts_provider_created ON chat_accounts(provider,created_at,id);
+-- chat_sources_created поддерживает общий порядок страниц источников.
+CREATE INDEX chat_sources_created ON chat_sources(created_at,id);
+-- chat_sources_destination_created поддерживает страницы и каскадное удаление Destination.
+CREATE INDEX chat_sources_destination_created ON chat_sources(destination_id,created_at,id);
+-- chat_sources_account_provider_created поддерживает составной FK и страницы одного Account.
+CREATE INDEX chat_sources_account_provider_created ON chat_sources(account_id,provider,created_at,id);
+-- chat_sources_account_created поддерживает страницы аккаунта независимо от provider-фильтра.
+CREATE INDEX chat_sources_account_created ON chat_sources(account_id,created_at,id);
+-- chat_sources_provider_created поддерживает страницы источников одной платформы.
+CREATE INDEX chat_sources_provider_created ON chat_sources(provider,created_at,id);

@@ -8,7 +8,7 @@ import (
 
 // preflightStorage читает только метаданные схемы, маркер и историю Goose в пуле s.
 // s предоставляет пул проверяемой БД; ctx ограничивает чтение. Пустая схема допускает первичное
-// создание, текущая требует полного набора таблиц, marker4 и ровно применённых Goose0/1. Любой иной класс
+// создание, текущая требует полного набора таблиц, marker5 и ровно применённых Goose0/1. Любой иной класс
 // отклоняется до инициализации Goose и Recover; данные профилей здесь не читаются.
 // Проверка не исправляет остаток прерванной первичной инициализации с одним Goose0.
 func (s *Store) preflightStorage(ctx context.Context) error {
@@ -20,6 +20,7 @@ func (s *Store) preflightStorage(ctx context.Context) error {
 		"fallback_variants": true, "sessions": true, "outputs": true,
 		"command_receipts": true, "cleanup_intents": true, "owned_paths": true,
 		"session_holds": true, "output_holds": true, "events": true,
+		"chat_accounts": true, "chat_sources": true,
 	}
 	// rows читает пользовательские таблицы, представления и триггеры; err сообщает отказ SQLite.
 	// Внутренние объекты SQLite не задают формат приложения, обычные индексы здесь не сканируются.
