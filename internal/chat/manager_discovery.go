@@ -31,6 +31,14 @@ type broadcastChoices struct {
 	values []core.ChatBroadcast
 }
 
+// discoveryVideo хранит видео текущего поколения и определяет, можно ли искать ему замену.
+type discoveryVideo struct {
+	// id закрепляет известное видео для следующего вызова videos.list.
+	id string
+	// explicit сохраняет выбор оператора до прекращения этого поколения источника.
+	explicit bool
+}
+
 // startDiscoveryLocked занимает слот, копирует исходную конфигурацию и запускает отдельное обнаружение.
 func (m *Manager) startDiscoveryLocked(member *managedSource) {
 	member.discoveryStarted = true
@@ -51,16 +59,18 @@ func (m *Manager) startDiscoveryLocked(member *managedSource) {
 // Сетевой результат применяется лишь к исходному поколению и подтверждённым выходам.
 func (m *Manager) discover(member *managedSource, source core.ChatSource, adapter core.ChatAdapterPort) {
 	defer m.finishDiscovery()
-	// retries задаёт независимый бюджет обнаружения этого поколения, selected хранит явный выбор видео.
+	// retries задаёт бюджет этого поколения, video сохраняет выбор до подтверждения чата.
 	retries := newRetrySchedule(m.limits)
-	var selected string
+	var video discoveryVideo
+	// resolver доступен адаптерам, которые могут проверять известное видео без нового поиска.
+	resolver, _ := adapter.(core.ChatBroadcastResolver)
 	for member.ctx.Err() == nil {
 		if !retries.waitForSlot(member.ctx) {
 			return
 		}
 		m.reportDiscovery(member, core.ChatDiscovering, core.ChatReasonNone)
 		// found содержит проверяемое обнаружение, err сообщает о временном отказе либо отсутствии доступа.
-		found, err := m.discoverOnce(member, source, adapter, retries)
+		found, err := m.discoverOnce(member, source, adapter, resolver, video.id, retries)
 		if member.ctx.Err() != nil {
 			return
 		}
@@ -74,7 +84,7 @@ func (m *Manager) discover(member *managedSource, source core.ChatSource, adapte
 			continue
 		}
 		// outcome сообщает, получен ли канал, требуется ли ещё одна попытка либо обнаружение окончено.
-		outcome := m.useDiscovery(member, source.Provider, found, &selected)
+		outcome := m.useDiscovery(member, source.Provider, found, &video, resolver != nil)
 		if !outcome || !retries.wait(member.ctx, found.RetryAfter) {
 			return
 		}
@@ -89,10 +99,11 @@ func (m *Manager) finishDiscovery() {
 	m.scheduleSourcesLocked()
 }
 
-// discoverOnce получает допуск отдельно перед Credentials и Discover. Ожидание сетевого
+// discoverOnce получает допуск отдельно перед Credentials и запросом адаптера. Известное
+// videoID используется resolver вместо общего поиска, если адаптер его поддерживает. Ожидание сетевого
 // слота может пересечься с отзывом выхода или конфигурационным изменением. В этом случае
 // слот освобождается до ожидания нового допуска, чтобы соседние источники могли его занять.
-func (m *Manager) discoverOnce(member *managedSource, source core.ChatSource, adapter core.ChatAdapterPort, retries *retrySchedule) (core.ChatDiscovery, error) {
+func (m *Manager) discoverOnce(member *managedSource, source core.ChatSource, adapter core.ChatAdapterPort, resolver core.ChatBroadcastResolver, videoID string, retries *retrySchedule) (core.ChatDiscovery, error) {
 	if !m.lockSourceAdmission(member.ctx, member) {
 		return core.ChatDiscovery{}, member.ctx.Err()
 	}
@@ -121,6 +132,9 @@ func (m *Manager) discoverOnce(member *managedSource, source core.ChatSource, ad
 			m.mu.Unlock()
 			// Callback возвращает сетевой слот после фактического возврата адаптера.
 			defer func() { <-m.discoverSlots }()
+			if resolver != nil && videoID != "" {
+				return resolver.DiscoverBroadcast(limited, source, credentials, videoID)
+			}
 			return adapter.Discover(limited, source, credentials)
 		}
 		m.mu.Unlock()
@@ -129,8 +143,9 @@ func (m *Manager) discoverOnce(member *managedSource, source core.ChatSource, ad
 	return core.ChatDiscovery{}, limited.Err()
 }
 
-// useDiscovery применяет результат. Возвращает true только для повторяемого ожидания эфира.
-func (m *Manager) useDiscovery(member *managedSource, provider core.ChatProvider, found core.ChatDiscovery, selected *string) bool {
+// useDiscovery применяет результат и возвращает true, когда нужен новый запрос.
+// При supportsResolution ранее выбранное видео перепроверяется отдельно от поиска.
+func (m *Manager) useDiscovery(member *managedSource, provider core.ChatProvider, found core.ChatDiscovery, video *discoveryVideo, supportsResolution bool) bool {
 	// choices содержит ограниченные проверенные варианты, ok подтверждает соблюдение входного бюджета.
 	choices, ok := boundedBroadcasts(found.Broadcasts, min(m.limits.SnapshotMetadataBytes, m.limits.UpstreamHTTPBytes))
 	if !ok || found.RetryAfter < 0 || found.State != "" && found.State.Validate() != nil || found.Reason.Validate() != nil || found.ChannelID != "" && !validDiscoveryID(found.ChannelID) || provider != core.ChatYouTube && len(choices) > 0 {
@@ -141,20 +156,41 @@ func (m *Manager) useDiscovery(member *managedSource, provider core.ChatProvider
 		m.reportDiscovery(member, found.State, found.Reason)
 		return false
 	}
+	if supportsResolution && video.id != "" && len(choices) == 0 && found.State != core.ChatRetrying {
+		if video.explicit {
+			// reason объясняет завершение выбранного видео или отсутствие подтверждённых данных о нём.
+			reason := found.Reason
+			if reason == core.ChatReasonNone {
+				reason = core.ChatReasonUnavailable
+			}
+			m.reportDiscovery(member, core.ChatFailed, reason)
+			return false
+		}
+		// Автоматически найденное видео больше недоступно. Следующая попытка снова ищет эфир.
+		*video = discoveryVideo{}
+		m.reportDiscovery(member, core.ChatDiscovering, core.ChatReasonNoBroadcast)
+		return true
+	}
 	// channel содержит фактический чат. started содержит при наличии платформенное время эфира.
 	channel := found.ChannelID
 	var started *time.Time
 	if len(choices) > 0 {
 		// choice устанавливается единственным результатом или явным выбором текущего поколения.
 		var choice core.ChatBroadcast
-		if *selected != "" {
+		if video.id != "" {
 			// index ищет только ранее выбранное видео, сохраняя выбор до конца поколения настройки.
-			index := slices.IndexFunc(choices, func(value core.ChatBroadcast) bool { return value.VideoID == *selected })
+			index := slices.IndexFunc(choices, func(value core.ChatBroadcast) bool { return value.VideoID == video.id })
 			if index >= 0 {
 				choice = choices[index]
+			} else if supportsResolution {
+				m.reportDiscovery(member, core.ChatFailed, core.ChatReasonConfiguration)
+				return false
 			}
 		} else if len(choices) == 1 {
 			choice = choices[0]
+			if supportsResolution && choice.ChannelID == "" {
+				video.id = choice.VideoID
+			}
 		} else {
 			if !m.offerChoices(member, choices) {
 				return false
@@ -163,7 +199,12 @@ func (m *Manager) useDiscovery(member *managedSource, provider core.ChatProvider
 			case <-member.ctx.Done():
 				return false
 			case choice = <-member.selection:
-				*selected = choice.VideoID
+				*video = discoveryVideo{id: choice.VideoID, explicit: true}
+				if supportsResolution {
+					// Чат мог перейти к другому видео, пока оператор выбирал из списка.
+					m.reportDiscovery(member, core.ChatDiscovering, core.ChatReasonNone)
+					return true
+				}
 			}
 		}
 		channel, started = choice.ChannelID, choice.StartedAt
@@ -174,7 +215,7 @@ func (m *Manager) useDiscovery(member *managedSource, provider core.ChatProvider
 	}
 	// state и reason сохраняют проверенные статусы адаптера и дают безопасное ожидание по умолчанию.
 	state, reason := found.State, found.Reason
-	if state != core.ChatRetrying {
+	if state != core.ChatRetrying && (state != core.ChatDiscovering || !supportsResolution) {
 		state = core.ChatWaitingChat
 	}
 	if reason == core.ChatReasonNone {

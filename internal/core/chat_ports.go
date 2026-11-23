@@ -294,6 +294,25 @@ type ChatReadRequest struct {
 	Key ChatWorkerKey
 	// Credentials содержит серверный полный набор и никогда не публикуется в событиях.
 	Credentials ChatCredentials
+	// ResumeToken содержит позицию последнего обработанного пакета того же логического читателя.
+	ResumeToken string
+}
+
+// ChatResumeTokenBytes ограничивает позицию площадки, удерживаемую между попытками чтения.
+const ChatResumeTokenBytes = 4 << 10
+
+// ChatReadRetry передаёт Manager позицию и минимальную задержку следующей физической попытки.
+// Адаптер сообщает причину через ChatAdapterSink, а Manager сохраняет свои ограничения повторов.
+type ChatReadRetry struct {
+	// ResumeToken содержит полную позицию продолжения, пустое значение начинает чтение с начала.
+	ResumeToken string
+	// RetryAfter задаёт минимальную задержку площадки, ноль оставляет задержку Manager.
+	RetryAfter time.Duration
+}
+
+// Error возвращает безопасное описание повтора без позиции и диагностических данных площадки.
+func (r *ChatReadRetry) Error() string {
+	return "требуется повторная попытка чтения чата"
 }
 
 // ChatAdapterPort определяет единственный выбранный протокол чтения конкретного провайдера.
@@ -305,6 +324,14 @@ type ChatAdapterPort interface {
 	Discover(context.Context, ChatSource, ChatCredentials) (ChatDiscovery, error)
 	// Read работает до отмены ctx, подтверждает подписку через sink и освобождает соединения до возврата.
 	Read(context.Context, ChatReadRequest, ChatAdapterSink) error
+}
+
+// ChatBroadcastResolver повторно проверяет выбранное видео без поиска других эфиров.
+// Необязательный порт позволяет сохранять точный выбор, пока чат видео ещё недоступен.
+type ChatBroadcastResolver interface {
+	// DiscoverBroadcast сверяет videoID с текущим каналом. Активное видео возвращается в Broadcasts
+	// даже без chat ID. Отсутствующее или завершённое видео возвращает безопасную причину без кандидата.
+	DiscoverBroadcast(ctx context.Context, source ChatSource, credentials ChatCredentials, videoID string) (ChatDiscovery, error)
 }
 
 // ChatBroadcast содержит публичного кандидата текущего YouTube discovery без постоянного выбора.

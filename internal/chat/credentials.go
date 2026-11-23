@@ -165,20 +165,30 @@ func (o *CredentialOwner) Credentials(ctx context.Context, id core.ID) (core.Cha
 // Manager ограничивает допуск обработчиков до записи, а после подтверждения применяет новую конфигурацию.
 // Блокировка аккаунта удерживается только во время серверного чтения и CAS внутри вызова Manager.
 func (o *CredentialOwner) Replace(ctx context.Context, manager credentialAccountMutator, id core.ID, provider core.ChatProvider, bundle core.ChatCredentialBundle, writeID core.ID, expected uint64) (core.ChatApplyResult, error) {
+	// result и err сообщают вызывающему, была ли подтверждена и применена замена.
+	result, _, err := o.replace(ctx, manager, id, provider, bundle, writeID, expected)
+	return result, err
+}
+
+// replace применяет проверенный набор и возвращает метаданные именно подтверждённой записи.
+// Эти метаданные получены при CAS или его сверке и не зависят от более позднего чтения аккаунта.
+func (o *CredentialOwner) replace(ctx context.Context, manager credentialAccountMutator, id core.ID, provider core.ChatProvider, bundle core.ChatCredentialBundle, writeID core.ID, expected uint64) (core.ChatApplyResult, core.ChatAccount, error) {
 	if manager == nil || expected == 0 || writeID.Validate() != nil || len(writeID) > core.ChatIDBytes || bundle.Validate(provider) != nil {
-		return core.ChatApplyResult{}, core.ErrInvalid
+		return core.ChatApplyResult{}, core.ChatAccount{}, core.ErrInvalid
 	}
 	// ctx учитывает остановку владельца, lane сохраняет слот до окончания применения, finish освобождает его, err сообщает отказ в допуске.
 	ctx, lane, finish, err := o.begin(ctx, id)
 	if err != nil {
-		return core.ChatApplyResult{}, err
+		return core.ChatApplyResult{}, core.ChatAccount{}, err
 	}
 	defer finish()
 	bundle = copyCredentialBundle(bundle)
 
-	// Переданный Manager вызов принимает mutationCtx, ждёт завершения обмена данного аккаунта,
-	// проверяет незавершённую запись и возвращает подтверждённую конфигурацию для применения.
-	return manager.mutateAccount(ctx, id, func(mutationCtx context.Context) (credentialReplacement, error) {
+	// confirmed сохраняет публичные метаданные результата синхронной операции.
+	var confirmed core.ChatAccount
+	// applied и err передают результат применения. Callback под mutationCtx сверяет предыдущую
+	// запись и сохраняет новые полномочия под последовательным допуском данного аккаунта.
+	applied, err := manager.mutateAccount(ctx, id, func(mutationCtx context.Context) (credentialReplacement, error) {
 		// err сообщает об отмене во время ожидания исключительного допуска.
 		if err := lane.enter(mutationCtx); err != nil {
 			return credentialReplacement{}, err
@@ -188,14 +198,20 @@ func (o *CredentialOwner) Replace(ctx context.Context, manager credentialAccount
 		// err останавливает запись при недоступной сверке или конфликте параметров повторного обращения.
 		recovered, err := o.recoveredReplacement(mutationCtx, id, lane, provider, bundle, writeID, expected)
 		if err != nil || recovered.ID != "" {
+			confirmed = recovered
 			return credentialReplacement{account: recovered, recovered: err == nil}, err
 		}
 
 		// result содержит ожидаемую запись, writeErr сообщает итог config CAS, включая возможный COMMIT.
 		result, writeErr := o.store.ReplaceChatCredentials(mutationCtx, id, provider, bundle, writeID, expected)
 		result, writeErr = o.confirmCredentialWrite(mutationCtx, id, lane, pendingCredentialWrite{result: result, replacement: true}, writeErr)
+		confirmed = result.Account
 		return credentialReplacement{account: result.Account}, writeErr
 	})
+	if err != nil {
+		return core.ChatApplyResult{}, core.ChatAccount{}, err
+	}
+	return applied, confirmed, nil
 }
 
 // Close прекращает допуск, отменяет работу владельца и ждёт её завершения в пределах заданного срока.

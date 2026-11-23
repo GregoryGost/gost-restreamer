@@ -49,6 +49,8 @@ type readerAttempt struct {
 	ended atomic.Bool
 	// ingress даёт приёму неизменяемый снимок без ожидания Manager и медиауправления.
 	ingress atomic.Pointer[readerIngress]
+	// connected отмечает подтверждение подписки под блокировкой Manager на протяжении попытки.
+	connected bool
 }
 
 // readerIngress содержит только участников и доказательства, существовавшие во время приёма.
@@ -255,19 +257,29 @@ func (r *managedReader) run() {
 	defer r.finish()
 	// retries ограничивает попытки захвата чтения скользящим окном и задержкой.
 	retries := newRetrySchedule(r.manager.limits)
+	// resumeToken принадлежит только этому читателю и исчезает при отзыве его поколения.
+	var resumeToken string
 	for r.ctx.Err() == nil {
 		if !retries.waitForSlot(r.ctx) {
 			return
 		}
-		// state содержит итог попытки, connected отмечает ранее подтверждённую подписку.
-		state, connected := r.readOnce(retries)
+		// state и connected описывают итог подписки, retry содержит новую позицию и задержку площадки.
+		state, connected, retry := r.readOnce(retries, resumeToken)
 		if r.ctx.Err() != nil || terminalReaderState(state) {
 			return
 		}
 		if connected {
 			retries.resetBackoff()
 		}
-		if !retries.wait(r.ctx, 0) {
+		// retryAfter оставляет обычную задержку Manager для адаптеров без результата повтора.
+		var retryAfter time.Duration
+		if retry != nil {
+			if len(retry.ResumeToken) <= core.ChatResumeTokenBytes {
+				resumeToken = retry.ResumeToken
+			}
+			retryAfter = max(0, retry.RetryAfter)
+		}
+		if !retries.wait(r.ctx, retryAfter) {
 			return
 		}
 	}
@@ -288,12 +300,13 @@ func (r *managedReader) finish() {
 	m.scheduleSourcesLocked()
 }
 
-// readOnce получает серверные реквизиты и выдаёт отдельный случайный токен текущему Read.
-func (r *managedReader) readOnce(retries *retrySchedule) (core.ChatSourceState, bool) {
+// readOnce получает текущие реквизиты, передаёт resumeToken и выдаёт отдельный токен callback.
+// Результат возвращает состояние, факт предыдущего подключения и подтверждённые параметры повтора.
+func (r *managedReader) readOnce(retries *retrySchedule, resumeToken string) (core.ChatSourceState, bool, *core.ChatReadRetry) {
 	// m предоставляет единственный адаптер и владельца полномочий данного аккаунта.
 	m := r.manager
 	if !r.lockReaderAdmission(r.ctx) {
-		return core.ChatStopped, false
+		return core.ChatStopped, false, nil
 	}
 	retries.recordStart()
 	m.mu.Unlock()
@@ -303,29 +316,29 @@ func (r *managedReader) readOnce(retries *retrySchedule) (core.ChatSourceState, 
 		// state и reason выбирают безопасное состояние отказа credential-owner.
 		state, reason := credentialStatus(err)
 		if !r.lockReaderAdmission(r.ctx) {
-			return core.ChatStopped, false
+			return core.ChatStopped, false, nil
 		}
 		m.setReaderStatusLocked(r, state, reason)
 		m.mu.Unlock()
-		return state, false
+		return state, false, nil
 	}
 	if credentials.AccountID != r.key.channel.AccountID || credentials.Provider != r.key.channel.Provider || credentials.Validate() != nil {
 		if !r.lockReaderAdmission(r.ctx) {
-			return core.ChatStopped, false
+			return core.ChatStopped, false, nil
 		}
 		m.setReaderStatusLocked(r, core.ChatAuthRequired, core.ChatReasonCredentials)
 		m.mu.Unlock()
-		return core.ChatAuthRequired, false
+		return core.ChatAuthRequired, false, nil
 	}
 	// token отличает каждую физическую попытку, включая повторное подключение того же читателя.
 	var token core.ChatWorkerToken
 	if _, err = rand.Read(token[:]); err != nil {
 		if !r.lockReaderAdmission(r.ctx) {
-			return core.ChatStopped, false
+			return core.ChatStopped, false, nil
 		}
 		m.setReaderStatusLocked(r, core.ChatFailed, core.ChatReasonConfiguration)
 		m.mu.Unlock()
-		return core.ChatFailed, false
+		return core.ChatFailed, false, nil
 	}
 	// ctx и cancel разрешают отзывать отдельно текущую физическую подписку.
 	ctx, cancel := context.WithCancel(r.ctx)
@@ -333,21 +346,27 @@ func (r *managedReader) readOnce(retries *retrySchedule) (core.ChatSourceState, 
 	// attempt реализует интерфейс приёма только для выданного токена.
 	attempt := &readerAttempt{reader: r, token: token, cancel: cancel}
 	if !r.lockReaderAdmission(ctx) {
-		return core.ChatStopped, false
+		return core.ChatStopped, false, nil
 	}
 	r.attempt = attempt
 	m.setReaderStatusLocked(r, core.ChatConnecting, core.ChatReasonNone)
 	m.refreshIngressLocked(r)
 	m.mu.Unlock()
 	// Read сам ограничивает протокольное подключение и освобождает соединение до возврата.
-	_ = m.adapters[r.key.channel.Provider].Read(ctx, core.ChatReadRequest{Token: token, Key: r.key.channel, Credentials: credentials}, attempt)
+	// readErr может содержать безопасные указания для продолжения этого же читателя.
+	readErr := m.adapters[r.key.channel.Provider].Read(ctx, core.ChatReadRequest{
+		Token: token, Key: r.key.channel, Credentials: credentials, ResumeToken: resumeToken,
+	}, attempt)
 	attempt.closeInput()
+	// retry оставляет непрозрачную позицию на сервере и отделяет её от произвольной ошибки адаптера.
+	var retry *core.ChatReadRetry
+	_ = errors.As(readErr, &retry)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	attempt.ingress.Store(nil)
 	r.attempt = nil
 	// wasConnected влияет только на сброс задержки, а не на счётчик попыток.
-	wasConnected := r.state == core.ChatConnected
+	wasConnected := attempt.connected
 	if r.ctx.Err() == nil && !terminalReaderState(r.state) {
 		// reason сохраняет уже сообщённую безопасную причину, когда адаптер успел её подтвердить.
 		reason := r.reason
@@ -356,7 +375,7 @@ func (r *managedReader) readOnce(retries *retrySchedule) (core.ChatSourceState, 
 		}
 		m.setReaderStatusLocked(r, core.ChatRetrying, reason)
 	}
-	return r.state, wasConnected
+	return r.state, wasConnected, retry
 }
 
 // closeInput отзывает вход попытки в том же порядке, в котором Hub принимает сообщения и учитывает потери.
@@ -577,6 +596,7 @@ func (a *readerAttempt) Status(ctx context.Context, token core.ChatWorkerToken, 
 		a.ingress.Store(nil)
 	}
 	if state == core.ChatConnected {
+		a.connected = true
 		// now фиксирует подтверждение подписки даже при отсутствии сообщений аудитории.
 		now := time.Now().UTC().Truncate(time.Microsecond)
 		// member получает отдельную временную метку подтверждённого события.
