@@ -160,6 +160,8 @@ type RuntimeEventPage struct {
 	Gap, Reset bool
 	// Changed закрывается при следующем изменении журнала событий.
 	Changed <-chan struct{}
+	// ChatChanged закрывается при изменении пригодности точной сессии или выхода для чатов.
+	ChatChanged <-chan struct{} `json:"-"`
 }
 
 // RuntimeAnchor объединяет согласованный начальный снимок RAM с позицией событий.
@@ -172,6 +174,8 @@ type RuntimeAnchor struct {
 	Cursor RuntimeCursor
 	// Changed закрывается при изменении журнала после полученного снимка.
 	Changed <-chan struct{}
+	// ChatChanged содержит согласованный со снимком сигнал жизненного цикла чатов.
+	ChatChanged <-chan struct{} `json:"-"`
 }
 
 // eventStream хранит ограниченный журнал текущей эпохи и границу потерянных событий.
@@ -430,7 +434,7 @@ func (a *RuntimeAuthority) runtimeEventsLocked(cursor RuntimeCursor, limit int) 
 	// current фиксирует текущую верхнюю границу журнала.
 	current := a.cursorLocked()
 	// p накапливает возвращаемые события, границы и признаки разрыва.
-	p := RuntimeEventPage{Cursor: cursor, HighWater: current, Changed: s.changed}
+	p := RuntimeEventPage{Cursor: cursor, HighWater: current, Changed: s.changed, ChatChanged: a.chatChanged}
 	// zero показывает, запросил ли клиент чтение без прежнего курсора.
 	zero := cursor == (RuntimeCursor{})
 	if !zero && (cursor.Incarnation != current.Incarnation || cursor.Epoch != current.Epoch) {

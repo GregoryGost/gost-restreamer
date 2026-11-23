@@ -207,7 +207,7 @@ type ChatEventPage struct {
 	Events []ChatEvent
 	// Cursor задаёт позицию продолжения после страницы.
 	Cursor ChatCursor
-	// ResyncRequired требует новый snapshot после утраты replay либо смены эпохи.
+	// ResyncRequired сообщает, что для продолжения нужен новый согласованный снимок.
 	ResyncRequired bool
 	// Changed закрывается при следующем изменении и не требует отдельного pre-session Hub.
 	Changed <-chan struct{}

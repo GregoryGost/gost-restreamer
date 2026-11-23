@@ -117,6 +117,9 @@ func (r *OutputExecutionReservation) currentLocked() bool {
 func (r *OutputExecutionReservation) sealLocked() {
 	if !r.sealed {
 		r.sealed = true
+		if r.observer != nil && r.observer.chatPublication.revoke() {
+			r.authority.notifyChatLocked()
+		}
 		close(r.done)
 	}
 }

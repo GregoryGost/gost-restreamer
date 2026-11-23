@@ -154,6 +154,8 @@ type SessionObservationSnapshot struct {
 	Stamp ObservationStamp
 	// Value содержит копию принятого состояния либо nil до первого наблюдения.
 	Value *SessionObservation
+	// ChatOwner позволяет связать ленту с текущим наблюдателем родительской сессии.
+	ChatOwner *ChatSessionOwner `json:"-"`
 }
 
 // GroupObservationSnapshot объединяет копии состояния и измерений одной оперативной группы.
@@ -184,6 +186,8 @@ type OutputObservationSnapshot struct {
 	Execution ExecutionFence
 	// Value содержит копию принятого состояния либо nil до первого наблюдения.
 	Value *OutputObservation
+	// ChatPublication сохраняет факт первой публикации точного наблюдателя до его отзыва.
+	ChatPublication *ChatOutputPublication `json:"-"`
 }
 
 // FFmpegObservationSnapshot объединяет состояние и измерения попытки FFmpeg внутри группы.
@@ -273,6 +277,10 @@ type observationNode struct {
 	valid atomic.Bool
 	// done закрывается при отзыве соответствующего владельца наблюдений.
 	done chan struct{}
+	// chatOwner проверяет родителя ленты и назначается только наблюдателю сессии.
+	chatOwner *ChatSessionOwner
+	// chatPublication запоминает первое подтверждение публикации только для наблюдателя выхода.
+	chatPublication *ChatOutputPublication
 	// attemptDone закрывается при завершении или замене текущей попытки FFmpeg; nil означает
 	// отсутствие активной попытки.
 	attemptDone chan struct{}
@@ -574,6 +582,10 @@ func (a *RuntimeAuthority) removeObservation(n *observationNode) {
 			}
 		}
 		delete(a.observations, token)
+		if other.chatOwner != nil {
+			other.chatOwner.active.Store(false)
+		}
+		other.chatPublication.revoke()
 		other.valid.Store(false)
 		close(other.done)
 		if other.attemptDone != nil {
@@ -595,6 +607,9 @@ func (a *RuntimeAuthority) removeObservation(n *observationNode) {
 	e := a.nodeEvent(n, RuntimeRemovedEvent)
 	e.Stamp.ObservedAt = time.Now().UTC()
 	a.appendEventLocked(e)
+	if n.kind == observationSession || n.kind == observationOutput {
+		a.notifyChatLocked()
+	}
 }
 
 // registerObservation проверяет бюджет до копирования и замены, назначает новый идентификатор и
@@ -626,6 +641,15 @@ func (a *RuntimeAuthority) registerObservation(n *observationNode, replace *obse
 		a.removeObservation(replace)
 	}
 	n.valid.Store(true)
+	switch n.kind {
+	case observationSession:
+		n.chatOwner = &ChatSessionOwner{authority: a, session: n.session}
+		n.chatOwner.active.Store(true)
+		a.notifyChatLocked()
+	case observationOutput:
+		n.chatPublication = &ChatOutputPublication{authority: a, session: n.session}
+		a.notifyChatLocked()
+	}
 	a.observations[n.token] = n
 	if a.telemetry != nil && n.kind == observationSession {
 		n.input = &InputSnapshot{}
@@ -887,6 +911,18 @@ func (h observerHandle) observe(ctx context.Context, state string, source Observ
 	n.present = true
 	n.stamp.Revision = revision
 	n.stamp.ObservedAt = time.Now().UTC()
+	if n.chatPublication != nil {
+		switch OutputState(state) {
+		case OutputPublishing:
+			if n.chatPublication.state.CompareAndSwap(uint32(chatPublicationWaiting), uint32(chatPublicationLive)) {
+				a.notifyChatLocked()
+			}
+		case OutputStopped, OutputFailed:
+			if n.chatPublication.revoke() {
+				a.notifyChatLocked()
+			}
+		}
+	}
 	if sourceRevision > 0 {
 		n.sourceRevision = sourceRevision
 	}
@@ -993,7 +1029,7 @@ func (a *RuntimeAuthority) runtimeSnapshotLocked(f RuntimeSessionFence) (Session
 		switch n.kind {
 		case observationSession:
 			// v содержит копию состояния сессии с её меткой владельца.
-			v := SessionObservationSnapshot{Stamp: n.stamp}
+			v := SessionObservationSnapshot{Stamp: n.stamp, ChatOwner: n.chatOwner}
 			if n.present {
 				v.Value = &SessionObservation{State: ObservationState(n.state), Error: strings.Clone(n.failure)}
 			}
@@ -1020,7 +1056,7 @@ func (a *RuntimeAuthority) runtimeSnapshotLocked(f RuntimeSessionFence) (Session
 			result.Groups = append(result.Groups, v)
 		case observationOutput:
 			// v содержит копию состояния выхода с точной идентичностью исполнения.
-			v := OutputObservationSnapshot{Stamp: n.stamp, Execution: cloneExecutionFence(n.execution)}
+			v := OutputObservationSnapshot{Stamp: n.stamp, Execution: cloneExecutionFence(n.execution), ChatPublication: n.chatPublication}
 			if n.present {
 				v.Value = &OutputObservation{State: OutputState(n.state), Error: strings.Clone(n.failure)}
 			}

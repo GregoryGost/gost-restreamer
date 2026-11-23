@@ -537,7 +537,7 @@ func (a *RuntimeAuthority) RuntimeAnchor(ctx context.Context) (RuntimeAnchor, er
 		return RuntimeAnchor{}, ErrEventSequenceExhausted
 	}
 	// result накапливает согласованные снимки сессий, GPU и позицию событий.
-	result := RuntimeAnchor{Cursor: a.cursorLocked(), Changed: a.events.changed}
+	result := RuntimeAnchor{Cursor: a.cursorLocked(), Changed: a.events.changed, ChatChanged: a.chatChanged}
 	// fences собирает уникальные точные выполнения сессий, представленные в RAM.
 	fences := map[RuntimeSessionFence]bool{}
 	// n содержит очередной узел для сбора его точного владельца сессии.

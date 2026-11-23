@@ -65,6 +65,8 @@ type RuntimeAuthority struct {
 	telemetry *TelemetryLimits
 	// events хранит ограниченный журнал оперативных событий текущей эпохи.
 	events *eventStream
+	// chatChanged закрывается при изменении допуска чатов независимо от потока измерений.
+	chatChanged chan struct{}
 	// system хранит единственного системного владельца GPU-снимка.
 	system *SystemObserver
 	// nextSystem содержит последний выданный token системного владельца GPU.
@@ -87,7 +89,7 @@ func NewRuntimeAuthority(incarnation string, limits ObservationLimits, execution
 		return nil, err
 	}
 	// a содержит новый общий реестр с пустыми владельцами и одним токеном блокировки.
-	a := &RuntimeAuthority{outputExecutionLimits: executionLimits, outputExecutions: make(map[outputExecutionKey]*OutputExecutionReservation), preparations: make(map[ID]*PreparationOwner), limits: limits, observations: make(map[uint64]*observationNode), gate: make(chan struct{}, 1), incarnation: incarnation, leases: make(map[ID]*RuntimeLease), publications: make(map[ID]*RuntimeLease)}
+	a := &RuntimeAuthority{outputExecutionLimits: executionLimits, outputExecutions: make(map[outputExecutionKey]*OutputExecutionReservation), preparations: make(map[ID]*PreparationOwner), limits: limits, observations: make(map[uint64]*observationNode), gate: make(chan struct{}, 1), incarnation: incarnation, leases: make(map[ID]*RuntimeLease), publications: make(map[ID]*RuntimeLease), chatChanged: make(chan struct{})}
 	a.gate <- struct{}{}
 	return a, nil
 }
@@ -244,6 +246,7 @@ func (a *RuntimeAuthority) Close() {
 	if a.events != nil {
 		close(a.events.changed)
 	}
+	close(a.chatChanged)
 }
 
 // RuntimeLease разрешает ограниченное изменение памяти под общим допуском.

@@ -41,6 +41,8 @@ Before modifying data access or migrations, verify:
 - WAL is optional and supports concurrent reads with writes but still only one writer. Checkpointing, `-wal`/`-shm` file lifecycle, backup and storage restrictions require an explicit operational policy.
 - Keep transactions short and use database constraints to guard concurrent correctness. A per-process writer queue is optional, not universally required; if selected, document multi-process consequences and durability.
 - Never use an in-memory SQLite database to prove file locking, WAL, multi-connection behavior or migration safety.
+- SQLite has no native SQL stored procedures. Evaluate constraints, atomic SQL, caller-owned GORM transactions, triggers and application-level operations according to the required local behavior. A distributed Saga alone does not establish a need for procedure-like scaffolding.
+- In an approved Saga, a SQLite participant owns only its local commit/compensation and verified idempotency rules. An outbox or another explicitly approved consistency mechanism is needed when committed state and external event delivery must be coupled; neither GORM transactions nor the local database ensure cross-service rollback or exactly-once delivery.
 
 ## Connection/resource lifetime and native memory
 

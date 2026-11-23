@@ -22,6 +22,10 @@ All materials selected in `CODEX_PROJECT.md` are active by default, including be
 - Always locate and read the root `AGENTS.md`; reread it, request routing and the applicable project profile after context compression or resumption.
 - Use terminal commands compatible with the verified development OS. macOS is one development-environment option; Windows/Linux development requires verification of platform-specific tools and checks. Deployment commands target Debian only when the task explicitly concerns that environment.
 
+## Task-Scoped Runtime Resources
+
+When an agent starts an operation that may leave a task-scoped process, browser, test server, container, watcher, debugger, or other runtime resource behind, identify whether it is exclusively controlled, borrowed/shared, client-managed, or intentionally persistent. Recheck ownership before shutdown. Use the active tool-specific shutdown path for exclusively owned temporary resources on success, failure, timeout, or interruption, then verify completion when observable. Do not stop unrelated or client-managed processes by name or port alone. Report unresolved cleanup in the existing result or handoff. This does not require tracking every short-lived command, installing monitors, or altering tool configuration.
+
 ## Subagents For Executable Code And Tests
 
 Read `.codex/rules/subagent_coordination.md` before any delegation. It is mandatory bootstrap support, together with the selected `.codex/agents/*.toml` files and the Agent Roles And Model Selection policy in `CODEX_PROJECT.md`.

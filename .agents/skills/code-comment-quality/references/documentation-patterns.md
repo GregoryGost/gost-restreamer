@@ -128,9 +128,25 @@ This is guidance for the author, **not** a set of headings to insert into source
 - Do not treat any single word or sentence form as forbidden: a nominal explanation can accurately describe a value object, and specialist terminology may be essential.
 - Verify every asserted action or lifetime rule against source and actual contracts. Do not add invented behavior just to complete the prose.
 
-**Maintainer test:** can a colleague tell what the component actually does or represents, without mentally translating the sentence back into English? Examples 24–25 illustrate Russian-specific failures and distinct possible contracts.
+**Maintainer test:** can a colleague tell what the component actually does or represents, without mentally translating the sentence back into English? Examples 24–28 illustrate Russian-specific failures, distinct contracts, and role-specific phrasing.
 
-## 10. Maintenance and change discipline
+## 10. Russian description style by declaration kind
+
+Choose the **meaning first**, then a natural way to express it. Prefer third-person, present-tense descriptions of operations for Russian functions/methods; this is a project writing convention, not an attempt to change the API's behavior or prohibit every infinitive.
+
+| Declaration | Russian description when the code supports it | What to avoid |
+| --- | --- | --- |
+| Active class (reader, HTTP client, adapter, coordinator) | "Читает конфигурацию и возвращает настройки...", "Отправляет запросы через переданный транспорт..." | Describe only its data or name; attribute storage/ownership it does not implement |
+| Class that actually keeps data | "Хранит записи по ключам в словаре экземпляра..." | Assume internal storage or serialization solely from a name rather than inspecting the implementation |
+| Value object / configuration record | "Содержит параметры...", "Параметры отображения графа..." | Force an action verb when the object is only a data container |
+| Function or method | "Открывает файл и возвращает поток...", "Закрывает переданный поток...", "Заменяет фрагмент и возвращает результат..." | Bare "Открыть...", "Закрыть...", "Заменить..." that reads as an instruction and omits the actual result |
+| Field, property, local variable | "Путь к файлу, который будет открыт...", "Время последнего успешного обновления..." | A meaningless noun/name paraphrase or an invented lifecycle guarantee |
+
+The same verb can be correct for one class and false for another. "Хранит" is useful when a component really retains values; it may be inaccurate for a wrapper that forwards calls to a separately configured backend. Likewise, a method named `open` might return a stream, merely mark state as open, or schedule an asynchronous operation. **Inspect the implementation before choosing the description.**
+
+A nominal phrase or infinitive is not inherently an error in Russian: it may be appropriate for a value definition, established API style, or a genuine instruction. Do not transplant the English imperative convention of some documentation styles into Russian verbatim. Check whether the phrase explains **what this declaration does/contains** rather than telling someone what to do.
+
+## 11. Maintenance and change discipline
 
 A behavior change may invalidate a comment that is physically outside the modified lines. Inspect directly dependent comments and examples within the permitted scope. Correct or remove stale promises. Do not initiate a repository-wide documentation campaign, generate speculative explanations, or alter executable behavior merely to make a comment sound complete.
 

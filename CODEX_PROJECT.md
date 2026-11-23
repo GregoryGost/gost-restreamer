@@ -94,7 +94,7 @@
 
 - Субагенты: разрешены.
 - Область делегирования: только разрешённые изменения исполняемого кода приложения и тестов; инструкции, документацию, комментарии и документирующие строки обрабатывает основной агент.
-- Модель основного агента и уровень рассуждений: `gpt-6.1-sol / xhigh`.
+- Модель основного агента и уровень рассуждений: `gpt-6.2-sol / xhigh`.
 - Конфигурация: локальный файл — `.codex/config.toml`, переносимый образец — `.codex/config.example.toml`.
 - Параллельные потоки субагентов: 4 без учёта основного агента, в пределах ограничения текущего клиента.
 - Доступность моделей: проверять в текущем клиенте и учётной записи; недоступные сочетания сообщать без молчаливой подмены моделей.
@@ -104,16 +104,16 @@
 
 | Роль | Файл роли | Модель | Уровень рассуждений |
 | --- | --- | --- | --- |
-| Архитектура: стабильность | `.codex/agents/architect_stability.toml` | `gpt-6.1-sol` | `xhigh` |
-| Архитектура: развитие | `.codex/agents/architect_evolution.toml` | `gpt-6.1-sol` | `xhigh` |
-| Архитектура базы данных | `.codex/agents/database_architect.toml` | `gpt-6.1-sol` | `xhigh` |
+| Архитектура: стабильность | `.codex/agents/architect_stability.toml` | `gpt-6.2-sol` | `xhigh` |
+| Архитектура: развитие | `.codex/agents/architect_evolution.toml` | `gpt-6.2-sol` | `xhigh` |
+| Архитектура базы данных | `.codex/agents/database_architect.toml` | `gpt-6.2-sol` | `xhigh` |
 | Исследование кодовой базы | `.codex/agents/code_explorer.toml` | `gpt-6-luna` | `high` |
 | Исследование документации и API | `.codex/agents/docs_researcher.toml` | `gpt-6-luna` | `high` |
-| Сложная реализация | `.codex/agents/complex_implementer.toml` | `gpt-6.1-sol` | `high` |
+| Сложная реализация | `.codex/agents/complex_implementer.toml` | `gpt-6.2-sol` | `high` |
 | Небольшие исправления | `.codex/agents/simple_implementer.toml` | `gpt-6-luna` | `high` |
-| Независимое тестирование | `.codex/agents/test_engineer.toml` | `gpt-6.1-sol` | `high` |
-| Независимое ревью кода | `.codex/agents/code_reviewer.toml` | `gpt-6.1-sol` | `high` |
-| Сложные сбои и споры о проектировании | `.codex/agents/deep_debugger.toml` | `gpt-6-astra` | `xhigh` |
+| Независимое тестирование | `.codex/agents/test_engineer.toml` | `gpt-6.2-sol` | `high` |
+| Независимое ревью кода | `.codex/agents/code_reviewer.toml` | `gpt-6.2-sol` | `high` |
+| Сложные сбои и споры о проектировании | `.codex/agents/deep_debugger.toml` | `gpt-6.2-astra` | `xhigh` |
 
 <a id="functional-scope-and-necessary-safeguards"></a>
 
@@ -443,8 +443,8 @@ AAC LC и конечные аудиопривязки Opus CELT120, FLAC s16, MP
 ## Источники материалов
 
 - Источник: [GregoryGost/agent-projects-tools](https://github.com/GregoryGost/agent-projects-tools).
-- Версия источника: `v1.19.1`.
-- Коммит источника: `1e7abfb4abc6cab4b42f692d56c17d35b5ba6299`.
+- Версия источника: `v1.21.1`.
+- Коммит источника: `faa2d863d9d76d51f14c90ed5e433b5c2b921bef`.
 - Локальные настройки: корневой `AGENTS.md` задаёт правила проверки фактов, ревью и работы с консолью для проекта; этот профиль и пример конфигурации принадлежат проекту.
 - Нормализация импорта: в `.agents/skills/code-comment-quality/references/examples-and-antipatterns.md` завершающие пробелы строк не сохраняются.
 - Обновлять переносимые материалы согласованно: начальные инструкции, маршрутизацию, зависимости, координацию, роли, навыки и этот профиль. Не заменять профиль полным шаблоном с чужими стеками.
