@@ -78,7 +78,13 @@ func (m *Manager) discover(member *managedSource, source core.ChatSource, adapte
 			// state и reason сообщают о причине безопасным типизированным значением.
 			state, reason := credentialStatus(err)
 			m.reportDiscovery(member, state, reason)
-			if terminalReaderState(state) || !retries.wait(member.ctx, 0) {
+			// delay учитывает нижнюю границу повтора, если проверку ограничила площадка.
+			var delay time.Duration
+			// retry содержит безопасный интервал, указанный на границе полномочий.
+			if retry := credentialRetry(err); retry != nil {
+				delay = retry.RetryAfter
+			}
+			if terminalReaderState(state) || !retries.wait(member.ctx, delay) {
 				return
 			}
 			continue

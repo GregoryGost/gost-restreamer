@@ -311,7 +311,7 @@ func (r *managedReader) readOnce(retries *retrySchedule, resumeToken string) (co
 	retries.recordStart()
 	m.mu.Unlock()
 	// credentials содержит полные серверные данные, а err классифицируется без текста ошибки.
-	credentials, err := m.credentials.Credentials(r.ctx, r.key.channel.AccountID)
+	credentials, err := r.credentials(r.ctx)
 	if err != nil {
 		// state и reason выбирают безопасное состояние отказа credential-owner.
 		state, reason := credentialStatus(err)
@@ -320,7 +320,7 @@ func (r *managedReader) readOnce(retries *retrySchedule, resumeToken string) (co
 		}
 		m.setReaderStatusLocked(r, state, reason)
 		m.mu.Unlock()
-		return state, false, nil
+		return state, false, credentialRetry(err)
 	}
 	if credentials.AccountID != r.key.channel.AccountID || credentials.Provider != r.key.channel.Provider || credentials.Validate() != nil {
 		if !r.lockReaderAdmission(r.ctx) {
@@ -330,6 +330,13 @@ func (r *managedReader) readOnce(retries *retrySchedule, resumeToken string) (co
 		m.mu.Unlock()
 		return core.ChatAuthRequired, false, nil
 	}
+	// releaseConnection освобождает основной сетевой слот после завершения Read и его соединений.
+	// err сообщает, что читатель остановился, ожидая освобождения сетевого бюджета.
+	releaseConnection, err := acquireChatSlot(r.ctx, m.connections)
+	if err != nil {
+		return core.ChatStopped, false, nil
+	}
+	defer releaseConnection()
 	// token отличает каждую физическую попытку, включая повторное подключение того же читателя.
 	var token core.ChatWorkerToken
 	if _, err = rand.Read(token[:]); err != nil {
@@ -354,9 +361,7 @@ func (r *managedReader) readOnce(retries *retrySchedule, resumeToken string) (co
 	m.mu.Unlock()
 	// Read сам ограничивает протокольное подключение и освобождает соединение до возврата.
 	// readErr может содержать безопасные указания для продолжения этого же читателя.
-	readErr := m.adapters[r.key.channel.Provider].Read(ctx, core.ChatReadRequest{
-		Token: token, Key: r.key.channel, Credentials: credentials, ResumeToken: resumeToken,
-	}, attempt)
+	readErr := m.adapters[r.key.channel.Provider].Read(ctx, r.readRequest(ctx, token, credentials, resumeToken), attempt)
 	attempt.closeInput()
 	// retry оставляет непрозрачную позицию на сервере и отделяет её от произвольной ошибки адаптера.
 	var retry *core.ChatReadRetry
@@ -378,6 +383,54 @@ func (r *managedReader) readOnce(retries *retrySchedule, resumeToken string) (co
 	return r.state, wasConnected, retry
 }
 
+// credentials читает набор своего аккаунта. Для Twitch проверка продолжается после сверки
+// квитанции, потому что время этой проверки могло наступить, пока запись была недоступна.
+func (r *managedReader) credentials(ctx context.Context) (core.ChatCredentials, error) {
+	// owner предоставляет обычному и часовому чтению один допуск к полномочиям Twitch.
+	owner, ok := r.manager.credentials.(*CredentialOwner)
+	if ok && r.key.channel.Provider == core.ChatTwitch {
+		return owner.credentials(ctx, r.key.channel.AccountID, true)
+	}
+	return r.manager.credentials.Credentials(ctx, r.key.channel.AccountID)
+}
+
+// readRequest даёт адаптеру доступ только к аккаунту и ресурсам текущей попытки чтения.
+func (r *managedReader) readRequest(ctx context.Context, token core.ChatWorkerToken, credentials core.ChatCredentials, resume string) core.ChatReadRequest {
+	return core.ChatReadRequest{
+		Token: token, Key: r.key.channel, Credentials: credentials, ResumeToken: resume,
+		// Функция получает актуальный набор от того же владельца и прекращается вместе с этой попыткой.
+		RefreshCredentials: func(check context.Context) (core.ChatCredentials, error) {
+			if check == nil {
+				return core.ChatCredentials{}, core.ErrInvalid
+			}
+			// operation наследует срок проверки. cancel и stop снимают таймер и подписку на остановку чтения.
+			operation, cancel := context.WithCancel(check)
+			defer cancel()
+			stop := context.AfterFunc(ctx, cancel)
+			defer stop()
+			if ctx.Err() != nil {
+				return core.ChatCredentials{}, ctx.Err()
+			}
+			// current содержит подтверждённые серверные поля, err отделяет временный сбой от запроса нового входа.
+			current, err := r.credentials(operation)
+			// state сообщает, нужно ли остановить чтение до ручного подключения аккаунта.
+			state, _ := credentialStatus(err)
+			if state == core.ChatAuthRequired {
+				return core.ChatCredentials{}, core.ErrInvalid
+			}
+			return current, err
+		},
+		// Функция оставляет дополнительный сокет в общем бюджете до подтверждённого закрытия.
+		AcquireConnection: func(overlap context.Context) (func(), error) {
+			return acquireChatSlot(overlap, r.manager.connections)
+		},
+		// Функция учитывает конечный сетевой запрос вместе с запросами обнаружения и авторизации.
+		AcquireHTTP: func(request context.Context) (func(), error) {
+			return acquireChatSlot(request, r.manager.discoverSlots)
+		},
+	}
+}
+
 // closeInput отзывает вход попытки в том же порядке, в котором Hub принимает сообщения и учитывает потери.
 func (a *readerAttempt) closeInput() {
 	// hub координирует отсечение входа с FIFO этой точной Session.
@@ -397,7 +450,18 @@ func credentialStatus(err error) (core.ChatSourceState, core.ChatReason) {
 	if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrInvalid) || errors.Is(err, ErrCredentialRefreshConsumed) {
 		return core.ChatAuthRequired, core.ChatReasonCredentials
 	}
+	if credentialRetry(err) != nil {
+		return core.ChatRetrying, core.ChatReasonQuota
+	}
 	return core.ChatRetrying, core.ChatReasonNetwork
+}
+
+// credentialRetry извлекает безопасную задержку внешней проверки для следующей попытки.
+func credentialRetry(err error) *core.ChatReadRetry {
+	// retry содержит ограничение площадки, если оно сопровождало отказ.
+	var retry *core.ChatReadRetry
+	_ = errors.As(err, &retry)
+	return retry
 }
 
 // setReaderStatusLocked распространяет состояние общего читателя по независимым участникам.
@@ -572,6 +636,48 @@ func (a *readerAttempt) liveMembersLocked(ctx context.Context) ([]*managedSource
 	return result, nil
 }
 
+// lockLiveMembers возвращает подтверждённых участников с удержанием Manager.mu.
+// Twitch ждёт снятия временного барьера конфигурации в пределах того же контекста.
+// После пробуждения проверяется прежняя попытка, без переноса события в новое поколение.
+func (a *readerAttempt) lockLiveMembers(ctx context.Context) ([]*managedSource, error) {
+	// m защищает текущие привязки, барьер записи и сигнал о его снятии.
+	m := a.reader.manager
+	for {
+		m.mu.Lock()
+		// members получает подтверждённых участников. err сообщает об отзыве либо временном запрете.
+		members, err := a.liveMembersLocked(ctx)
+		if err == nil {
+			return members, nil
+		}
+		if !errors.Is(err, core.ErrStale) || !a.blockedByMutationLocked() {
+			m.mu.Unlock()
+			return nil, err
+		}
+		// changed относится к тому же состоянию барьера, которое только что проверено.
+		changed := m.changed
+		m.mu.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// blockedByMutationLocked отличает временную запись настроек от отзыва поколения Twitch.
+func (a *readerAttempt) blockedByMutationLocked() bool {
+	if a.reader.key.channel.Provider != core.ChatTwitch || !a.currentLocked() {
+		return false
+	}
+	// member сохраняет исходную привязку на время изменения аккаунта или источника.
+	for member := range a.reader.members {
+		if a.reader.manager.managedSourceBlockedLocked(member.value) {
+			return true
+		}
+	}
+	return false
+}
+
 // Status применяет безопасный статус точной попытки к подтверждённым участникам.
 func (a *readerAttempt) Status(ctx context.Context, token core.ChatWorkerToken, state core.ChatSourceState, reason core.ChatReason) error {
 	if ctx == nil || state.Validate() != nil || reason.Validate() != nil {
@@ -582,13 +688,12 @@ func (a *readerAttempt) Status(ctx context.Context, token core.ChatWorkerToken, 
 	}
 	// m удерживает текущие привязки до применения статуса.
 	m := a.reader.manager
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	// members содержит подтверждённых владельцев, err сообщает об отзыве либо отмене.
-	members, err := a.liveMembersLocked(ctx)
+	members, err := a.lockLiveMembers(ctx)
 	if err != nil {
 		return err
 	}
+	defer m.mu.Unlock()
 	// terminal закрывает вход новых сообщений до появления конечного статуса в Hub.
 	terminal := terminalReaderState(state)
 	if terminal {
@@ -625,11 +730,10 @@ func (a *readerAttempt) Gap(ctx context.Context, token core.ChatWorkerToken, rea
 	}
 	// m удерживает точный допуск конфигурации до записи сигнала в ленту.
 	m := a.reader.manager
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	// err сообщает об отзыве попытки либо прекращении запроса.
-	if _, err := a.liveMembersLocked(ctx); err != nil {
+	if _, err := a.lockLiveMembers(ctx); err != nil {
 		return err
 	}
+	defer m.mu.Unlock()
 	return a.reader.key.session.hub.gap(reason)
 }

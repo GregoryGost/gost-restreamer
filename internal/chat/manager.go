@@ -39,6 +39,10 @@ type Manager struct {
 	readers map[managedReaderKey]*managedReader
 	// readerSlots считает физические попытки и ожидающие переподключения вплоть до возврата.
 	readerSlots int
+	// connections учитывает основные и дополнительные соединения до физического закрытия.
+	connections chan struct{}
+	// twitchAuthorizations хранит ограниченный набор попыток под защитой mu.
+	twitchAuthorizations map[core.ID]*twitchAuthorization
 	// wake объединяет запросы на сверку. changed будит клиентов при смене эпохи или конфигурации.
 	wake    chan struct{}
 	changed chan struct{}
@@ -115,7 +119,8 @@ type managedSource struct {
 }
 
 // New создаёт Manager и запускает сверку. Необязательный credentials принадлежит вызывающему.
-// по умолчанию Manager создаёт собственного сериализующего владельца чтения без обмена полномочий.
+// По умолчанию Manager создаёт владельца полномочий и передаёт ему проверку и ротацию
+// токенов зарегистрированного Twitch-адаптера.
 func New(ctx context.Context, service *core.Service, store core.UnitOfWork, limits core.ChatLimits, adapters []core.ChatAdapterPort, credentials ...CredentialReader) (*Manager, error) {
 	if ctx == nil || service == nil || store == nil || limits.Validate() != nil || len(credentials) > 1 {
 		return nil, core.ErrInvalid
@@ -149,6 +154,8 @@ func New(ctx context.Context, service *core.Service, store core.UnitOfWork, limi
 	// reader предоставляет полномочия, а owner ненулевой только при владении Manager.
 	var reader CredentialReader
 	var owner *CredentialOwner
+	// httpSlots ограничивает конечные сетевые запросы Manager и шаги авторизации Twitch.
+	httpSlots := make(chan struct{}, limits.HTTPRequests)
 	if len(credentials) == 1 {
 		reader = credentials[0]
 		if reader == nil {
@@ -157,7 +164,7 @@ func New(ctx context.Context, service *core.Service, store core.UnitOfWork, limi
 	} else {
 		// err передаёт ошибку предварительной проверки владельца полномочий.
 		var err error
-		owner, err = NewCredentialOwner(service, limits, nil)
+		owner, err = NewCredentialOwner(service, limits, twitchCredentialRefresh(byProvider[core.ChatTwitch], httpSlots, limits.HTTPTimeout))
 		if err != nil {
 			return nil, err
 		}
@@ -169,8 +176,9 @@ func New(ctx context.Context, service *core.Service, store core.UnitOfWork, limi
 	m := &Manager{
 		ctx: workerCtx, cancel: cancel, service: service, store: store, credentials: reader, ownedCredentials: owner,
 		limits: limits, adapters: byProvider, sessions: make(map[core.ID]*managedSession), readers: make(map[managedReaderKey]*managedReader),
+		connections: make(chan struct{}, limits.Connections), twitchAuthorizations: make(map[core.ID]*twitchAuthorization),
 		wake: make(chan struct{}, 1), changed: make(chan struct{}), topologyChanged: make(chan struct{}), mutation: make(chan struct{}, 1),
-		discoverSlots: make(chan struct{}, limits.HTTPRequests), snapshotSlots: make(chan struct{}, limits.Snapshots), eventSlots: make(chan struct{}, limits.SSEClients),
+		discoverSlots: httpSlots, snapshotSlots: make(chan struct{}, limits.Snapshots), eventSlots: make(chan struct{}, limits.SSEClients),
 		subscriptions: make(map[core.ID]int), cursorKey: key, done: make(chan struct{}),
 	}
 	// Callback завершает управляющую работу после запроса остановки всех её ресурсов.
@@ -182,6 +190,9 @@ func New(ctx context.Context, service *core.Service, store core.UnitOfWork, limi
 // join закрывает done после завершения всех работ Manager и созданного им владельца полномочий.
 func (m *Manager) join() {
 	m.work.Wait()
+	m.mu.Lock()
+	clear(m.twitchAuthorizations)
+	m.mu.Unlock()
 	if m.ownedCredentials != nil {
 		_ = m.ownedCredentials.Close(context.Background())
 		<-m.ownedCredentials.Done()

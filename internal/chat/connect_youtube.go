@@ -21,7 +21,7 @@ type youtubeKeyValidator interface {
 func (m *Manager) ConnectYouTube(ctx context.Context, request core.ChatAuthorizationRequest) (core.ChatAccount, core.ChatReason, error) {
 	// account содержит допустимые метаданные нового аккаунта, в том числе имя.
 	account := core.ChatAccount{Provider: request.Provider, Name: request.Name}
-	if request.Provider != core.ChatYouTube || account.Validate() != nil || request.Bundle.Validate(core.ChatYouTube) != nil ||
+	if request.Provider != core.ChatYouTube || request.ClientID != "" || account.Validate() != nil || request.Bundle.Validate(core.ChatYouTube) != nil ||
 		request.AccountID == "" && request.ExpectedRevision != 0 ||
 		request.AccountID != "" && (request.AccountID.Validate() != nil || len(request.AccountID) > core.ChatIDBytes || request.ExpectedRevision == 0 || request.Name != "") {
 		return core.ChatAccount{}, core.ChatReasonConfiguration, core.ErrInvalid
@@ -68,7 +68,7 @@ func (m *Manager) ConnectYouTube(ctx context.Context, request core.ChatAuthoriza
 	if request.AccountID != "" {
 		_, account, err = owner.replace(operation, m, request.AccountID, core.ChatYouTube, bundle, writeID, request.ExpectedRevision)
 	} else {
-		account, err = m.createYouTubeAccount(operation, account, bundle, writeID)
+		account, err = m.createVerifiedChatAccount(operation, account, bundle, writeID)
 	}
 	return account, core.ChatReasonNone, err
 }
@@ -94,9 +94,9 @@ func (m *Manager) verifyYouTubeKey(ctx context.Context, validator youtubeKeyVali
 	return validator.ValidateAPIKey(bounded, key)
 }
 
-// createYouTubeAccount создаёт аккаунт с проверенным ключом. Если исход записи неясен,
+// createVerifiedChatAccount создаёт аккаунт с уже проверенными полномочиями. Если исход записи неясен,
 // отдельное ограниченное чтение сравнивает обе ревизии, квитанцию и полный набор полномочий.
-func (m *Manager) createYouTubeAccount(ctx context.Context, account core.ChatAccount, bundle core.ChatCredentialBundle, writeID core.ID) (core.ChatAccount, error) {
+func (m *Manager) createVerifiedChatAccount(ctx context.Context, account core.ChatAccount, bundle core.ChatCredentialBundle, writeID core.ID) (core.ChatAccount, error) {
 	// expected хранит уже назначенный ID и ожидаемый результат. writeErr может сопровождать COMMIT.
 	expected, writeErr := m.service.CreateChatAccount(ctx, account, bundle, writeID)
 	if writeErr == nil {

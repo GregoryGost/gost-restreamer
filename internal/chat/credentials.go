@@ -136,6 +136,12 @@ func NewCredentialOwner(store CredentialStore, limits core.ChatLimits, refresh C
 // Операция ждёт предыдущую работу того же аккаунта и сверяет неопределённую запись до следующего обмена.
 // Набор с возможно использованным одноразовым токеном остаётся недоступен до появления другого набора.
 func (o *CredentialOwner) Credentials(ctx context.Context, id core.ID) (core.ChatCredentials, error) {
+	return o.credentials(ctx, id, false)
+}
+
+// credentials при необходимости проверяет актуальность уже подтверждённой пары Twitch после сверки записи.
+// checkRecovered не разрешает повторить обмен прежнего токена: функция проверки получает сохранённую новую пару.
+func (o *CredentialOwner) credentials(ctx context.Context, id core.ID, checkRecovered bool) (core.ChatCredentials, error) {
 	// ctx учитывает остановку владельца, lane задаёт слот аккаунта, finish освобождает допуск, err сообщает причину отказа.
 	ctx, lane, finish, err := o.begin(ctx, id)
 	if err != nil {
@@ -155,7 +161,7 @@ func (o *CredentialOwner) Credentials(ctx context.Context, id core.ID) (core.Cha
 	if lane.spent.revision != 0 {
 		return core.ChatCredentials{}, ErrCredentialRefreshConsumed
 	}
-	if recovered || o.refresh == nil {
+	if recovered && !checkRecovered || o.refresh == nil {
 		return current.Credentials, nil
 	}
 	return o.refreshCredentials(ctx, lane, current.Credentials)
@@ -390,6 +396,11 @@ func (o *CredentialOwner) refreshCredentials(ctx context.Context, lane *credenti
 
 // safeCredentialExchangeError оставляет вызывающему только известные причины без исходных данных платформы.
 func safeCredentialExchangeError(err error) error {
+	// retry передаёт только допустимый срок повтора без данных внешнего обмена.
+	var retry *core.ChatReadRetry
+	if errors.As(err, &retry) && retry != nil {
+		return errors.Join(core.ErrNotReady, &core.ChatReadRetry{RetryAfter: max(0, retry.RetryAfter)})
+	}
 	// reason содержит очередную безопасную причину транспортного, контекстного или доменного отказа.
 	for _, reason := range []error{context.Canceled, context.DeadlineExceeded, core.ErrBusy, core.ErrNotReady, core.ErrInvalid, ErrCredentialRefreshConsumed} {
 		if errors.Is(err, reason) {

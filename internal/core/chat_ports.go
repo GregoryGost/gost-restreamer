@@ -296,6 +296,14 @@ type ChatReadRequest struct {
 	Credentials ChatCredentials
 	// ResumeToken содержит позицию последнего обработанного пакета того же логического читателя.
 	ResumeToken string
+	// RefreshCredentials повторно проверяет полномочия того же аккаунта в пределах текущего чтения.
+	// ErrInvalid означает, что продолжить работу можно после повторной авторизации.
+	RefreshCredentials func(context.Context) (ChatCredentials, error)
+	// AcquireConnection резервирует дополнительное физическое соединение до его закрытия.
+	// Основное соединение уже учтено Manager на всё время вызова Read.
+	AcquireConnection func(context.Context) (func(), error)
+	// AcquireHTTP резервирует место для конечного запроса адаптера. Возвращённая функция освобождает место.
+	AcquireHTTP func(context.Context) (func(), error)
 }
 
 // ChatResumeTokenBytes ограничивает позицию площадки, удерживаемую между попытками чтения.
@@ -370,6 +378,8 @@ type ChatAuthorizationRequest struct {
 	ExpectedRevision uint64
 	// Name содержит необязательное имя нового аккаунта.
 	Name string
+	// ClientID задаёт публичное приложение Twitch до получения первого набора токенов.
+	ClientID string
 	// Bundle передаёт первоначальные серверные реквизиты без публикации в состоянии попытки.
 	Bundle ChatCredentialBundle
 }

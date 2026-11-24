@@ -7,6 +7,7 @@ require (
 	github.com/abema/go-mp4 v1.7.1
 	github.com/bluenviron/gortmplib v1.0.1
 	github.com/bluenviron/mediacommon/v2 v2.9.3
+	github.com/coder/websocket v1.8.15
 	github.com/danielgtaylor/huma/v2 v2.40.0
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/mattn/go-sqlite3 v1.14.22
