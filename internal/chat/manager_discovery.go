@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"math/rand/v2"
 	"slices"
 	"strings"
@@ -78,11 +79,11 @@ func (m *Manager) discover(member *managedSource, source core.ChatSource, adapte
 			// state и reason сообщают о причине безопасным типизированным значением.
 			state, reason := credentialStatus(err)
 			m.reportDiscovery(member, state, reason)
-			// delay учитывает нижнюю границу повтора, если проверку ограничила площадка.
-			var delay time.Duration
+			// delay сохраняет ограничения поиска канала и проверки полномочий.
+			delay := found.RetryAfter
 			// retry содержит безопасный интервал, указанный на границе полномочий.
 			if retry := credentialRetry(err); retry != nil {
-				delay = retry.RetryAfter
+				delay = max(delay, retry.RetryAfter)
 			}
 			if terminalReaderState(state) || !retries.wait(member.ctx, delay) {
 				return
@@ -105,10 +106,10 @@ func (m *Manager) finishDiscovery() {
 	m.scheduleSourcesLocked()
 }
 
-// discoverOnce получает допуск отдельно перед Credentials и запросом адаптера. Известное
-// videoID используется resolver вместо общего поиска, если адаптер его поддерживает. Ожидание сетевого
-// слота может пересечься с отзывом выхода или конфигурационным изменением. В этом случае
-// слот освобождается до ожидания нового допуска, чтобы соседние источники могли его занять.
+// discoverOnce получает полномочия и выполняет обнаружение в одном конечном бюджете.
+// После раннего HTTP 401 от VK Видео Live слот запроса уже свободен. Метод проверяет исходный
+// допуск, восстанавливает полномочия и повторяет запрос один раз с тем же ограничением времени.
+// Задержка первого 401 сохраняется, если понадобится новая плановая попытка.
 func (m *Manager) discoverOnce(member *managedSource, source core.ChatSource, adapter core.ChatAdapterPort, resolver core.ChatBroadcastResolver, videoID string, retries *retrySchedule) (core.ChatDiscovery, error) {
 	if !m.lockSourceAdmission(member.ctx, member) {
 		return core.ChatDiscovery{}, member.ctx.Err()
@@ -123,30 +124,58 @@ func (m *Manager) discoverOnce(member *managedSource, source core.ChatSource, ad
 	if err != nil {
 		return core.ChatDiscovery{}, err
 	}
+	// found принимает результат обнаружения, err отличает ранний отказ токена от других ошибок.
+	found, err := m.discoverWithCredentials(limited, member, source, adapter, resolver, videoID, credentials)
+	if source.Provider != core.ChatVKVideoLive || !errors.Is(err, core.ErrChatAppTokenRejected) {
+		return found, err
+	}
+	// delay задаёт минимальный интервал перед новой попыткой, если восстановление не завершит поиск.
+	var delay time.Duration
+	// retry содержит задержку исходного HTTP 401, когда площадка её указала.
+	if retry := credentialRetry(err); retry != nil {
+		delay = retry.RetryAfter
+	}
+	if !m.lockSourceAdmission(limited, member) {
+		return core.ChatDiscovery{RetryAfter: delay}, limited.Err()
+	}
+	m.mu.Unlock()
+	credentials, err = m.refreshRejectedCredentials(limited, credentials)
+	if err != nil {
+		return core.ChatDiscovery{RetryAfter: delay}, err
+	}
+	found, err = m.discoverWithCredentials(limited, member, source, adapter, resolver, videoID, credentials)
+	found.RetryAfter = max(found.RetryAfter, delay)
+	return found, err
+}
+
+// discoverWithCredentials проверяет набор и получает HTTP-слот под сроком ctx.
+// Если во время ожидания слота допуск исходного источника изменился, метод освобождает слот
+// перед ожиданием барьера. Известный videoID используется resolver вместо общего поиска.
+func (m *Manager) discoverWithCredentials(ctx context.Context, member *managedSource, source core.ChatSource, adapter core.ChatAdapterPort, resolver core.ChatBroadcastResolver, videoID string, credentials core.ChatCredentials) (core.ChatDiscovery, error) {
 	if credentials.AccountID != source.AccountID || credentials.Provider != source.Provider || credentials.Validate() != nil {
 		return core.ChatDiscovery{}, core.ErrInvalid
 	}
-	for m.lockSourceAdmission(limited, member) {
+	for m.lockSourceAdmission(ctx, member) {
 		m.mu.Unlock()
 		select {
 		case m.discoverSlots <- struct{}{}:
-		case <-limited.Done():
-			return core.ChatDiscovery{}, limited.Err()
+		case <-ctx.Done():
+			return core.ChatDiscovery{}, ctx.Err()
 		}
 		m.mu.Lock()
-		if limited.Err() == nil && m.currentDiscoveryLocked(limited, member) {
+		if ctx.Err() == nil && m.currentDiscoveryLocked(ctx, member) {
 			m.mu.Unlock()
-			// Callback возвращает сетевой слот после фактического возврата адаптера.
+			// Функция освобождает сетевой слот после фактического возврата адаптера.
 			defer func() { <-m.discoverSlots }()
 			if resolver != nil && videoID != "" {
-				return resolver.DiscoverBroadcast(limited, source, credentials, videoID)
+				return resolver.DiscoverBroadcast(ctx, source, credentials, videoID)
 			}
-			return adapter.Discover(limited, source, credentials)
+			return adapter.Discover(ctx, source, credentials)
 		}
 		m.mu.Unlock()
 		<-m.discoverSlots
 	}
-	return core.ChatDiscovery{}, limited.Err()
+	return core.ChatDiscovery{}, ctx.Err()
 }
 
 // useDiscovery применяет результат и возвращает true, когда нужен новый запрос.

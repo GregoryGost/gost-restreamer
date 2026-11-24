@@ -2,8 +2,13 @@ package core
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrChatAppTokenRejected сообщает о раннем отказе HTTP 401 для app-токена VK Видео Live.
+// Такой отказ допускает проверку и условный перевыпуск текущего набора полномочий.
+var ErrChatAppTokenRejected = errors.New("площадка отклонила app-токен чата")
 
 // ChatSourceState задаёт публичное оперативное состояние без диагностического текста платформы.
 type ChatSourceState string
@@ -299,6 +304,9 @@ type ChatReadRequest struct {
 	// RefreshCredentials повторно проверяет полномочия того же аккаунта в пределах текущего чтения.
 	// ErrInvalid означает, что продолжить работу можно после повторной авторизации.
 	RefreshCredentials func(context.Context) (ChatCredentials, error)
+	// RefreshRejectedCredentials восстанавливает отклонённый набор, с которым началась попытка VK Видео Live.
+	// Адаптер освобождает слот AcquireHTTP перед вызовом и повторяет исходный HTTP-запрос один раз.
+	RefreshRejectedCredentials func(context.Context) (ChatCredentials, error)
 	// AcquireConnection резервирует дополнительное физическое соединение до его закрытия.
 	// Основное соединение уже учтено Manager на всё время вызова Read.
 	AcquireConnection func(context.Context) (func(), error)
@@ -310,12 +318,15 @@ type ChatReadRequest struct {
 const ChatResumeTokenBytes = 4 << 10
 
 // ChatReadRetry передаёт Manager позицию и минимальную задержку следующей физической попытки.
-// Адаптер сообщает причину через ChatAdapterSink, а Manager сохраняет свои ограничения повторов.
+// Manager сохраняет свои ограничения повторов независимо от параметров адаптера.
 type ChatReadRetry struct {
 	// ResumeToken содержит полную позицию продолжения, пустое значение начинает чтение с начала.
 	ResumeToken string
 	// RetryAfter задаёт минимальную задержку площадки, ноль оставляет задержку Manager.
 	RetryAfter time.Duration
+	// Reason уточняет временный отказ значением ChatReasonNetwork или ChatReasonQuota.
+	// Пустое значение сохраняет прежние правила определения причины.
+	Reason ChatReason
 }
 
 // Error возвращает безопасное описание повтора без позиции и диагностических данных площадки.

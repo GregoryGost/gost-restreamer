@@ -361,7 +361,7 @@ func (r *managedReader) readOnce(retries *retrySchedule, resumeToken string) (co
 	m.mu.Unlock()
 	// Read сам ограничивает протокольное подключение и освобождает соединение до возврата.
 	// readErr может содержать безопасные указания для продолжения этого же читателя.
-	readErr := m.adapters[r.key.channel.Provider].Read(ctx, r.readRequest(ctx, token, credentials, resumeToken), attempt)
+	readErr := m.adapters[r.key.channel.Provider].Read(ctx, r.readRequest(ctx, attempt, credentials, resumeToken), attempt)
 	attempt.closeInput()
 	// retry оставляет непрозрачную позицию на сервере и отделяет её от произвольной ошибки адаптера.
 	var retry *core.ChatReadRetry
@@ -373,8 +373,11 @@ func (r *managedReader) readOnce(retries *retrySchedule, resumeToken string) (co
 	// wasConnected влияет только на сброс задержки, а не на счётчик попыток.
 	wasConnected := attempt.connected
 	if r.ctx.Err() == nil && !terminalReaderState(r.state) {
-		// reason сохраняет уже сообщённую безопасную причину, когда адаптер успел её подтвердить.
+		// reason берёт явную причину повтора или сохраняет уже подтверждённый статус адаптера.
 		reason := r.reason
+		if retry != nil && (retry.Reason == core.ChatReasonNetwork || retry.Reason == core.ChatReasonQuota) {
+			reason = retry.Reason
+		}
 		if reason == core.ChatReasonNone {
 			reason = core.ChatReasonNetwork
 		}
@@ -389,15 +392,16 @@ func (r *managedReader) credentials(ctx context.Context) (core.ChatCredentials, 
 	// owner предоставляет обычному и часовому чтению один допуск к полномочиям Twitch.
 	owner, ok := r.manager.credentials.(*CredentialOwner)
 	if ok && r.key.channel.Provider == core.ChatTwitch {
-		return owner.credentials(ctx, r.key.channel.AccountID, true)
+		return owner.credentials(ctx, r.key.channel.AccountID, true, nil)
 	}
 	return r.manager.credentials.Credentials(ctx, r.key.channel.AccountID)
 }
 
 // readRequest даёт адаптеру доступ только к аккаунту и ресурсам текущей попытки чтения.
-func (r *managedReader) readRequest(ctx context.Context, token core.ChatWorkerToken, credentials core.ChatCredentials, resume string) core.ChatReadRequest {
-	return core.ChatReadRequest{
-		Token: token, Key: r.key.channel, Credentials: credentials, ResumeToken: resume,
+func (r *managedReader) readRequest(ctx context.Context, attempt *readerAttempt, credentials core.ChatCredentials, resume string) core.ChatReadRequest {
+	// request передаёт исходную квитанцию и добавляет обработку раннего HTTP 401 только для VK Видео Live.
+	request := core.ChatReadRequest{
+		Token: attempt.token, Key: r.key.channel, Credentials: credentials, ResumeToken: resume,
 		// Функция получает актуальный набор от того же владельца и прекращается вместе с этой попыткой.
 		RefreshCredentials: func(check context.Context) (core.ChatCredentials, error) {
 			if check == nil {
@@ -429,6 +433,80 @@ func (r *managedReader) readRequest(ctx context.Context, token core.ChatWorkerTo
 			return acquireChatSlot(request, r.manager.discoverSlots)
 		},
 	}
+	if r.key.channel.Provider == core.ChatVKVideoLive {
+		// Функция хранит исходную квитанцию этой попытки и прекращает восстановление при её отзыве.
+		request.RefreshRejectedCredentials = func(check context.Context) (core.ChatCredentials, error) {
+			return attempt.refreshRejectedCredentials(ctx, check, credentials)
+		}
+		request.AcquireHTTP = attempt.acquireVKHTTP
+	}
+	return request
+}
+
+// refreshRejectedCredentials восстанавливает набор этой попытки в пределах контекстов проверки и чтения.
+// Метод проверяет допуск до и после работы владельца, чтобы ожидание конфигурации не удерживало
+// блокировку аккаунта или сетевой слот и новый набор не вернулся отозванному читателю.
+func (a *readerAttempt) refreshRejectedCredentials(readCtx, check context.Context, rejected core.ChatCredentials) (core.ChatCredentials, error) {
+	if check == nil {
+		return core.ChatCredentials{}, core.ErrInvalid
+	}
+	if readCtx.Err() != nil {
+		return core.ChatCredentials{}, readCtx.Err()
+	}
+	// operation учитывает срок проверки. cancel и stop прерывают работу при отзыве чтения и снимают подписку.
+	operation, cancel := context.WithCancel(check)
+	defer cancel()
+	stop := context.AfterFunc(readCtx, cancel)
+	defer stop()
+	// m проверяет допуск и передаёт обмен тому же владельцу аккаунта, которым пользуется обнаружение.
+	m := a.reader.manager
+	// err сообщает, что исходная попытка не дождалась допуска либо была отозвана.
+	if _, err := a.lockLiveMembers(operation); err != nil {
+		return core.ChatCredentials{}, err
+	}
+	m.mu.Unlock()
+	// current содержит подтверждённый набор, err сообщает об отказе обмена и сверки.
+	current, err := m.refreshRejectedCredentials(operation, rejected)
+	if err != nil {
+		return core.ChatCredentials{}, err
+	}
+	if _, err = a.lockLiveMembers(operation); err != nil {
+		return core.ChatCredentials{}, err
+	}
+	m.mu.Unlock()
+	return current, nil
+}
+
+// acquireVKHTTP ждёт допуска точной попытки до выдачи HTTP-слота. Если допуск изменился в очереди,
+// слот возвращается до ожидания конфигурационного барьера. Так соседние запросы могут продолжаться.
+func (a *readerAttempt) acquireVKHTTP(ctx context.Context) (func(), error) {
+	if ctx == nil {
+		return nil, core.ErrInvalid
+	}
+	// m хранит общий сетевой бюджет и защищает повторную проверку исходной попытки.
+	m := a.reader.manager
+	for {
+		// err сообщает, что попытка отменена или не может продолжить чтение.
+		if _, err := a.lockLiveMembers(ctx); err != nil {
+			return nil, err
+		}
+		m.mu.Unlock()
+		// release возвращает полученный слот, err сообщает об отмене при ожидании бюджета.
+		release, err := acquireChatSlot(ctx, m.discoverSlots)
+		if err != nil {
+			return nil, err
+		}
+		m.mu.Lock()
+		_, err = a.liveMembersLocked(ctx)
+		m.mu.Unlock()
+		if err == nil {
+			return release, nil
+		}
+		release()
+		if !errors.Is(err, core.ErrStale) {
+			return nil, err
+		}
+	}
 }
 
 // closeInput отзывает вход попытки в том же порядке, в котором Hub принимает сообщения и учитывает потери.
@@ -450,7 +528,8 @@ func credentialStatus(err error) (core.ChatSourceState, core.ChatReason) {
 	if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrInvalid) || errors.Is(err, ErrCredentialRefreshConsumed) {
 		return core.ChatAuthRequired, core.ChatReasonCredentials
 	}
-	if credentialRetry(err) != nil {
+	// retry различает временные ограничения сети и квоты. Пустая причина сохраняет прежнее правило для Twitch.
+	if retry := credentialRetry(err); retry != nil && (retry.Reason == core.ChatReasonNone || retry.Reason == core.ChatReasonQuota) {
 		return core.ChatRetrying, core.ChatReasonQuota
 	}
 	return core.ChatRetrying, core.ChatReasonNetwork
@@ -637,7 +716,7 @@ func (a *readerAttempt) liveMembersLocked(ctx context.Context) ([]*managedSource
 }
 
 // lockLiveMembers возвращает подтверждённых участников с удержанием Manager.mu.
-// Twitch ждёт снятия временного барьера конфигурации в пределах того же контекста.
+// Twitch и VK Видео Live ждут снятия временного барьера конфигурации в пределах того же контекста.
 // После пробуждения проверяется прежняя попытка, без переноса события в новое поколение.
 func (a *readerAttempt) lockLiveMembers(ctx context.Context) ([]*managedSource, error) {
 	// m защищает текущие привязки, барьер записи и сигнал о его снятии.
@@ -664,9 +743,11 @@ func (a *readerAttempt) lockLiveMembers(ctx context.Context) ([]*managedSource, 
 	}
 }
 
-// blockedByMutationLocked отличает временную запись настроек от отзыва поколения Twitch.
+// blockedByMutationLocked отличает временную запись настроек от отзыва попытки Twitch или VK Видео Live.
 func (a *readerAttempt) blockedByMutationLocked() bool {
-	if a.reader.key.channel.Provider != core.ChatTwitch || !a.currentLocked() {
+	// provider выбирает читателей, управляющие вызовы которых переживают временный барьер.
+	provider := a.reader.key.channel.Provider
+	if provider != core.ChatTwitch && provider != core.ChatVKVideoLive || !a.currentLocked() {
 		return false
 	}
 	// member сохраняет исходную привязку на время изменения аккаунта или источника.

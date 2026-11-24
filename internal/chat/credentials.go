@@ -68,6 +68,9 @@ type CredentialOwner struct {
 	store CredentialStore
 	// refresh при необходимости выполняет один внешний обмен по набору, прочитанному под блокировкой аккаунта.
 	refresh CredentialRefreshFunc
+	// refreshVK перевыпускает app-токен после проверки срока или квитанции отклонённого набора.
+	// Manager задаёт функцию до передачи владельца читателям.
+	refreshVK CredentialRefreshFunc
 	// maxAccounts ограничивает все слоты, включая ожидающие сверки или подтверждённой замены.
 	maxAccounts int
 	// maxOperations ограничивает все выполняемые и ожидающие вызовы по наибольшему применимому бюджету чатов.
@@ -136,12 +139,13 @@ func NewCredentialOwner(store CredentialStore, limits core.ChatLimits, refresh C
 // Операция ждёт предыдущую работу того же аккаунта и сверяет неопределённую запись до следующего обмена.
 // Набор с возможно использованным одноразовым токеном остаётся недоступен до появления другого набора.
 func (o *CredentialOwner) Credentials(ctx context.Context, id core.ID) (core.ChatCredentials, error) {
-	return o.credentials(ctx, id, false)
+	return o.credentials(ctx, id, false, nil)
 }
 
-// credentials при необходимости проверяет актуальность уже подтверждённой пары Twitch после сверки записи.
-// checkRecovered не разрешает повторить обмен прежнего токена: функция проверки получает сохранённую новую пару.
-func (o *CredentialOwner) credentials(ctx context.Context, id core.ID, checkRecovered bool) (core.ChatCredentials, error) {
+// credentials читает текущий набор под допуском аккаунта и сверяет незавершённую запись до обмена.
+// checkRecovered позволяет Twitch проверить уже новую подтверждённую пару. rejected указывает исходный
+// набор VK Видео Live из запроса, на который пришёл HTTP 401, и разрешает перевыпуск до истечения срока.
+func (o *CredentialOwner) credentials(ctx context.Context, id core.ID, checkRecovered bool, rejected *core.ChatCredentials) (core.ChatCredentials, error) {
 	// ctx учитывает остановку владельца, lane задаёт слот аккаунта, finish освобождает допуск, err сообщает причину отказа.
 	ctx, lane, finish, err := o.begin(ctx, id)
 	if err != nil {
@@ -161,10 +165,45 @@ func (o *CredentialOwner) credentials(ctx context.Context, id core.ID, checkReco
 	if lane.spent.revision != 0 {
 		return core.ChatCredentials{}, ErrCredentialRefreshConsumed
 	}
+	if current.Credentials.Provider == core.ChatVKVideoLive && o.refreshVK != nil {
+		return o.currentVKVideoLiveCredentials(ctx, lane, current.Credentials, rejected)
+	}
+	if rejected != nil {
+		return core.ChatCredentials{}, core.ErrNotReady
+	}
 	if recovered && !checkRecovered || o.refresh == nil {
 		return current.Credentials, nil
 	}
-	return o.refreshCredentials(ctx, lane, current.Credentials)
+	return o.refreshCredentials(ctx, lane, current.Credentials, o.refresh)
+}
+
+// currentVKVideoLiveCredentials проверяет срок после сверки. Более свежий пригодный набор
+// используется без обмена, а совпавшая отклонённая квитанция допускает один принудительный CAS.
+// Если новый токен истёк во время сверки записи CAS, следующая попытка обработает его обычным путём.
+func (o *CredentialOwner) currentVKVideoLiveCredentials(ctx context.Context, lane *credentialLane, current core.ChatCredentials, rejected *core.ChatCredentials) (core.ChatCredentials, error) {
+	if ctx.Err() != nil {
+		return core.ChatCredentials{}, ctx.Err()
+	}
+	if rejected != nil && (current.AccountID != rejected.AccountID || current.Provider != rejected.Provider) {
+		return core.ChatCredentials{}, core.ErrStale
+	}
+	// sameReceipt означает, что отказ относится к прочитанной под допуском ревизии и квитанции записи.
+	sameReceipt := rejected != nil && current.CredentialRevision == rejected.CredentialRevision && current.CredentialWriteID == rejected.CredentialWriteID
+	if !sameReceipt && current.Bundle.VKVideoLive.ExpiresAt.After(time.Now()) {
+		return current, nil
+	}
+	// updated содержит подтверждённый результат единственного обмена и CAS. err сообщает причину отказа.
+	updated, err := o.refreshCredentials(ctx, lane, current, o.refreshVK)
+	if err != nil {
+		return core.ChatCredentials{}, err
+	}
+	if ctx.Err() != nil {
+		return core.ChatCredentials{}, ctx.Err()
+	}
+	if !updated.Bundle.VKVideoLive.ExpiresAt.After(time.Now()) {
+		return core.ChatCredentials{}, core.ErrNotReady
+	}
+	return updated, nil
 }
 
 // Replace принимает ранее проверенный полный набор с заданными writeID и config revision.
@@ -207,7 +246,6 @@ func (o *CredentialOwner) replace(ctx context.Context, manager credentialAccount
 			confirmed = recovered
 			return credentialReplacement{account: recovered, recovered: err == nil}, err
 		}
-
 		// result содержит ожидаемую запись, writeErr сообщает итог config CAS, включая возможный COMMIT.
 		result, writeErr := o.store.ReplaceChatCredentials(mutationCtx, id, provider, bundle, writeID, expected)
 		result, writeErr = o.confirmCredentialWrite(mutationCtx, id, lane, pendingCredentialWrite{result: result, replacement: true}, writeErr)
@@ -355,9 +393,9 @@ func copyCredentialBundle(bundle core.ChatCredentialBundle) core.ChatCredentialB
 	return bundle
 }
 
-// refreshCredentials вызывает функцию обмена под допуском аккаунта и выполняет не более одного credential CAS.
+// refreshCredentials вызывает exchange под допуском аккаунта и выполняет не более одного credential CAS.
 // Возможное потребление прежнего токена отмечается до проверки результата и записи.
-func (o *CredentialOwner) refreshCredentials(ctx context.Context, lane *credentialLane, current core.ChatCredentials) (core.ChatCredentials, error) {
+func (o *CredentialOwner) refreshCredentials(ctx context.Context, lane *credentialLane, current core.ChatCredentials, exchange CredentialRefreshFunc) (core.ChatCredentials, error) {
 	// err сообщает об отмене, которая успела наступить после получения серверного снимка.
 	if err := ctx.Err(); err != nil {
 		return core.ChatCredentials{}, err
@@ -366,7 +404,7 @@ func (o *CredentialOwner) refreshCredentials(ctx context.Context, lane *credenti
 	input := current
 	input.Bundle = copyCredentialBundle(current.Bundle)
 	// refresh описывает новый набор и судьбу старого токена, err сообщает результат обмена.
-	refresh, err := o.refresh(ctx, input)
+	refresh, err := exchange(ctx, input)
 	if refresh.PreviousMayBeConsumed {
 		lane.spent = credentialReceipt{revision: current.CredentialRevision, writeID: current.CredentialWriteID}
 	}
@@ -396,10 +434,17 @@ func (o *CredentialOwner) refreshCredentials(ctx context.Context, lane *credenti
 
 // safeCredentialExchangeError оставляет вызывающему только известные причины без исходных данных платформы.
 func safeCredentialExchangeError(err error) error {
-	// retry передаёт только допустимый срок повтора без данных внешнего обмена.
+	// retry передаёт только допустимый срок и безопасную причину повтора без данных внешнего обмена.
 	var retry *core.ChatReadRetry
 	if errors.As(err, &retry) && retry != nil {
-		return errors.Join(core.ErrNotReady, &core.ChatReadRetry{RetryAfter: max(0, retry.RetryAfter)})
+		// reason сохраняет известное уточнение и заменяет неизвестную причину временным отказом сети.
+		reason := retry.Reason
+		switch reason {
+		case core.ChatReasonNone, core.ChatReasonNetwork, core.ChatReasonQuota:
+		default:
+			reason = core.ChatReasonNetwork
+		}
+		return errors.Join(core.ErrNotReady, &core.ChatReadRetry{RetryAfter: max(0, retry.RetryAfter), Reason: reason})
 	}
 	// reason содержит очередную безопасную причину транспортного, контекстного или доменного отказа.
 	for _, reason := range []error{context.Canceled, context.DeadlineExceeded, core.ErrBusy, core.ErrNotReady, core.ErrInvalid, ErrCredentialRefreshConsumed} {

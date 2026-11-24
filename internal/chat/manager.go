@@ -120,7 +120,7 @@ type managedSource struct {
 
 // New создаёт Manager и запускает сверку. Необязательный credentials принадлежит вызывающему.
 // По умолчанию Manager создаёт владельца полномочий и передаёт ему проверку и ротацию
-// токенов зарегистрированного Twitch-адаптера.
+// токенов зарегистрированных адаптеров Twitch и VK Видео Live.
 func New(ctx context.Context, service *core.Service, store core.UnitOfWork, limits core.ChatLimits, adapters []core.ChatAdapterPort, credentials ...CredentialReader) (*Manager, error) {
 	if ctx == nil || service == nil || store == nil || limits.Validate() != nil || len(credentials) > 1 {
 		return nil, core.ErrInvalid
@@ -154,7 +154,7 @@ func New(ctx context.Context, service *core.Service, store core.UnitOfWork, limi
 	// reader предоставляет полномочия, а owner ненулевой только при владении Manager.
 	var reader CredentialReader
 	var owner *CredentialOwner
-	// httpSlots ограничивает конечные сетевые запросы Manager и шаги авторизации Twitch.
+	// httpSlots ограничивает конечные сетевые запросы Manager и проверку полномочий площадок.
 	httpSlots := make(chan struct{}, limits.HTTPRequests)
 	if len(credentials) == 1 {
 		reader = credentials[0]
@@ -168,6 +168,7 @@ func New(ctx context.Context, service *core.Service, store core.UnitOfWork, limi
 		if err != nil {
 			return nil, err
 		}
+		owner.refreshVK = vkVideoLiveCredentialRefresh(byProvider[core.ChatVKVideoLive], httpSlots, limits.HTTPTimeout)
 		reader = owner
 	}
 	// workerCtx и cancel ограничивают срок фоновых работ родительским контекстом.
@@ -185,6 +186,17 @@ func New(ctx context.Context, service *core.Service, store core.UnitOfWork, limi
 	m.work.Go(m.run)
 	go m.join()
 	return m, nil
+}
+
+// refreshRejectedCredentials передаёт владельцу точный набор VK Видео Live, отклонённый HTTP-запросом.
+// Отсутствие сериализующего владельца оставляет отказ временным и исключает запись в обход CAS.
+func (m *Manager) refreshRejectedCredentials(ctx context.Context, rejected core.ChatCredentials) (core.ChatCredentials, error) {
+	// owner выполняет условный обмен по прежней квитанции, ok подтверждает доступность операции.
+	owner, ok := m.credentials.(*CredentialOwner)
+	if !ok || rejected.Provider != core.ChatVKVideoLive {
+		return core.ChatCredentials{}, core.ErrNotReady
+	}
+	return owner.credentials(ctx, rejected.AccountID, false, &rejected)
 }
 
 // join закрывает done после завершения всех работ Manager и созданного им владельца полномочий.
