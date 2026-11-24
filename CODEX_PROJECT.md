@@ -53,6 +53,9 @@
 - `go-local-cache`
 - `go-gorm`
 - `go-gorm-sqlite-goose`
+- `css`
+- `ui-ux-validation`
+- `playwright-ui-validation-mcp`
 
 <a id="active-rules"></a>
 
@@ -65,6 +68,7 @@
 - Правила Git: `git.md`
 - Поиск документации: `context7_documentation.md`
 - Правила Go: `go_core.md`, `go_testing.md`, `go_observability.md`, `go_security.md`, `go_huma_v2.md`, `go_local_cache.md`, `go_gorm.md`, `go_gorm_sqlite_goose.md`
+- Правила веб-интерфейса: `css.md`, `ui_ux_validation.md`, `playwright_ui_validation.md`
 
 Имена файлов правил без каталога разрешаются относительно `.codex/rules/`.
 
@@ -75,6 +79,7 @@
 - Навыки языкового оформления: `comment-language-audit`
 - Навык качества комментариев к коду: `code-comment-quality`
 - Навыки Go: `go-core`, `go-testing`, `go-observability`, `go-security`, `go-huma-v2`, `go-local-cache`, `go-gorm`, `go-gorm-sqlite-goose`
+- Навыки веб-интерфейса: `css-expert`, `ui-ux-review`, `playwright-ui-checks-mcp`, `dashboard-design`
 
 Имена навыков разрешаются в `.agents/skills/<name>/SKILL.md`. Полная цепочка обязательных зависимостей:
 
@@ -87,6 +92,27 @@
 - `go_local_cache.md` → `go-core`, `go-local-cache`; `go-local-cache` → `go-core`.
 - `go_gorm.md` → `go-core`, `go-gorm`; `go-gorm` → `go-core`.
 - `go_gorm_sqlite_goose.md` → `go-core`, `go-gorm`, `go-gorm-sqlite-goose`; `go-gorm-sqlite-goose` → `go-gorm`.
+- `css.md` ↔ `css-expert`; `ui_ux_validation.md` ↔ `ui-ux-review`; `playwright_ui_validation.md` ↔ `playwright-ui-checks-mcp`. У каждой пары взаимная зависимость; правило и навык активированы отдельными записями выше.
+
+<a id="web-profile"></a>
+
+## Веб-интерфейс и браузерные проверки
+
+- Страницы чата `/chat/overlay` и `/chat/dashboard` описаны в [архитектуре чатов](chat-architecture.md#11-html-интерфейсы). Go-сервер отдаёт HTML, CSS и Vanilla JavaScript ES modules из `embed.FS`. Браузер загружает обычные таблицы стилей. CSS Modules, PostCSS, Autoprefixer и сборщик фронтенда не предусмотрены. При изменениях сверять фактические HTML-точки входа и подключённые ими таблицы стилей.
+- Использовать семантические элементы HTML, подписи полей, нативные элементы управления и видимый клавиатурный фокус. Текст сообщений выводить через `textContent`, эмодзи и бейджи собирать через DOM API. Проверять схему `https:` для ссылок и изображений.
+- Перед применением CSS-функции в Overlay сверять поддержку с целевой версией OBS Browser Source. Отображение Overlay проверяется также в целевом OBS.
+
+### Playwright MCP
+
+- Сервер `playwright` обязателен при каждом изменении веб-страниц, включая изменение HTML, CSS, клиентских модулей и кода, меняющего выдаваемый HTML. Проверять затронутые маршруты и конкретное изменённое состояние, снимок доступности, ошибки консоли и неуспешные сетевые запросы. При видимых изменениях сохранять снимок экрана. В отчёте указывать проверенные маршруты, результат и пробелы. Недоступность MCP, страницы или требуемого состояния означает, что обязательная проверка не выполнена.
+- Подключение MCP через локальный `.codex/config.toml` по образцу `.codex/config.example.toml`. Параметр `cwd` указывает абсолютный путь к репозиторию. Для запуска `pnpm dlx @playwright/mcp@latest` нужны `pnpm` в `PATH` процесса Codex и Google Chrome. Браузер работает в изолированном режиме без окна. Артефакты сохраняются в `.playwright-mcp/`.
+- Для локальной проверки собрать сервер и вспомогательный бинарник командой `make binary process-helper`. Запустить `./bin/gost-restreamer --config <путь-к-тестовому-YAML>`. В тестовом YAML указать временные абсолютные пути `paths.data` и `paths.runtime`, абсолютный путь к `bin/gost-process-helper` в `executables.helper` и свободные порты на `127.0.0.1` в `http.address` и `ingest_address`.
+- Использовать HTTP-адрес из поля `http` события `application_started`. Для проверки доступности документации открыть `/api/v1/docs` и дождаться её заголовка. Для прочих проверок выбирать маршрут и состояние по изменённому поведению. По завершении закрыть собственную браузерную сессию через `browser_close` и остановить собственный сервер сигналом `SIGINT` или `SIGTERM`.
+
+### Playwright Test
+
+- Исполняемый набор Playwright Test в репозитории отсутствует. Версии, команды и каталоги артефактов указываются при подключении набора.
+- Для постоянных браузерных сценариев использовать изолированные фикстуры, локаторы по роли и подписи и утверждения Playwright для ожидания конкретного видимого результата.
 
 <a id="agent-roles-and-model-selection"></a>
 

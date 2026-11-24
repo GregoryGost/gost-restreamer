@@ -24,3 +24,21 @@ GOTOOLCHAIN = "local"
 GOWORK = "off"
 CGO_ENABLED = "1"
 GOFLAGS = "-mod=readonly"
+
+# Укажите абсолютный путь к репозиторию. Команда pnpm должна быть доступна через PATH.
+[mcp_servers.playwright]
+enabled = true
+command = "pnpm"
+cwd = "/absolute/path/to/gost-restreamer"
+args = [
+    "dlx",
+    "@playwright/mcp@latest",
+    "--output-dir",
+    ".playwright-mcp",
+    "--output-max-size",
+    "52428800",
+    "--caps=vision,devtools",
+    "--isolated",
+    "--browser=chrome",
+    "--headless",
+]
