@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GregoryGost/gost-restreamer/internal/chat"
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/fallback"
 	"github.com/danielgtaylor/huma/v2"
@@ -107,6 +108,10 @@ func (l Limits) Validate() error {
 type Config struct {
 	// Core предоставляет доменные операции и согласованное чтение оперативных наблюдений.
 	Core *core.Service
+	// Chat управляет конфигурационными барьерами, авторизацией и лентами чатов. При nil маршруты чата не регистрируются.
+	Chat *chat.Manager
+	// ChatLimits задаёт проверенные бюджеты запросов и транспорта чатов.
+	ChatLimits core.ChatLimits
 	// Commands передаёт асинхронные команды владельцу сессий; отсутствие зависимости обрабатывается
 	// маршрутами команд.
 	Commands Commands
@@ -156,6 +161,12 @@ func New(config Config) (*API, error) {
 	// err содержит отказ проверки HTTP-бюджетов до создания маршрутизатора и контекста API.
 	if err := config.Limits.Validate(); err != nil {
 		return nil, err
+	}
+	if config.Chat != nil {
+		// err сообщает об отказе проверки бюджетов чата до публикации его маршрутов.
+		if err := ValidateChatLimits(config.ChatLimits); err != nil {
+			return nil, err
+		}
 	}
 	// ctx задаёт общий срок жизни обработчиков API; cancel прекращает его при Close или ошибке
 	// регистрации.
@@ -242,6 +253,11 @@ func New(config Config) (*API, error) {
 	a.registerFallback()
 	a.registerRuntime()
 	a.registerSystem()
+	if config.Chat != nil {
+		a.registerChatControl()
+		a.registerChatStream()
+		a.registerChatWeb()
+	}
 	if a.registrationErr != nil {
 		cancel()
 		return nil, a.registrationErr
@@ -445,6 +461,8 @@ func classify(err error) int {
 		return 400
 	case errors.Is(err, core.ErrNotFound):
 		return 404
+	case errors.Is(err, chat.ErrCredentialCommitUnknown):
+		return 409
 	case errors.Is(err, core.ErrConflict), errors.Is(err, core.ErrInUse), errors.Is(err, core.ErrNotReady), errors.Is(err, core.ErrStale):
 		return 409
 	case errors.Is(err, core.ErrInvalid), errors.Is(err, core.ErrInvalidProfile), errors.Is(err, core.ErrInvalidFormat), errors.Is(err, core.ErrInvalidWatchdogPolicy), errors.Is(err, fallback.ErrInvalid):
@@ -469,8 +487,9 @@ func operation(method, path, id, summary string) huma.Operation {
 	return huma.Operation{Method: method, Path: Prefix + path, OperationID: id, Summary: summary, Errors: []int{400, 404, 405, 408, 409, 413, 415, 422, 500, 503}}
 }
 
-// register добавляет ограничение тела и срока чтения, контекст операции и безопасное преобразование
-// ошибок. Ответ проверяется на представимость в JSON до записи; профильные 422 сохраняют отдельную схему.
+// register применяет предел тела операции либо общий предел JSON, срок чтения, контекст операции и
+// безопасное преобразование ошибок. Ответ проверяется на представимость в JSON до записи.
+// Профильные 422 сохраняют отдельную схему.
 func register[I, O any](a *API, op huma.Operation, handler func(context.Context, *I) (*O, error)) {
 	if a.registrationErr != nil {
 		return
@@ -508,7 +527,9 @@ func register[I, O any](a *API, op huma.Operation, handler func(context.Context,
 		op.RequestBody.Content["application/json"] = bodyMedia
 	}
 	a.setProblemResponses(&op)
-	op.MaxBodyBytes = a.config.Limits.JSONBytes
+	if op.MaxBodyBytes == 0 {
+		op.MaxBodyBytes = a.config.Limits.JSONBytes
+	}
 	op.BodyReadTimeout = a.config.Limits.OperationTimeout
 	huma.Register(a.huma, op, func(ctx context.Context, in *I) (*O, error) {
 		// Ограничивает время операции, проверяет сериализацию результата и переводит ошибку обработчика в

@@ -67,6 +67,8 @@ type RuntimeAuthority struct {
 	events *eventStream
 	// chatChanged закрывается при изменении допуска чатов независимо от потока измерений.
 	chatChanged chan struct{}
+	// chatTestAdmissions хранит действующий допуск тестовой ленты каждого потока до RUNNING.
+	chatTestAdmissions map[ID]*ChatTestAdmission
 	// system хранит единственного системного владельца GPU-снимка.
 	system *SystemObserver
 	// nextSystem содержит последний выданный token системного владельца GPU.
@@ -89,7 +91,19 @@ func NewRuntimeAuthority(incarnation string, limits ObservationLimits, execution
 		return nil, err
 	}
 	// a содержит новый общий реестр с пустыми владельцами и одним токеном блокировки.
-	a := &RuntimeAuthority{outputExecutionLimits: executionLimits, outputExecutions: make(map[outputExecutionKey]*OutputExecutionReservation), preparations: make(map[ID]*PreparationOwner), limits: limits, observations: make(map[uint64]*observationNode), gate: make(chan struct{}, 1), incarnation: incarnation, leases: make(map[ID]*RuntimeLease), publications: make(map[ID]*RuntimeLease), chatChanged: make(chan struct{})}
+	a := &RuntimeAuthority{
+		outputExecutionLimits: executionLimits,
+		outputExecutions:      make(map[outputExecutionKey]*OutputExecutionReservation),
+		preparations:          make(map[ID]*PreparationOwner),
+		limits:                limits,
+		observations:          make(map[uint64]*observationNode),
+		gate:                  make(chan struct{}, 1),
+		incarnation:           incarnation,
+		leases:                make(map[ID]*RuntimeLease),
+		publications:          make(map[ID]*RuntimeLease),
+		chatChanged:           make(chan struct{}),
+		chatTestAdmissions:    make(map[ID]*ChatTestAdmission),
+	}
 	a.gate <- struct{}{}
 	return a, nil
 }
@@ -125,8 +139,9 @@ func (a *RuntimeAuthority) release() { a.gate <- struct{}{} }
 // GuardWrite вызывается только владельцем UnitOfWork. write завершает все
 // транзакции до возврата; первый результат сообщает о возможном COMMIT.
 // Сверка не заменяет результат записи и никогда не повторяет переданную функцию.
-// reconcileTimeout ограничивает общую сверку после записи; её контекст сохраняет
-// значения ctx, но не наследует его отмену и срок завершения.
+// После возможного COMMIT допуск тестовой ленты проверяется перед общей сверкой владельцев.
+// reconcileTimeout ограничивает каждую послезаписную проверку контекстом, сохраняющим
+// значения ctx независимо от отмены и срока завершения записи.
 func (a *RuntimeAuthority) GuardWrite(ctx context.Context, uow UnitOfWork, reconcileTimeout time.Duration, write func() (bool, error)) error {
 	if uow == nil || reconcileTimeout <= 0 || write == nil {
 		return ErrInvalid
@@ -138,17 +153,20 @@ func (a *RuntimeAuthority) GuardWrite(ctx context.Context, uow UnitOfWork, recon
 	defer a.release()
 	// uncertain показывает, мог ли COMMIT состояться и нужна ли последующая сверка владельцев.
 	uncertain := true
+	// committed подтверждает успешный результат write, полученный без ошибки или паники.
+	committed := false
 	defer func() {
-		// После записи запускает сверку только при возможном COMMIT, включая панику до получения результата;
-		// ошибка сверки не подменяет результат write.
-
+		// Проверяет допуск тестовой ленты до сверки владельцев, чтобы результат её чтений
+		// не влиял на отзыв из-за COMMIT. При панике возможный COMMIT считается неподтверждённым.
 		if uncertain {
+			a.reconcileChatTestWriteLocked(ctx, uow, reconcileTimeout, committed)
 			a.reconcile(ctx, uow, reconcileTimeout)
 		}
 	}()
 	// err сохраняет исходный результат записи независимо от последующей сверки.
 	var err error
 	uncertain, err = write()
+	committed = uncertain && err == nil
 	return err
 }
 
@@ -215,8 +233,9 @@ func (a *RuntimeAuthority) reconcile(ctx context.Context, uow UnitOfWork, reconc
 	}
 }
 
-// Close синхронно отзывает допуск. Физические ресурсы закрывает их владелец.
-// Функция отзыва должна менять только память и не захватывать RuntimeAuthority повторно.
+// Close синхронно отзывает действующие допуски и закрывает сигналы реестра.
+// Физические ресурсы закрывают их владельцы. Функции отзыва работают с памятью
+// под уже удерживаемой блокировкой RuntimeAuthority.
 func (a *RuntimeAuthority) Close() {
 	<-a.gate
 	defer a.release()
@@ -242,6 +261,10 @@ func (a *RuntimeAuthority) Close() {
 	// lease содержит допуск, отзываемый при остановке authority.
 	for _, lease := range a.leases {
 		a.revoke(lease)
+	}
+	// admission содержит очередной допуск тестовой ленты перед закрытием общего сигнала чатов.
+	for _, admission := range a.chatTestAdmissions {
+		a.revokeChatTestLocked(admission)
 	}
 	if a.events != nil {
 		close(a.events.changed)

@@ -200,6 +200,50 @@
                 ],
                 "type": "object"
             },
+            "AuthorDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "avatar_url": {
+                        "type": "string"
+                    },
+                    "color": {
+                        "type": "string"
+                    },
+                    "display_name": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "id",
+                    "display_name"
+                ],
+                "type": "object"
+            },
+            "BadgeDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "image_url": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "url": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "id",
+                    "name"
+                ],
+                "type": "object"
+            },
             "CapabilitiesDTO": {
                 "additionalProperties": false,
                 "properties": {
@@ -257,6 +301,622 @@
                     "status",
                     "reason",
                     "checked_at"
+                ],
+                "type": "object"
+            },
+            "ChatAccountDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "authorization_state": {
+                        "enum": [
+                            "CONFIGURED"
+                        ],
+                        "type": "string"
+                    },
+                    "created_at": {
+                        "format": "date-time",
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "provider": {
+                        "enum": [
+                            "youtube",
+                            "twitch",
+                            "vk_video_live"
+                        ],
+                        "type": "string"
+                    },
+                    "revision": {
+                        "description": "Точное беззнаковое целое.",
+                        "format": "uint64",
+                        "maximum": 18446744073709551615,
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "updated_at": {
+                        "format": "date-time",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "provider",
+                    "name",
+                    "authorization_state",
+                    "id",
+                    "revision",
+                    "created_at",
+                    "updated_at"
+                ],
+                "type": "object"
+            },
+            "ChatAccountPatchBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "expected_revision": {
+                        "description": "Точное беззнаковое целое.",
+                        "format": "uint64",
+                        "maximum": 18446744073709551615,
+                        "minimum": 1,
+                        "type": "integer"
+                    },
+                    "name": {
+                        "maxLength": 512,
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "expected_revision",
+                    "name"
+                ],
+                "type": "object"
+            },
+            "ChatAuthorizationDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "account_id": {
+                        "type": "string"
+                    },
+                    "attempt_id": {
+                        "type": "string"
+                    },
+                    "cancelable": {
+                        "type": "boolean"
+                    },
+                    "code": {
+                        "enum": [
+                            "no_broadcast",
+                            "selection_required",
+                            "chat_unavailable",
+                            "chat_ended",
+                            "chat_disabled",
+                            "credentials_required",
+                            "network",
+                            "quota",
+                            "configuration",
+                            "limit",
+                            "upstream_gap",
+                            "credential_commit_unknown"
+                        ],
+                        "type": "string"
+                    },
+                    "expires_at": {
+                        "format": "date-time",
+                        "type": "string"
+                    },
+                    "provider": {
+                        "enum": [
+                            "youtube",
+                            "twitch",
+                            "vk_video_live"
+                        ],
+                        "type": "string"
+                    },
+                    "state": {
+                        "enum": [
+                            "PENDING",
+                            "SUCCEEDED",
+                            "FAILED",
+                            "CANCELLED",
+                            "EXPIRED"
+                        ],
+                        "type": "string"
+                    },
+                    "user_code": {
+                        "type": "string"
+                    },
+                    "verification_uri": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "attempt_id",
+                    "provider",
+                    "state",
+                    "expires_at",
+                    "cancelable"
+                ],
+                "type": "object"
+            },
+            "ChatBroadcastChoicesDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "broadcasts": {
+                        "items": {
+                            "$ref": "#/components/schemas/ChatBroadcastDTO"
+                        },
+                        "type": "array"
+                    },
+                    "discovery_generation": {
+                        "description": "Точное беззнаковое целое.",
+                        "format": "uint64",
+                        "maximum": 18446744073709551615,
+                        "minimum": 1,
+                        "type": "integer"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    },
+                    "source_id": {
+                        "type": "string"
+                    },
+                    "source_revision": {
+                        "description": "Точное беззнаковое целое.",
+                        "format": "uint64",
+                        "maximum": 18446744073709551615,
+                        "minimum": 1,
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "session_id",
+                    "source_id",
+                    "source_revision",
+                    "discovery_generation",
+                    "broadcasts"
+                ],
+                "type": "object"
+            },
+            "ChatBroadcastDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "started_at": {
+                        "format": "date-time",
+                        "type": "string"
+                    },
+                    "title": {
+                        "type": "string"
+                    },
+                    "video_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "video_id",
+                    "title"
+                ],
+                "type": "object"
+            },
+            "ChatBroadcastSelectBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "discovery_generation": {
+                        "description": "Точное беззнаковое целое.",
+                        "format": "uint64",
+                        "maximum": 18446744073709551615,
+                        "minimum": 1,
+                        "type": "integer"
+                    },
+                    "expected_revision": {
+                        "description": "Точное беззнаковое целое.",
+                        "format": "uint64",
+                        "maximum": 18446744073709551615,
+                        "minimum": 1,
+                        "type": "integer"
+                    },
+                    "session_id": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "video_id": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "session_id",
+                    "expected_revision",
+                    "discovery_generation",
+                    "video_id"
+                ],
+                "type": "object"
+            },
+            "ChatConnectBody": {
+                "additionalProperties": false,
+                "dependentRequired": {
+                    "account_id": [
+                        "expected_revision"
+                    ],
+                    "expected_revision": [
+                        "account_id"
+                    ]
+                },
+                "not": {
+                    "properties": {
+                        "account_id": {},
+                        "name": {}
+                    },
+                    "required": [
+                        "account_id",
+                        "name"
+                    ],
+                    "type": "object"
+                },
+                "oneOf": [
+                    {
+                        "properties": {
+                            "api_key": {},
+                            "client_id": {
+                                "not": {}
+                            },
+                            "client_secret": {
+                                "not": {}
+                            },
+                            "provider": {
+                                "const": "youtube",
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "provider",
+                            "api_key"
+                        ],
+                        "type": "object"
+                    },
+                    {
+                        "properties": {
+                            "api_key": {
+                                "not": {}
+                            },
+                            "client_id": {},
+                            "client_secret": {
+                                "not": {}
+                            },
+                            "provider": {
+                                "const": "twitch",
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "provider",
+                            "client_id"
+                        ],
+                        "type": "object"
+                    },
+                    {
+                        "properties": {
+                            "api_key": {
+                                "not": {}
+                            },
+                            "client_id": {},
+                            "client_secret": {},
+                            "provider": {
+                                "const": "vk_video_live",
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "provider",
+                            "client_id",
+                            "client_secret"
+                        ],
+                        "type": "object"
+                    }
+                ],
+                "properties": {
+                    "account_id": {
+                        "description": "Для замены передаётся вместе с expected_revision.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "api_key": {
+                        "description": "Обязательный ключ для YouTube.",
+                        "maxLength": 65536,
+                        "minLength": 1,
+                        "type": "string",
+                        "writeOnly": true
+                    },
+                    "client_id": {
+                        "description": "Обязательный идентификатор для Twitch и VK Видео Live.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string",
+                        "writeOnly": true
+                    },
+                    "client_secret": {
+                        "description": "Обязательный секрет для VK Видео Live.",
+                        "maxLength": 65536,
+                        "minLength": 1,
+                        "type": "string",
+                        "writeOnly": true
+                    },
+                    "expected_revision": {
+                        "description": "Для замены передаётся вместе с account_id.",
+                        "format": "uint64",
+                        "maximum": 18446744073709551615,
+                        "minimum": 1,
+                        "type": "integer"
+                    },
+                    "name": {
+                        "description": "Необязательное имя нового аккаунта.",
+                        "maxLength": 512,
+                        "type": "string"
+                    },
+                    "provider": {
+                        "enum": [
+                            "youtube",
+                            "twitch",
+                            "vk_video_live"
+                        ],
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "provider"
+                ],
+                "type": "object"
+            },
+            "ChatSessionDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "session_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "session_id"
+                ],
+                "type": "object"
+            },
+            "ChatSourceCreateBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "account_id": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "channel_hint": {
+                        "maxLength": 256,
+                        "type": "string"
+                    },
+                    "enabled": {
+                        "type": "boolean"
+                    },
+                    "name": {
+                        "maxLength": 512,
+                        "type": "string"
+                    },
+                    "options": {
+                        "oneOf": [
+                            {
+                                "additionalProperties": false,
+                                "properties": {
+                                    "version": {
+                                        "enum": [
+                                            1
+                                        ],
+                                        "maximum": 9223372036854775807,
+                                        "minimum": -9223372036854775808,
+                                        "type": "integer"
+                                    },
+                                    "youtube": {
+                                        "additionalProperties": false,
+                                        "type": "object"
+                                    }
+                                },
+                                "required": [
+                                    "version",
+                                    "youtube"
+                                ],
+                                "type": "object"
+                            },
+                            {
+                                "additionalProperties": false,
+                                "properties": {
+                                    "twitch": {
+                                        "additionalProperties": false,
+                                        "type": "object"
+                                    },
+                                    "version": {
+                                        "enum": [
+                                            1
+                                        ],
+                                        "maximum": 9223372036854775807,
+                                        "minimum": -9223372036854775808,
+                                        "type": "integer"
+                                    }
+                                },
+                                "required": [
+                                    "version",
+                                    "twitch"
+                                ],
+                                "type": "object"
+                            },
+                            {
+                                "additionalProperties": false,
+                                "properties": {
+                                    "version": {
+                                        "enum": [
+                                            1
+                                        ],
+                                        "maximum": 9223372036854775807,
+                                        "minimum": -9223372036854775808,
+                                        "type": "integer"
+                                    },
+                                    "vk_video_live": {
+                                        "additionalProperties": false,
+                                        "type": "object"
+                                    }
+                                },
+                                "required": [
+                                    "version",
+                                    "vk_video_live"
+                                ],
+                                "type": "object"
+                            }
+                        ],
+                        "type": "object"
+                    },
+                    "provider": {
+                        "enum": [
+                            "youtube",
+                            "twitch",
+                            "vk_video_live"
+                        ],
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "provider",
+                    "account_id",
+                    "enabled",
+                    "channel_hint",
+                    "options"
+                ],
+                "type": "object"
+            },
+            "ChatSourcePatchBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "account_id": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "channel_hint": {
+                        "maxLength": 256,
+                        "type": "string"
+                    },
+                    "enabled": {
+                        "type": "boolean"
+                    },
+                    "expected_revision": {
+                        "description": "Точное беззнаковое целое.",
+                        "format": "uint64",
+                        "maximum": 18446744073709551615,
+                        "minimum": 1,
+                        "type": "integer"
+                    },
+                    "name": {
+                        "maxLength": 512,
+                        "type": "string"
+                    },
+                    "options": {
+                        "oneOf": [
+                            {
+                                "additionalProperties": false,
+                                "properties": {
+                                    "version": {
+                                        "enum": [
+                                            1
+                                        ],
+                                        "maximum": 9223372036854775807,
+                                        "minimum": -9223372036854775808,
+                                        "type": "integer"
+                                    },
+                                    "youtube": {
+                                        "additionalProperties": false,
+                                        "type": "object"
+                                    }
+                                },
+                                "required": [
+                                    "version",
+                                    "youtube"
+                                ],
+                                "type": "object"
+                            },
+                            {
+                                "additionalProperties": false,
+                                "properties": {
+                                    "twitch": {
+                                        "additionalProperties": false,
+                                        "type": "object"
+                                    },
+                                    "version": {
+                                        "enum": [
+                                            1
+                                        ],
+                                        "maximum": 9223372036854775807,
+                                        "minimum": -9223372036854775808,
+                                        "type": "integer"
+                                    }
+                                },
+                                "required": [
+                                    "version",
+                                    "twitch"
+                                ],
+                                "type": "object"
+                            },
+                            {
+                                "additionalProperties": false,
+                                "properties": {
+                                    "version": {
+                                        "enum": [
+                                            1
+                                        ],
+                                        "maximum": 9223372036854775807,
+                                        "minimum": -9223372036854775808,
+                                        "type": "integer"
+                                    },
+                                    "vk_video_live": {
+                                        "additionalProperties": false,
+                                        "type": "object"
+                                    }
+                                },
+                                "required": [
+                                    "version",
+                                    "vk_video_live"
+                                ],
+                                "type": "object"
+                            }
+                        ],
+                        "type": "object"
+                    },
+                    "provider": {
+                        "enum": [
+                            "youtube",
+                            "twitch",
+                            "vk_video_live"
+                        ],
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "expected_revision"
+                ],
+                "type": "object"
+            },
+            "ChatTestStartResult": {
+                "additionalProperties": false,
+                "properties": {
+                    "interval_ms": {
+                        "description": "Точное беззнаковое целое.",
+                        "format": "uint64",
+                        "maximum": 60000,
+                        "minimum": 100,
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "interval_ms"
                 ],
                 "type": "object"
             },
@@ -583,7 +1243,7 @@
                             },
                             "lookahead_frames": {
                                 "default": 0,
-                                "description": "При H264 CQP требуется 0 с явным отключением анализа. В битрейтных режимах 0 оставляет выбор кодировщику и preset; положительный L требует L+B\u003c=31.",
+                                "description": "При H264 CQP требуется 0 с явным отключением анализа. В битрейтных режимах 0 оставляет выбор кодировщику и preset; положительный L требует L+B<=31.",
                                 "format": "int64",
                                 "maximum": 31,
                                 "minimum": 0,
@@ -731,6 +1391,63 @@
                         "description": "The value at the given location"
                     }
                 },
+                "type": "object"
+            },
+            "EventDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "cursor": {
+                        "type": "string"
+                    },
+                    "kind": {
+                        "enum": [
+                            "chat.message",
+                            "chat.source_status",
+                            "chat.gap",
+                            "chat.cleared",
+                            "resync_required",
+                            "chat.session_closed"
+                        ],
+                        "type": "string"
+                    },
+                    "lost": {
+                        "format": "uint64",
+                        "maximum": 18446744073709551615,
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "message": {
+                        "$ref": "#/components/schemas/MessageDTO"
+                    },
+                    "reason": {
+                        "enum": [
+                            "",
+                            "no_broadcast",
+                            "selection_required",
+                            "chat_unavailable",
+                            "chat_ended",
+                            "chat_disabled",
+                            "credentials_required",
+                            "network",
+                            "quota",
+                            "configuration",
+                            "limit",
+                            "upstream_gap"
+                        ],
+                        "type": "string"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/StatusDTO"
+                    }
+                },
+                "required": [
+                    "kind",
+                    "cursor",
+                    "reason"
+                ],
                 "type": "object"
             },
             "EventObservationDTO": {
@@ -2215,6 +2932,94 @@
                 ],
                 "type": "object"
             },
+            "MessageDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "author": {
+                        "$ref": "#/components/schemas/AuthorDTO"
+                    },
+                    "badges": {
+                        "items": {
+                            "$ref": "#/components/schemas/BadgeDTO"
+                        },
+                        "type": "array"
+                    },
+                    "channel_id": {
+                        "type": "string"
+                    },
+                    "chat_source_id": {
+                        "type": "string"
+                    },
+                    "kind": {
+                        "enum": [
+                            "message",
+                            "supported_system_event"
+                        ],
+                        "type": "string"
+                    },
+                    "parts": {
+                        "items": {
+                            "$ref": "#/components/schemas/PartDTO"
+                        },
+                        "type": "array"
+                    },
+                    "provider": {
+                        "enum": [
+                            "youtube",
+                            "twitch",
+                            "vk_video_live",
+                            "test"
+                        ],
+                        "type": "string"
+                    },
+                    "provider_message_id": {
+                        "type": "string"
+                    },
+                    "provider_timestamp": {
+                        "format": "date-time",
+                        "type": "string"
+                    },
+                    "received_at": {
+                        "format": "date-time",
+                        "type": "string"
+                    },
+                    "seq": {
+                        "format": "uint64",
+                        "maximum": 18446744073709551615,
+                        "minimum": 1,
+                        "type": "integer"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    },
+                    "test_provider": {
+                        "enum": [
+                            "youtube",
+                            "twitch",
+                            "vk_video_live"
+                        ],
+                        "type": "string"
+                    },
+                    "text": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "session_id",
+                    "chat_source_id",
+                    "seq",
+                    "provider",
+                    "channel_id",
+                    "provider_message_id",
+                    "received_at",
+                    "author",
+                    "text",
+                    "parts",
+                    "badges",
+                    "kind"
+                ],
+                "type": "object"
+            },
             "NVENCDTO": {
                 "additionalProperties": false,
                 "properties": {
@@ -2379,6 +3184,77 @@
                     "height",
                     "sample_rate_hz",
                     "channels"
+                ],
+                "type": "object"
+            },
+            "OptionsDTO": {
+                "oneOf": [
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "version": {
+                                "enum": [
+                                    1
+                                ],
+                                "maximum": 9223372036854775807,
+                                "minimum": -9223372036854775808,
+                                "type": "integer"
+                            },
+                            "youtube": {
+                                "additionalProperties": false,
+                                "type": "object"
+                            }
+                        },
+                        "required": [
+                            "version",
+                            "youtube"
+                        ],
+                        "type": "object"
+                    },
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "twitch": {
+                                "additionalProperties": false,
+                                "type": "object"
+                            },
+                            "version": {
+                                "enum": [
+                                    1
+                                ],
+                                "maximum": 9223372036854775807,
+                                "minimum": -9223372036854775808,
+                                "type": "integer"
+                            }
+                        },
+                        "required": [
+                            "version",
+                            "twitch"
+                        ],
+                        "type": "object"
+                    },
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "version": {
+                                "enum": [
+                                    1
+                                ],
+                                "maximum": 9223372036854775807,
+                                "minimum": -9223372036854775808,
+                                "type": "integer"
+                            },
+                            "vk_video_live": {
+                                "additionalProperties": false,
+                                "type": "object"
+                            }
+                        },
+                        "required": [
+                            "version",
+                            "vk_video_live"
+                        ],
+                        "type": "object"
+                    }
                 ],
                 "type": "object"
             },
@@ -2652,6 +3528,28 @@
                 ],
                 "type": "object"
             },
+            "PageDTOChatAccountDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "items": {
+                        "items": {
+                            "$ref": "#/components/schemas/ChatAccountDTO"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "next_cursor": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "items",
+                    "next_cursor"
+                ],
+                "type": "object"
+            },
             "PageDTODestinationDTO": {
                 "additionalProperties": false,
                 "properties": {
@@ -2762,6 +3660,28 @@
                 ],
                 "type": "object"
             },
+            "PageDTOSourceDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "items": {
+                        "items": {
+                            "$ref": "#/components/schemas/SourceDTO"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "next_cursor": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "items",
+                    "next_cursor"
+                ],
+                "type": "object"
+            },
             "PageDTOStreamDTO": {
                 "additionalProperties": false,
                 "properties": {
@@ -2803,6 +3723,35 @@
                 "required": [
                     "items",
                     "next_cursor"
+                ],
+                "type": "object"
+            },
+            "PartDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "emote_id": {
+                        "type": "string"
+                    },
+                    "image_url": {
+                        "type": "string"
+                    },
+                    "kind": {
+                        "enum": [
+                            "text",
+                            "emote"
+                        ],
+                        "type": "string"
+                    },
+                    "text": {
+                        "type": "string"
+                    },
+                    "url": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "kind",
+                    "text"
                 ],
                 "type": "object"
             },
@@ -2966,6 +3915,7 @@
                             "body_read_timeout",
                             "upload_timeout",
                             "state_conflict",
+                            "credential_commit_unknown",
                             "body_too_large",
                             "preparation_limit",
                             "request_limit",
@@ -4006,6 +4956,116 @@
                 ],
                 "type": "object"
             },
+            "SnapshotDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "cursor": {
+                        "type": "string"
+                    },
+                    "messages": {
+                        "items": {
+                            "$ref": "#/components/schemas/MessageDTO"
+                        },
+                        "type": "array"
+                    },
+                    "session": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/ChatSessionDTO"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
+                    "sources": {
+                        "items": {
+                            "$ref": "#/components/schemas/SourceDTO"
+                        },
+                        "type": "array"
+                    },
+                    "statuses": {
+                        "items": {
+                            "$ref": "#/components/schemas/StatusDTO"
+                        },
+                        "type": "array"
+                    },
+                    "stream_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "stream_id",
+                    "session",
+                    "sources",
+                    "statuses",
+                    "messages",
+                    "cursor"
+                ],
+                "type": "object"
+            },
+            "SourceDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "account_id": {
+                        "type": "string"
+                    },
+                    "channel_hint": {
+                        "type": "string"
+                    },
+                    "created_at": {
+                        "format": "date-time",
+                        "type": "string"
+                    },
+                    "destination_id": {
+                        "type": "string"
+                    },
+                    "enabled": {
+                        "type": "boolean"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "options": {
+                        "$ref": "#/components/schemas/OptionsDTO"
+                    },
+                    "provider": {
+                        "enum": [
+                            "youtube",
+                            "twitch",
+                            "vk_video_live"
+                        ],
+                        "type": "string"
+                    },
+                    "revision": {
+                        "format": "uint64",
+                        "maximum": 18446744073709551615,
+                        "minimum": 1,
+                        "type": "integer"
+                    },
+                    "updated_at": {
+                        "format": "date-time",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "id",
+                    "revision",
+                    "created_at",
+                    "updated_at",
+                    "destination_id",
+                    "account_id",
+                    "provider",
+                    "name",
+                    "enabled",
+                    "channel_hint",
+                    "options"
+                ],
+                "type": "object"
+            },
             "StartInputBody": {
                 "additionalProperties": false,
                 "properties": {
@@ -4026,6 +5086,72 @@
                 "required": [
                     "request_id",
                     "destination_ids"
+                ],
+                "type": "object"
+            },
+            "StatusDTO": {
+                "additionalProperties": false,
+                "properties": {
+                    "broadcast_at": {
+                        "format": "date-time",
+                        "type": "string"
+                    },
+                    "changed_at": {
+                        "format": "date-time",
+                        "type": "string"
+                    },
+                    "dropped": {
+                        "format": "uint64",
+                        "maximum": 18446744073709551615,
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "last_event_at": {
+                        "format": "date-time",
+                        "type": "string"
+                    },
+                    "reason": {
+                        "enum": [
+                            "",
+                            "no_broadcast",
+                            "selection_required",
+                            "chat_unavailable",
+                            "chat_ended",
+                            "chat_disabled",
+                            "credentials_required",
+                            "network",
+                            "quota",
+                            "configuration",
+                            "limit",
+                            "upstream_gap"
+                        ],
+                        "type": "string"
+                    },
+                    "source_id": {
+                        "type": "string"
+                    },
+                    "state": {
+                        "enum": [
+                            "DISABLED",
+                            "WAITING_OUTPUT",
+                            "DISCOVERING",
+                            "WAITING_CHAT",
+                            "CONNECTING",
+                            "CONNECTED",
+                            "RETRYING",
+                            "AUTH_REQUIRED",
+                            "FAILED",
+                            "STOPPED"
+                        ],
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "source_id",
+                    "state",
+                    "reason",
+                    "changed_at",
+                    "dropped"
                 ],
                 "type": "object"
             },
@@ -4412,6 +5538,2278 @@
     },
     "openapi": "3.1.0",
     "paths": {
+        "/api/v1/chat-sources/{id}": {
+            "delete": {
+                "operationId": "delete-chat-source",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "required": true,
+                        "schema": {
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "explode": false,
+                        "in": "query",
+                        "name": "expected_revision",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Удалить объект по ревизии."
+            },
+            "get": {
+                "operationId": "get-chat-source",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "required": true,
+                        "schema": {
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SourceDTO"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Получить источник чата."
+            },
+            "patch": {
+                "operationId": "update-chat-source",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "required": true,
+                        "schema": {
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChatSourcePatchBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SourceDTO"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Изменить источник чата по ревизии."
+            }
+        },
+        "/api/v1/chat-sources/{id}/broadcast-selection": {
+            "get": {
+                "operationId": "list-chat-broadcasts",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "required": true,
+                        "schema": {
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "explode": false,
+                        "in": "query",
+                        "name": "session_id",
+                        "required": true,
+                        "schema": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChatBroadcastChoicesDTO"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Получить актуальные варианты эфира чата."
+            },
+            "post": {
+                "operationId": "select-chat-broadcast",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "required": true,
+                        "schema": {
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChatBroadcastSelectBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Выбрать эфир чата для текущего запуска."
+            }
+        },
+        "/api/v1/chat/accounts": {
+            "get": {
+                "operationId": "list-chat-accounts",
+                "parameters": [
+                    {
+                        "explode": false,
+                        "in": "query",
+                        "name": "limit",
+                        "schema": {
+                            "default": 100,
+                            "format": "int64",
+                            "maximum": 499,
+                            "minimum": 1,
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "explode": false,
+                        "in": "query",
+                        "name": "cursor",
+                        "schema": {
+                            "maxLength": 32768,
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PageDTOChatAccountDTO"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Получить страницу аккаунтов чатов."
+            }
+        },
+        "/api/v1/chat/accounts/authorizations/{attemptId}": {
+            "delete": {
+                "operationId": "cancel-chat-authorization",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "attemptId",
+                        "required": true,
+                        "schema": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Отменить подключение аккаунта чата."
+            },
+            "get": {
+                "operationId": "get-chat-authorization",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "attemptId",
+                        "required": true,
+                        "schema": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChatAuthorizationDTO"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Получить состояние подключения аккаунта чата."
+            }
+        },
+        "/api/v1/chat/accounts/connect": {
+            "post": {
+                "operationId": "connect-chat-account",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChatConnectBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "202": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChatAuthorizationDTO"
+                                }
+                            }
+                        },
+                        "description": "Accepted",
+                        "headers": {
+                            "Location": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Начать подключение аккаунта чата."
+            }
+        },
+        "/api/v1/chat/accounts/{id}": {
+            "delete": {
+                "operationId": "delete-chat-account",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "required": true,
+                        "schema": {
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "explode": false,
+                        "in": "query",
+                        "name": "expected_revision",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Удалить объект по ревизии."
+            },
+            "get": {
+                "operationId": "get-chat-account",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "required": true,
+                        "schema": {
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChatAccountDTO"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Получить метаданные аккаунта чата."
+            },
+            "patch": {
+                "operationId": "update-chat-account",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "required": true,
+                        "schema": {
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChatAccountPatchBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChatAccountDTO"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Переименовать аккаунт чата по ревизии."
+            }
+        },
+        "/api/v1/chat/streams/{streamId}/clear": {
+            "post": {
+                "operationId": "clear-chat-feed",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "streamId",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Очистить текущую ленту чата."
+            }
+        },
+        "/api/v1/chat/streams/{streamId}/events": {
+            "get": {
+                "operationId": "subscribe-chat-events",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "streamId",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Непрозрачная позиция начального снимка или последнего полученного события.",
+                        "explode": false,
+                        "in": "query",
+                        "name": "cursor",
+                        "schema": {
+                            "description": "Непрозрачная позиция начального снимка или последнего полученного события.",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Непрозрачная позиция для возобновления подписки.",
+                        "in": "header",
+                        "name": "Last-Event-ID",
+                        "schema": {
+                            "description": "Непрозрачная позиция для возобновления подписки.",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "text/event-stream": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Поток событий чата. При resync_required клиент получает новый снимок."
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Поток сообщений и состояний чата.",
+                "x-sse-events": {
+                    "chat.cleared": {
+                        "$ref": "#/components/schemas/EventDTO"
+                    },
+                    "chat.gap": {
+                        "$ref": "#/components/schemas/EventDTO"
+                    },
+                    "chat.message": {
+                        "$ref": "#/components/schemas/EventDTO"
+                    },
+                    "chat.session_closed": {
+                        "$ref": "#/components/schemas/EventDTO"
+                    },
+                    "chat.source_status": {
+                        "$ref": "#/components/schemas/EventDTO"
+                    },
+                    "resync_required": {
+                        "$ref": "#/components/schemas/EventDTO"
+                    }
+                }
+            }
+        },
+        "/api/v1/chat/streams/{streamId}/snapshot": {
+            "get": {
+                "operationId": "get-chat-snapshot",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "streamId",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SnapshotDTO"
+                                }
+                            }
+                        },
+                        "description": "Снимок чата, в том числе до запуска трансляции."
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Согласованный снимок чата и позиция подписки."
+            }
+        },
+        "/api/v1/chat/streams/{streamId}/test/start": {
+            "post": {
+                "operationId": "start-chat-test-feed",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "streamId",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "additionalProperties": false,
+                                "properties": {
+                                    "interval_ms": {
+                                        "default": 1000,
+                                        "description": "Точное беззнаковое целое.",
+                                        "format": "uint64",
+                                        "maximum": 60000,
+                                        "minimum": 100,
+                                        "type": "integer"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChatTestStartResult"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Запустить тестовую ленту чата."
+            }
+        },
+        "/api/v1/chat/streams/{streamId}/test/stop": {
+            "post": {
+                "operationId": "stop-chat-test-feed",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "streamId",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Остановить генератор тестовой ленты."
+            }
+        },
         "/api/v1/commands/{commandId}": {
             "get": {
                 "operationId": "get-command",
@@ -4845,6 +8243,302 @@
                     }
                 },
                 "summary": "Создать назначение."
+            }
+        },
+        "/api/v1/destinations/{destinationId}/chat-sources": {
+            "get": {
+                "operationId": "list-chat-sources",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "destinationId",
+                        "required": true,
+                        "schema": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "explode": false,
+                        "in": "query",
+                        "name": "limit",
+                        "schema": {
+                            "default": 100,
+                            "format": "int64",
+                            "maximum": 499,
+                            "minimum": 1,
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "explode": false,
+                        "in": "query",
+                        "name": "cursor",
+                        "schema": {
+                            "maxLength": 32768,
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PageDTOSourceDTO"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Получить страницу источников чата назначения."
+            },
+            "post": {
+                "operationId": "create-chat-source",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "destinationId",
+                        "required": true,
+                        "schema": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChatSourceCreateBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SourceDTO"
+                                }
+                            }
+                        },
+                        "description": "Created",
+                        "headers": {
+                            "Location": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "405": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Method Not Allowed"
+                    },
+                    "408": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Timeout"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "413": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Request Entity Too Large"
+                    },
+                    "415": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unsupported Media Type"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDTO"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
+                    }
+                },
+                "summary": "Создать источник чата назначения."
             }
         },
         "/api/v1/destinations/{id}": {

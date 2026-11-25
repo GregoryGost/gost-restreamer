@@ -147,6 +147,7 @@ func (c Config) Validate() error {
 		{"fallback", c.FallbackConfig().Validate()}, {"process.limits", processowner.Limits(c.Process.Limits).Validate()},
 		{"ingress", rtmp.Limits(c.Ingress).ValidateIngress()}, {"gpu", gpu.Config(c.GPU).Validate()},
 		{"logging", logging.Config(c.Logging).Validate()}, {"api", api.Limits(c.API).Validate()},
+		{"chat", api.ValidateChatLimits(c.Chat)},
 	}
 	// check содержит очередной именованный результат проверки компонента.
 	for _, check := range checks {

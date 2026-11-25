@@ -63,6 +63,12 @@ func chatTime(value time.Time) error {
 // Validate проверяет закрытый provider-specific набор и его конечный JSON-бюджет.
 // Сетевая действительность и фактическая принадлежность каналу проверяются вызывающим адаптером.
 func (b ChatCredentialBundle) Validate(provider ChatProvider) error {
+	return b.ValidateLimit(provider, ChatCredentialBytes)
+}
+
+// ValidateLimit проверяет структуру набора и размер его полной JSON-записи в пределах
+// настроенного бюджета и жёсткого ограничения хранения.
+func (b ChatCredentialBundle) ValidateLimit(provider ChatProvider, limit uint64) error {
 	// texts содержит обязательные поля выбранного набора; expires указывает срок токена при его наличии.
 	var texts []string
 	var expires *time.Time
@@ -123,7 +129,7 @@ func (b ChatCredentialBundle) Validate(provider ChatProvider) error {
 	}
 	// encoded задаёт размер полного набора с escaping; err сообщает отказ кодирования.
 	encoded, err := json.Marshal(b)
-	if err != nil || len(encoded) > ChatCredentialBytes {
+	if err != nil || uint64(len(encoded)) > min(limit, ChatCredentialBytes) {
 		return ErrInvalid
 	}
 	return nil

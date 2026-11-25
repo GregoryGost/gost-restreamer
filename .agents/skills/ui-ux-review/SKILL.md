@@ -14,6 +14,10 @@ Load references when needed:
 - `references/patterns-and-review.md` for UI/UX review patterns and validation prompts.
 - `references/official-sources.md` for accessibility, browser evidence, and UI review sources.
 
+## Optional coordination
+
+When independently active and relevant, use `apple-hig-design` and, if selected, `.codex/rules/apple_design.md` for the rationale behind design decisions. Review against the approved project design and applicable accessibility baseline, not an automatic Apple visual style. This does not activate either material or change required validation evidence.
+
 ## Workflow
 
 1. Read `CODEX_PROJECT.md`.

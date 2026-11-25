@@ -2,7 +2,7 @@ package chat
 
 import (
 	"context"
-	"crypto/rand"
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -34,15 +34,15 @@ type vkVideoLiveCredentialVerifier interface {
 // Сетевая проверка не удерживает транзакцию или конфигурационный барьер. При успехе метод возвращает
 // публичные метаданные подтверждённой записи. При замене прежние читатели отзываются до возврата.
 func (m *Manager) ConnectVKVideoLive(ctx context.Context, request VKVideoLiveConnectRequest) (core.ChatAccount, core.ChatReason, error) {
-	// account содержит метаданные нового аккаунта, в том числе необязательное имя.
-	account := core.ChatAccount{Provider: core.ChatVKVideoLive, Name: request.Name}
-	if account.Validate() != nil || request.AccountID == "" && request.ExpectedRevision != 0 ||
-		request.AccountID != "" && (!validDiscoveryID(string(request.AccountID)) || request.ExpectedRevision == 0 || request.Name != "") {
+	// authorization передаёт метаданные и реквизиты в общие стадии подключения.
+	authorization := core.ChatAuthorizationRequest{
+		Provider: core.ChatVKVideoLive, AccountID: request.AccountID, ExpectedRevision: request.ExpectedRevision,
+		Name: request.Name, ClientID: request.ClientID, ClientSecret: request.ClientSecret,
+	}
+	if !validAuthorizationTarget(authorization) {
 		return core.ChatAccount{}, core.ChatReasonConfiguration, core.ErrInvalid
 	}
-	if !validDiscoveryID(request.ClientID) || strings.ContainsRune(request.ClientID, ':') ||
-		len(request.ClientSecret) > core.ChatCredentialBytes || !utf8.ValidString(request.ClientSecret) ||
-		strings.ContainsRune(request.ClientSecret, 0) || strings.TrimSpace(request.ClientSecret) == "" {
+	if !validVKVideoLiveAuthorization(request.ClientID, request.ClientSecret) {
 		return core.ChatAccount{}, core.ChatReasonCredentials, core.ErrInvalid
 	}
 	// verifier проверяет полномочия тем же адаптером, который затем читает чат. ok подтверждает поддержку обмена.
@@ -61,16 +61,18 @@ func (m *Manager) ConnectVKVideoLive(ctx context.Context, request VKVideoLiveCon
 		return core.ChatAccount{}, core.ChatReasonNone, err
 	}
 	defer finish()
-	if request.AccountID != "" {
-		// before проверяет провайдера и ревизию до сети. err сообщает об отказе чтения.
-		before, err := m.service.GetChatAccount(operation, request.AccountID)
-		if err != nil {
-			return core.ChatAccount{}, core.ChatReasonNone, err
+	if err = m.checkAuthorizationTarget(operation, authorization); err != nil {
+		if errors.Is(err, core.ErrConflict) {
+			return core.ChatAccount{}, core.ChatReasonConfiguration, err
 		}
-		if before.Provider != core.ChatVKVideoLive || before.Revision != request.ExpectedRevision {
-			return core.ChatAccount{}, core.ChatReasonConfiguration, core.ErrConflict
-		}
+		return core.ChatAccount{}, core.ChatReasonNone, err
 	}
+	// writeID связывает запись с квитанцией, release освобождает допуск замены, err сообщает об отказе.
+	writeID, release, err := m.reserveSynchronousAuthorization(authorization)
+	if err != nil {
+		return core.ChatAccount{}, vkVideoLiveConnectReason(err), err
+	}
+	defer release()
 	// bundle содержит проверенные реквизиты и app-токен. err исключает запись при неудачном обмене.
 	bundle, err := m.verifyVKVideoLive(operation, verifier, request.ClientID, request.ClientSecret)
 	if err != nil {
@@ -79,14 +81,17 @@ func (m *Manager) ConnectVKVideoLive(ctx context.Context, request VKVideoLiveCon
 	if err = operation.Err(); err != nil {
 		return core.ChatAccount{}, core.ChatReasonNone, err
 	}
-	// writeID связывает сохранение полного набора с его квитанцией при сверке.
-	writeID := core.ID(rand.Text())
-	if request.AccountID != "" {
-		_, account, err = owner.replace(operation, m, request.AccountID, core.ChatVKVideoLive, *bundle, writeID, request.ExpectedRevision)
-	} else {
-		account, err = m.createVerifiedChatAccount(operation, account, *bundle, writeID)
-	}
+	// account содержит публичную конфигурацию подтверждённой записи, err передаёт её исход.
+	account, err := m.persistAuthorization(operation, authorization, owner, *bundle, writeID)
 	return account, core.ChatReasonNone, err
+}
+
+// validVKVideoLiveAuthorization проверяет исходные реквизиты приложения до обращения к DevAPI.
+// Двоеточие в Client ID неоднозначно в имени пользователя HTTP Basic.
+func validVKVideoLiveAuthorization(clientID, clientSecret string) bool {
+	return validDiscoveryID(clientID) && !strings.ContainsRune(clientID, ':') &&
+		len(clientSecret) <= core.ChatCredentialBytes && utf8.ValidString(clientSecret) &&
+		!strings.ContainsRune(clientSecret, 0) && strings.TrimSpace(clientSecret) != ""
 }
 
 // verifyVKVideoLive ограничивает ручную проверку общим HTTP-бюджетом и сроком конечного запроса.
@@ -110,7 +115,7 @@ func (m *Manager) verifyVKVideoLive(ctx context.Context, verifier vkVideoLiveCre
 // vkVideoLiveConnectReason отображает безопасные отказы проверки в причину результата подключения.
 func vkVideoLiveConnectReason(err error) core.ChatReason {
 	switch err {
-	case context.Canceled:
+	case context.Canceled, core.ErrClosed:
 		return core.ChatReasonNone
 	case core.ErrBusy:
 		return core.ChatReasonLimit

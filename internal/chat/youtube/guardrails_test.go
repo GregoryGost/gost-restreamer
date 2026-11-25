@@ -52,6 +52,11 @@ func TestYouTubeRejectsUnusableKeysBeforeRequest(t *testing.T) {
 	if reason != core.ChatReasonNone || !errors.Is(err, context.Canceled) || calls.Load() != 0 {
 		t.Fatalf("Отмена проверки дала причину %q, отмена=%t, запросов=%d", reason, errors.Is(err, context.Canceled), calls.Load())
 	}
+	adapter.limits.CredentialBytes = uint64(len(fixtureAPIKey))
+	reason, err = adapter.ValidateAPIKey(t.Context(), fixtureAPIKey)
+	if reason != core.ChatReasonCredentials || err != nil || calls.Load() != 0 {
+		t.Fatalf("Полный набор не помещается в бюджет ключа: причина %q, ошибка=%t, запросов=%d", reason, err != nil, calls.Load())
+	}
 }
 
 // TestYouTubeRejectsMismatchedDiscoveryInput проверяет принадлежность полномочий

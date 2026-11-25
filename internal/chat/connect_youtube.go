@@ -2,7 +2,6 @@ package chat
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 
 	"github.com/GregoryGost/gost-restreamer/internal/core"
@@ -19,14 +18,11 @@ type youtubeKeyValidator interface {
 // Неудачная или отменённая проверка сохраняет прежнее чтение. Подтверждённая замена отзывает его
 // до возврата. Результат содержит только публичные метаданные сохранённого аккаунта.
 func (m *Manager) ConnectYouTube(ctx context.Context, request core.ChatAuthorizationRequest) (core.ChatAccount, core.ChatReason, error) {
-	// account содержит допустимые метаданные нового аккаунта, в том числе имя.
-	account := core.ChatAccount{Provider: request.Provider, Name: request.Name}
-	if request.Provider != core.ChatYouTube || request.ClientID != "" || account.Validate() != nil || request.Bundle.Validate(core.ChatYouTube) != nil ||
-		request.AccountID == "" && request.ExpectedRevision != 0 ||
-		request.AccountID != "" && (request.AccountID.Validate() != nil || len(request.AccountID) > core.ChatIDBytes || request.ExpectedRevision == 0 || request.Name != "") {
+	if request.Provider != core.ChatYouTube || request.ClientID != "" || request.ClientSecret != "" ||
+		!validAuthorizationTarget(request) || request.Bundle.ValidateLimit(core.ChatYouTube, m.limits.CredentialBytes) != nil {
 		return core.ChatAccount{}, core.ChatReasonConfiguration, core.ErrInvalid
 	}
-	// validator проверяет ключ тем же адаптером, который будет читать чат после подключения.
+	// validator проверяет ключ адаптером чтения, ok подтверждает поддержку проверки.
 	validator, ok := m.adapters[core.ChatYouTube].(youtubeKeyValidator)
 	if !ok {
 		return core.ChatAccount{}, core.ChatReasonConfiguration, core.ErrNotReady
@@ -43,34 +39,47 @@ func (m *Manager) ConnectYouTube(ctx context.Context, request core.ChatAuthoriza
 		return core.ChatAccount{}, core.ChatReasonNone, err
 	}
 	defer finish()
+	// writeID связывает запись с квитанцией, release освобождает допуск замены, err сообщает об отказе.
+	writeID, release, err := m.reserveSynchronousAuthorization(request)
+	if err != nil {
+		if errors.Is(err, core.ErrBusy) {
+			return core.ChatAccount{}, core.ChatReasonLimit, err
+		}
+		return core.ChatAccount{}, core.ChatReasonNone, err
+	}
+	defer release()
 	// bundle принадлежит этой операции и используется для проверки и записи одного и того же ключа.
 	bundle := copyCredentialBundle(request.Bundle)
 	// reason и err сообщают безопасный результат проверки до входа в операцию записи.
-	reason, err := m.verifyYouTubeKey(operation, validator, bundle.YouTube.APIKey)
-	if reason.Validate() != nil {
-		return core.ChatAccount{}, core.ChatReasonConfiguration, core.ErrInvalid
-	}
+	reason, err := m.verifyYouTubeAuthorization(operation, validator, bundle.YouTube.APIKey)
 	if err != nil {
 		return core.ChatAccount{}, reason, err
-	}
-	if reason == core.ChatReasonCredentials || reason == core.ChatReasonConfiguration {
-		return core.ChatAccount{}, reason, core.ErrInvalid
-	}
-	if reason != core.ChatReasonNone {
-		return core.ChatAccount{}, reason, core.ErrNotReady
 	}
 	if err = operation.Err(); err != nil {
 		return core.ChatAccount{}, core.ChatReasonNone, err
 	}
-
-	// writeID связывает ожидаемую запись с её полной квитанцией после неоднозначного COMMIT.
-	writeID := core.ID(rand.Text())
-	if request.AccountID != "" {
-		_, account, err = owner.replace(operation, m, request.AccountID, core.ChatYouTube, bundle, writeID, request.ExpectedRevision)
-	} else {
-		account, err = m.createVerifiedChatAccount(operation, account, bundle, writeID)
-	}
+	// account содержит публичную конфигурацию подтверждённой записи, err передаёт её исход.
+	account, err := m.persistAuthorization(operation, request, owner, bundle, writeID)
 	return account, core.ChatReasonNone, err
+}
+
+// verifyYouTubeAuthorization разрешает сохранение только после успешной проверки без причины отказа.
+func (m *Manager) verifyYouTubeAuthorization(ctx context.Context, validator youtubeKeyValidator, key string) (core.ChatReason, error) {
+	// reason сообщает результат платформы, err сопровождает невозможность выполнить проверку.
+	reason, err := m.verifyYouTubeKey(ctx, validator, key)
+	if reason.Validate() != nil {
+		return core.ChatReasonConfiguration, core.ErrInvalid
+	}
+	if err != nil {
+		return reason, err
+	}
+	if reason == core.ChatReasonCredentials || reason == core.ChatReasonConfiguration {
+		return reason, core.ErrInvalid
+	}
+	if reason != core.ChatReasonNone {
+		return reason, core.ErrNotReady
+	}
+	return reason, nil
 }
 
 // verifyYouTubeKey ограничивает сетевой запрос проверки ключа тем же бюджетом, что и обнаружение.
@@ -91,7 +100,12 @@ func (m *Manager) verifyYouTubeKey(ctx context.Context, validator youtubeKeyVali
 	if bounded.Err() != nil {
 		return core.ChatReasonNone, bounded.Err()
 	}
-	return validator.ValidateAPIKey(bounded, key)
+	// reason и err сохраняют результат проверки только до истечения отведённого срока.
+	reason, err := validator.ValidateAPIKey(bounded, key)
+	if bounded.Err() != nil {
+		return core.ChatReasonNone, bounded.Err()
+	}
+	return reason, err
 }
 
 // createVerifiedChatAccount создаёт аккаунт с уже проверенными полномочиями. Если исход записи неясен,

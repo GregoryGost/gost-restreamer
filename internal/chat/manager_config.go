@@ -282,6 +282,52 @@ func (m *Manager) ApplyAccount(ctx context.Context, id core.ID, revision uint64)
 	return core.ChatApplyResult{Revision: revision, Reconnected: m.revokeAccount(id)}, nil
 }
 
+// DeleteAccount удаляет аккаунт по конфигурационной ревизии и отзывает место
+// владельца полномочий только после подтверждённого отсутствия аккаунта.
+func (m *Manager) DeleteAccount(ctx context.Context, id core.ID, expected uint64) error {
+	if !validDiscoveryID(string(id)) || expected == 0 {
+		return core.ErrInvalid
+	}
+	// operation блокирует допуск источников аккаунта, finish снимает барьер, err сообщает об отказе.
+	operation, finish, err := m.beginMutation(ctx, "", id)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	// writeErr отличает подтверждённый DELETE от отказа или неустановленного исхода записи.
+	writeErr := m.service.DeleteChatAccount(operation, id, expected)
+	if writeErr == nil {
+		m.retireDeletedAccount(id)
+		return nil
+	}
+	if errors.Is(writeErr, core.ErrConflict) || errors.Is(writeErr, core.ErrInUse) {
+		return writeErr
+	}
+	// check сверяет конфигурацию независимо от отмены запроса, cancel освобождает таймер чтения.
+	check, cancel := context.WithTimeout(m.ctx, m.limits.HTTPTimeout)
+	defer cancel()
+	// readErr подтверждает отсутствие только через согласованное конфигурационное чтение.
+	_, readErr := m.service.GetChatAccount(check, id)
+	if errors.Is(readErr, core.ErrNotFound) {
+		m.retireDeletedAccount(id)
+		if errors.Is(writeErr, core.ErrNotFound) {
+			return writeErr
+		}
+		return nil
+	}
+	return errors.Join(writeErr, readErr)
+}
+
+// retireDeletedAccount передаёт CredentialOwner доказанное удаление и снимает оставшееся чтение.
+// Метод не меняет сохранённые публичные проекции попыток авторизации.
+func (m *Manager) retireDeletedAccount(id core.ID) {
+	// owner указывает на владельца слотов, ok подтверждает, что Manager читает через него.
+	if owner, ok := m.credentials.(*CredentialOwner); ok {
+		owner.retire(id)
+	}
+	m.revokeAccount(id)
+}
+
 // mutateAccount закрывает допуск аккаунта на время ручной замены через CredentialOwner.
 // change подтверждает полную квитанцию полномочий. При доказанном откате чтение использует прежнее
 // поколение. При неизвестном исходе старые обратные вызовы отзываются до сверки владельца.

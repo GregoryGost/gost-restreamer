@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="ru" class="dashboard">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Чаты трансляции</title>
+  <link rel="stylesheet" href="/chat/assets/chat.css">
+  <script type="module" src="/chat/assets/dashboard.js"></script>
+</head>
+<body>
+  <main class="workspace">
+    <header class="workspace-header">
+      <div>
+        <p class="app-name">Gost Restreamer</p>
+        <h1>Чаты трансляции</h1>
+      </div>
+      <p id="connection" class="connection" role="status">Подключение к серверу…</p>
+    </header>
+    <div class="workspace-grid">
+      <section class="panel feed-panel" aria-labelledby="feed-title">
+        <header class="panel-heading feed-heading">
+          <h2 id="feed-title">Сообщения</h2>
+          <label class="filter">Источник
+            <select id="filter"><option value="">Все источники</option></select>
+          </label>
+        </header>
+        <div id="feed" class="feed-scroll" tabindex="0" role="region" aria-label="Лента сообщений">
+          <p id="empty-feed" class="empty-feed">Загрузка сообщений…</p>
+          <ol id="messages" class="messages" data-message-limit="{{messageLimit}}"></ol>
+        </div>
+        <footer class="feed-controls">
+          <label class="checkbox"><input id="follow" type="checkbox" checked> Автопрокрутка</label>
+          <button id="new-messages" type="button" class="button secondary" hidden>К новым сообщениям</button>
+          <form id="test-feed-form" class="test-feed-actions">
+            <label class="filter">Интервал между сообщениями, мс
+              <input id="test-feed-interval" type="number" min="100" max="60000" step="1" value="1000" required disabled>
+            </label>
+            <button id="test-feed-start" type="submit" class="button primary" disabled>Старт</button>
+            <button id="test-feed-stop" type="button" class="button secondary" disabled>Стоп</button>
+            <button id="chat-clear" type="button" class="button danger" disabled>Очистить чат</button>
+          </form>
+          <p id="test-feed-status" class="feed-command-status" role="status" hidden></p>
+        </footer>
+      </section>
+      <aside class="panel status-panel" aria-labelledby="status-title">
+        <header class="panel-heading"><h2 id="status-title">Состояние чатов</h2></header>
+        <p id="gap" class="notice" role="status" hidden></p>
+        <p id="no-status" class="empty-note">Загрузка источников…</p>
+        <ul id="statuses" class="entry-list"></ul>
+      </aside>
+    </div>
+    <section class="panel settings-panel" aria-labelledby="settings-title">
+      <details id="settings">
+        <summary id="settings-title">Настройки чатов</summary>
+        <div class="settings-content">
+          <div class="settings-toolbar"><button id="refresh-settings" type="button" class="button secondary" disabled>Обновить настройки</button></div>
+          <p id="settings-status" class="notice" role="status" hidden></p>
+          <div class="settings-grid">
+            <section aria-labelledby="sources-title">
+              <header class="list-heading">
+                <h2 id="sources-title">Источники</h2>
+                <button id="add-source" type="button" class="button secondary" disabled>Добавить источник</button>
+              </header>
+              <p id="no-sources" class="empty-note">Загрузка источников…</p>
+              <ul id="sources" class="entry-list"></ul>
+            </section>
+            <section aria-labelledby="accounts-title">
+              <header class="list-heading">
+                <h2 id="accounts-title">Аккаунты</h2>
+                <button id="add-account" type="button" class="button primary" disabled>Подключить аккаунт</button>
+              </header>
+              <p id="no-accounts" class="empty-note">Загрузка аккаунтов…</p>
+              <ul id="accounts" class="entry-list"></ul>
+            </section>
+          </div>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <dialog id="source-dialog" aria-labelledby="source-title">
+    <form id="source-form" class="editor" autocomplete="off">
+      <header class="dialog-heading"><h2 id="source-title">Источник чата</h2></header>
+      <label>Назначение <select name="destination" required></select></label>
+      <label>Аккаунт <select name="account" required></select></label>
+      <label>Название <input name="name" maxlength="512"></label>
+      <label><span id="channel-label">Канал</span> <input name="channel" maxlength="256"></label>
+      <label class="checkbox"><input name="enabled" type="checkbox" checked> Источник включён</label>
+      <p class="notice" role="status" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="button secondary" data-close>Закрыть</button>
+        <button type="submit" class="button primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="rename-dialog" aria-labelledby="rename-title">
+    <form id="rename-form" class="editor" autocomplete="off">
+      <header class="dialog-heading"><h2 id="rename-title">Название аккаунта</h2></header>
+      <label>Название <input name="name" maxlength="512"></label>
+      <p class="notice" role="status" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="button secondary" data-close>Закрыть</button>
+        <button type="submit" class="button primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="authorization-dialog" aria-labelledby="authorization-title">
+    <section class="editor">
+      <header class="dialog-heading"><h2 id="authorization-title">Подключение аккаунта</h2></header>
+      <form id="authorization-form" autocomplete="off">
+        <fieldset>
+          <label>Площадка
+            <select name="provider">
+              <option value="youtube">YouTube</option>
+              <option value="twitch">Twitch</option>
+              <option value="vk_video_live">VK Видео Live</option>
+            </select>
+          </label>
+          <label>Название <input name="name" maxlength="512"></label>
+          <label>API Key <input name="api_key" type="password" autocomplete="off"></label>
+          <label>Client ID <input name="client_id" autocomplete="off"></label>
+          <label>Client Secret <input name="client_secret" type="password" autocomplete="off"></label>
+          <button type="submit" class="button primary">Подключить</button>
+        </fieldset>
+      </form>
+      <p id="authorization-status" class="notice" role="status" hidden></p>
+      <div id="device" class="device" hidden>
+        <a id="device-link" target="_blank" rel="noopener noreferrer">Открыть Twitch для подтверждения</a>
+        <p>Код подключения <strong id="device-code"></strong></p>
+        <p id="device-expiry"></p>
+      </div>
+      <div class="dialog-actions">
+        <button id="close-authorization" type="button" class="button secondary">Закрыть</button>
+        <button id="cancel-authorization" type="button" class="button danger" hidden>Отменить подключение</button>
+      </div>
+    </section>
+  </dialog>
+
+  <dialog id="broadcast-dialog" aria-labelledby="broadcast-title">
+    <form id="broadcast-form" class="editor">
+      <header class="dialog-heading"><h2 id="broadcast-title">Выбор эфира YouTube</h2></header>
+      <label>Эфир <select name="video" required></select></label>
+      <p class="notice" role="status" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="button secondary" data-close>Закрыть</button>
+        <button type="submit" class="button primary" disabled>Выбрать эфир</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

@@ -137,11 +137,21 @@ func (s *Service) UpdateStream(ctx context.Context, value Stream, expected uint6
 	return value, err
 }
 
-// DeleteStream передаёт удаление Stream с ожидаемой ревизией репозиторию внутри транзакции записи.
+// DeleteStream удаляет Stream с ожидаемой ревизией. GuardWrite отзывает допуск тестовой ленты
+// этого потока после подтверждения удаления.
 func (s *Service) DeleteStream(ctx context.Context, id ID, expected uint64) error {
-	return s.uow.Write(ctx, func(r Repositories) error {
-		// Удаляет Stream через репозиторий с проверкой ожидаемой Revision в UnitOfWork.
-		return r.Config.DeleteStream(ctx, id, expected)
+	// target адресует допуск удаляемого потока после успешной операции репозитория.
+	var target chatTestWriteTarget
+	return s.uow.Write(context.WithValue(ctx, chatTestWriteKey{}, &target), func(r Repositories) error {
+		// Удаляет Stream с проверкой ревизии и передаёт его ID в GuardWrite только для текущей
+		// успешной попытки удаления.
+		target = chatTestWriteTarget{}
+		// err сообщает об отказе удаления, например при конфликте ревизии или наличии связей.
+		if err := r.Config.DeleteStream(ctx, id, expected); err != nil {
+			return err
+		}
+		target.streamID = id
+		return nil
 	})
 }
 

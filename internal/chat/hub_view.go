@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/GregoryGost/gost-restreamer/internal/chatwire"
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
@@ -41,6 +42,41 @@ func (h *chatHub) publishLocked(event chatVisibleEvent) {
 		subscriber.offerLocked(event)
 	}
 	h.signalLocked()
+}
+
+// clearMessages удаляет историю и прежний replay на той же позиции, где публикуется chat.cleared.
+// Вход адаптеров, счётчики, дедупликация и статусы продолжают жить в этой эпохе.
+func (h *chatHub) clearMessages(ctx context.Context) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed || h.isStopping() {
+		return core.ErrStale
+	}
+	// err сообщает об отмене до подготовки изменений Hub.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// event содержит границу очистки, err сообщает об исчерпании позиции.
+	event, err := h.prepareEventLocked(core.ChatEvent{Kind: core.ChatEventCleared}, nil)
+	if err != nil {
+		return err
+	}
+	// apply фиксирует очистку и будит подписчиков одним изменением позиции.
+	apply := func() {
+		h.history = chatBuffer[core.ChatMessage]{}
+		h.replay = chatBuffer[chatVisibleEvent]{}
+		h.clearedThrough = h.messageOrder
+		// subscriber удерживает очередь, из которой убирается удалённая история.
+		for subscriber := range h.subscribers {
+			subscriber.discardMessagesLocked()
+		}
+		h.publishLocked(event)
+	}
+	if h.test != nil {
+		return h.test.Publish(ctx, apply)
+	}
+	apply()
+	return nil
 }
 
 // signalLocked будит читателей журнала и предоставляет канал для ожидания следующего изменения.
@@ -108,7 +144,7 @@ func (h *chatHub) prepareStatusLocked(status core.ChatSourceStatus) (chatHubStat
 		return chatHubStatus{}, core.ErrNotReady
 	}
 	// data содержит закодированное состояние, err сообщает о непредставимых значениях.
-	data, err := json.Marshal(chatJSONStatus(status))
+	data, err := json.Marshal(chatwire.Status(status))
 	if err != nil {
 		return chatHubStatus{}, core.ErrInvalid
 	}
@@ -196,8 +232,13 @@ func (h *chatHub) appendGapLocked(reason core.ChatReason, lost uint64) error {
 func (h *chatHub) captureSnapshot(sources []core.ChatSource) chatSnapshotView {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// fence содержит независимую копию идентичности запуска.
-	fence := h.fence
+	// session содержит независимую копию идентичности реального запуска.
+	var session *core.RuntimeSessionFence
+	if h.test == nil {
+		// fence удерживает точный запуск в возвращаемом снимке.
+		fence := h.fence
+		session = &fence
+	}
 	// statuses удерживает копии верхнеуровневых значений до выдачи снимка.
 	statuses := make([]core.ChatSourceStatus, 0, len(h.statuses))
 	// entry задаёт очередной статус с неизменяемыми указателями на время.
@@ -210,17 +251,18 @@ func (h *chatHub) captureSnapshot(sources []core.ChatSource) chatSnapshotView {
 	})
 	return chatSnapshotView{
 		snapshot: core.ChatSnapshot{
-			StreamID: h.streamID, Session: &fence, Sources: slices.Clone(sources), Statuses: statuses,
+			StreamID: h.streamID, Session: session, Sources: slices.Clone(sources), Statuses: statuses,
 			Cursor: h.cursor(h.eventOrder),
 		},
 		history: slices.Clone(h.history.items[h.history.first:]),
+		test:    h.test,
 	}
 }
 
 // startReplayLocked переводит курсор в смещение первого следующего события.
 // Отозванная эпоха, повреждённая позиция и пропуск retention требуют нового snapshot.
 func (h *chatHub) startReplayLocked(cursor core.ChatCursor) (int, bool) {
-	if h.closed {
+	if h.closed || h.testRevoked() {
 		return 0, false
 	}
 	// position содержит проверенную позицию текущей эпохи, ok отражает проверку формата и подписи.
@@ -276,6 +318,10 @@ func (h *chatHub) events(ctx context.Context, cursor core.ChatCursor, limit int)
 	for index, event := range result.Events {
 		result.Events[index] = chatCopyEvent(event)
 	}
+	if h.testRevoked() {
+		result.Events = nil
+		result.ResyncRequired = true
+	}
 	return result, nil
 }
 
@@ -297,7 +343,11 @@ func (h *chatHub) finish() {
 	terminal := core.ChatEvent{Kind: core.ChatEventSessionClosed, SessionID: h.fence.SessionID, Cursor: h.cursor(h.eventOrder)}
 	// subscriber задаёт ранее открытый допуск, которому ещё доступен последний кадр.
 	for subscriber := range h.subscribers {
-		subscriber.terminateLocked(terminal)
+		if h.test != nil {
+			subscriber.endTestLocked()
+		} else {
+			subscriber.terminateLocked(terminal)
+		}
 	}
 	h.subscribers = nil
 	h.history = chatBuffer[core.ChatMessage]{}

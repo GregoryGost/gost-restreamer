@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"math"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -12,7 +13,7 @@ import (
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
-// chatHub публикует ленту одного точного запуска и удерживает её ограниченный хвост.
+// chatHub публикует ленту запуска или локального генератора и удерживает её ограниченный хвост.
 // Вход и выдача защищены разными блокировками. Обработчик входа не ждёт
 // проверки полномочий публикации, кодирования или чтения подписчика.
 type chatHub struct {
@@ -24,6 +25,8 @@ type chatHub struct {
 	streamID core.ID
 	// fence содержит точное выполнение, которому принадлежит лента.
 	fence core.RuntimeSessionFence
+	// test связывает тестовую эпоху с допуском до эфира. У реальной ленты указатель пуст.
+	test *core.ChatTestAdmission
 	// key подписывает cursor только для этой эпохи.
 	key chatCursorKey
 	// wake уведомляет единственного обработчика об изменении входа.
@@ -48,6 +51,11 @@ type chatHub struct {
 	eventOrder uint64
 	// messageOrder содержит последний выданный номер сообщения в пределах эпохи.
 	messageOrder uint64
+	// testSamples хранит ещё не выданные индексы случайной последовательности тестовых реплик.
+	// Срез меняется под mu только в тестовой ленте.
+	testSamples []int
+	// clearedThrough отмечает последний номер сообщения, удалённого командой очистки.
+	clearedThrough uint64
 	// changed закрывается при каждом публичном изменении и не заменяется после закрытия ленты.
 	changed chan struct{}
 	// closed запрещает чтение снятой эпохи и добавление новых подписчиков.
@@ -138,6 +146,18 @@ func newChatHub(limits core.ChatLimits, now func() time.Time, streamID core.ID, 
 	if limits.Validate() != nil || now == nil || streamID.Validate() != nil || fence.SessionID.Validate() != nil || len(fence.SessionID) > core.ChatIDBytes {
 		return nil, core.ErrInvalid
 	}
+	// h удерживает состояние реальной эпохи, err сообщает об отказе при создании её курсора.
+	h, err := newChatHubState(limits, now, streamID, fence, nil)
+	if err != nil {
+		return nil, err
+	}
+	go h.run()
+	return h, nil
+}
+
+// newChatHubState создаёт очереди и независимый курсор для уже проверенных параметров ленты.
+// Обработчик входа запускает только владелец реальной ленты.
+func newChatHubState(limits core.ChatLimits, now func() time.Time, streamID core.ID, fence core.RuntimeSessionFence, test *core.ChatTestAdmission) (*chatHub, error) {
 	// key задаёт новую эпоху, err сообщает об ошибке создания её ключа.
 	key, err := newChatCursorKey()
 	if err != nil {
@@ -146,15 +166,95 @@ func newChatHub(limits core.ChatLimits, now func() time.Time, streamID core.ID, 
 	if uint64(len(key.cursor("", 0))) > limits.CursorBytes {
 		return nil, core.ErrInvalid
 	}
-	// h становится единственным владельцем очередей, журнала и обработчика точного запуска.
-	h := &chatHub{
-		limits: limits, now: now, streamID: streamID, fence: fence, key: key,
+	return &chatHub{
+		limits: limits, now: now, streamID: streamID, fence: fence, test: test, key: key,
 		wake: make(chan struct{}, 1), stopping: make(chan struct{}), done: make(chan struct{}),
 		changed: make(chan struct{}), statuses: make(map[core.ID]chatHubStatus),
 		subscribers: make(map[*ChatSubscription]struct{}), dedupe: make(map[chatDedupeKey]time.Time),
+	}, nil
+}
+
+// chatTestRevoked проверяет отзыв допуска без ожидания сверки Manager.
+func chatTestRevoked(test *core.ChatTestAdmission) bool {
+	if test == nil {
+		return false
 	}
-	go h.run()
-	return h, nil
+	select {
+	case <-test.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+// testRevoked закрывает видимость тестовой эпохи с момента отзыва допуска или её остановки.
+func (h *chatHub) testRevoked() bool {
+	return h.test != nil && (h.isStopping() || chatTestRevoked(h.test))
+}
+
+// publishTest синхронно публикует одну реплику из перемешанного набора без очереди адаптеров.
+// Позиция набора, история и журнал меняются вместе под действующим допуском до эфира.
+// ctx ограничивает ожидание допуска. Если развёрнутая реплика сама по себе не помещается в
+// историю, журнал или очередь клиента, публикуется короткая реплика той же площадки.
+func (h *chatHub) publishTest(ctx context.Context) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed || h.testRevoked() {
+		return core.ErrConflict
+	}
+	if h.messageOrder == math.MaxUint64 {
+		return core.ErrNotReady
+	}
+	if len(h.testSamples) == 0 {
+		h.testSamples = rand.Perm(len(testChatSamples))
+	}
+	// sample задаёт следующую площадку и реплику. message добавляет номер и серверное время приёма.
+	sample := testChatSamples[h.testSamples[0]]
+	message := core.ChatMessage{
+		ChatIncomingMessage: sample.incoming(), TestProvider: sample.provider,
+		Seq: h.messageOrder + 1, ReceivedAt: h.now().UTC().Truncate(time.Microsecond),
+	}
+	// budget ограничивает JSON одной записи в истории.
+	budget := min(h.limits.MessageBytes, h.limits.History.Bytes)
+	// event содержит подготовленную запись журнала, size задаёт размер сообщения в истории,
+	// err сообщает об ошибке кодирования, проверки полей или исчерпании номера события.
+	event, size, err := h.prepareTestEventLocked(&message)
+	if err != nil {
+		return err
+	}
+	if size > budget || event.encodedBytes > h.limits.Replay.Bytes ||
+		event.frameBytes > h.limits.SSEFrameBytes || event.logicalBytes > h.limits.SSEQueue.Bytes {
+		message.Author = core.ChatAuthor{DisplayName: "Ли"}
+		message.Text = "👋"
+		message.Parts, message.Badges = nil, nil
+		event, size, err = h.prepareTestEventLocked(&message)
+		if err != nil {
+			return err
+		}
+		if size > budget {
+			return core.ErrNotReady
+		}
+	}
+	// Функция продвигает позицию набора и публикует запись под допуском RuntimeAuthority.
+	return h.test.Publish(ctx, func() {
+		h.testSamples = h.testSamples[1:]
+		h.messageOrder = message.Seq
+		h.history.retain(message, size, h.limits.History)
+		h.publishLocked(event)
+	})
+}
+
+// prepareTestEventLocked кодирует message и считает фактические размеры записи для истории,
+// журнала и подписчика. Позиция резервируется только при последующей публикации.
+func (h *chatHub) prepareTestEventLocked(message *core.ChatMessage) (chatVisibleEvent, uint64, error) {
+	// payload содержит JSON сообщения без оболочки события, err сообщает об ошибке сериализации.
+	payload, err := chatJSONMessage(*message)
+	if err != nil {
+		return chatVisibleEvent{}, 0, err
+	}
+	// event содержит рассчитанные размеры события и его позицию, err передаёт причину отказа.
+	event, err := h.prepareEventLocked(core.ChatEvent{Kind: core.ChatEventMessage, Message: message}, payload)
+	return event, uint64(len(payload)), err
 }
 
 // enqueue принимает неизменяемую копию сообщения и держит исходное доказательство в том же входном бюджете.

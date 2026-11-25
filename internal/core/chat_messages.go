@@ -13,6 +13,8 @@ const (
 	ChatMessageText ChatMessageKind = "message"
 	// ChatMessageSystem обозначает распознанное системное событие, допустимое в ленте.
 	ChatMessageSystem ChatMessageKind = "supported_system_event"
+	// ChatTest помечает сообщение локального генератора и допустим только в готовой ленте.
+	ChatTest ChatProvider = "test"
 )
 
 // ChatPartKind задаёт закрытый вид безопасного структурированного фрагмента.
@@ -141,7 +143,15 @@ func (m ChatIncomingMessage) LogicalBytes() (uint64, error) {
 // Validate проверяет структурные поля, ссылки и предварительную сумму байтов сообщения.
 // Окончательный размер JSON после escaping и добавления полей Hub проверяет будущая граница выдачи.
 func (m ChatIncomingMessage) Validate() error {
-	if m.Provider.Validate() != nil || chatText(m.ChannelID, ChatIDBytes, true) != nil || chatText(m.ProviderMessageID, ChatIDBytes, false) != nil || len(m.Parts) > ChatMaxParts || len(m.Badges) > ChatMaxBadges {
+	if m.Provider.Validate() != nil || chatText(m.ChannelID, ChatIDBytes, true) != nil || chatText(m.ProviderMessageID, ChatIDBytes, false) != nil {
+		return ErrInvalid
+	}
+	return m.validateContent()
+}
+
+// validateContent проверяет общие поля площадок и готовых тестовых сообщений после проверки их происхождения.
+func (m ChatIncomingMessage) validateContent() error {
+	if len(m.Parts) > ChatMaxParts || len(m.Badges) > ChatMaxBadges {
 		return ErrInvalid
 	}
 	if m.Kind != ChatMessageText && m.Kind != ChatMessageSystem {
@@ -179,13 +189,16 @@ func (m ChatIncomingMessage) Validate() error {
 	return nil
 }
 
-// ChatMessage добавляет поля, которые назначает Hub после проверки точного worker token.
+// ChatMessage содержит принятую Hub запись с серверным порядком и временем приёма.
 type ChatMessage struct {
-	// ChatIncomingMessage содержит только проверенные публичные данные площадки.
+	// ChatIncomingMessage содержит открытые данные площадки или локального генератора.
 	ChatIncomingMessage
-	// SessionID задаёт точный запуск, в котором принято сообщение.
+	// TestProvider указывает, значок какой площадки показывает тестовая запись.
+	// У живых сообщений поле пустое.
+	TestProvider ChatProvider
+	// SessionID задаёт точный запуск либо остаётся пустым в тестовой ленте.
 	SessionID ID
-	// ChatSourceID содержит минимальный текущий допущенный SourceID общего reader при первом приёме.
+	// ChatSourceID задаёт выбранный SourceID общего reader и остаётся пустым у тестового сообщения.
 	ChatSourceID ID
 	// Seq задаёт серверный порядок получения в пределах эпохи, без float64-преобразования.
 	Seq uint64
@@ -193,15 +206,27 @@ type ChatMessage struct {
 	ReceivedAt time.Time
 }
 
-// Validate проверяет структурную форму сообщения; финальный encoded-limit остаётся обязанностью Hub/API.
+// Validate проверяет происхождение и содержимое сообщения. Hub и API проверяют размер JSON при выдаче.
 func (m ChatMessage) Validate() error {
-	if chatID(m.SessionID) != nil || chatID(m.ChatSourceID) != nil || m.Seq == 0 || chatTime(m.ReceivedAt) != nil {
+	if m.Seq == 0 || chatTime(m.ReceivedAt) != nil {
+		return ErrInvalid
+	}
+	if m.Provider == ChatTest {
+		if m.SessionID != "" || m.ChatSourceID != "" || m.ChannelID != "" || m.ProviderMessageID != "" || m.Kind != ChatMessageText {
+			return ErrInvalid
+		}
+		if m.TestProvider != "" && m.TestProvider.Validate() != nil {
+			return ErrInvalid
+		}
+		return m.validateContent()
+	}
+	if m.TestProvider != "" || chatID(m.SessionID) != nil || chatID(m.ChatSourceID) != nil {
 		return ErrInvalid
 	}
 	return m.ChatIncomingMessage.Validate()
 }
 
-// LogicalBytes добавляет серверные идентификаторы к логическому весу нормализованного сообщения.
+// LogicalBytes добавляет серверные идентификаторы и обозначение тестовой площадки к весу сообщения.
 func (m ChatMessage) LogicalBytes() (uint64, error) {
 	// weight содержит уже проверенный вес платформенных полей, err — переполнение.
 	weight, err := m.ChatIncomingMessage.LogicalBytes()
@@ -212,5 +237,5 @@ func (m ChatMessage) LogicalBytes() (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return CheckedChatBytes(weight, uint64(len(m.ChatSourceID)))
+	return CheckedChatBytes(weight, uint64(len(m.ChatSourceID))+uint64(len(m.TestProvider)))
 }

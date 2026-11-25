@@ -35,8 +35,15 @@ type ChatSubscription struct {
 }
 
 // subscribe атомарно проверяет replay и допускает подписчика в журнал этой же эпохи.
-// Отставание при начальном replay обозначается тем же событием, что и последующее переполнение.
+// Внутренний Go-потребитель передаёт собственную позицию, даже если она пуста.
 func (h *chatHub) subscribe(ctx context.Context, cursor core.ChatCursor) (*ChatSubscription, error) {
+	return h.subscribeFrom(ctx, cursor, false)
+}
+
+// subscribeFrom выбирает текущую позицию под той же блокировкой, что и добавление
+// очереди, если HTTP-потребитель не передал курсор. Отставание при чтении replay
+// обозначается тем же событием, что и последующее переполнение.
+func (h *chatHub) subscribeFrom(ctx context.Context, cursor core.ChatCursor, fromCurrent bool) (*ChatSubscription, error) {
 	if ctx == nil {
 		return nil, core.ErrInvalid
 	}
@@ -50,11 +57,14 @@ func (h *chatHub) subscribe(ctx context.Context, cursor core.ChatCursor) (*ChatS
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if h.closed || h.isStopping() {
+	if h.closed || h.isStopping() || h.testRevoked() {
 		return nil, core.ErrStale
 	}
 	if len(h.subscribers) >= h.limits.SSEClientsPerStream {
 		return nil, core.ErrBusy
+	}
+	if fromCurrent && cursor == "" {
+		cursor = h.cursor(h.eventOrder)
 	}
 	// subscriber получает отдельную ограниченную очередь и сигналы.
 	subscriber := &ChatSubscription{hub: h, cursor: cursor, changed: make(chan struct{}), done: make(chan struct{})}
@@ -111,6 +121,41 @@ func (s *ChatSubscription) terminateLocked(terminal core.ChatEvent) {
 	s.endLocked()
 }
 
+// endTestLocked отбрасывает хвост отозванной тестовой ленты и оставляет один resync.
+// Повторная остановка не заменяет уже прочитанный управляющий кадр.
+func (s *ChatSubscription) endTestLocked() {
+	if s.ended {
+		return
+	}
+	s.queue = chatBuffer[chatVisibleEvent]{}
+	s.resync = nil
+	s.terminateLocked(core.ChatEvent{Kind: core.ChatEventResync, Cursor: s.hub.cursor(s.hub.eventOrder)})
+}
+
+// discardMessagesLocked исключает непрочитанные сообщения до очистки, сохраняя порядок остальных кадров.
+func (s *ChatSubscription) discardMessagesLocked() {
+	// kept получает только кадры, которые не содержат удаляемую историю.
+	var kept chatBuffer[chatVisibleEvent]
+	// item содержит событие и уже измеренный вес для клиентской очереди.
+	for _, item := range s.queue.items[s.queue.first:] {
+		if item.value.event.Kind != core.ChatEventMessage {
+			kept.push(item.value, item.size)
+		}
+	}
+	s.queue = kept
+}
+
+// Current проверяет перед отправкой, что уже извлечённый кадр пережил очистку
+// и что тестовый допуск не отозван. Сетевой транспорт работает вне блокировки Hub.
+func (s *ChatSubscription) Current(event core.ChatEvent) bool {
+	s.hub.mu.Lock()
+	defer s.hub.mu.Unlock()
+	if s.hub.testRevoked() {
+		return event.Kind == core.ChatEventResync
+	}
+	return event.Message == nil || event.Message.Seq > s.hub.clearedThrough
+}
+
 // endLocked закрывает сигналы подписчика один раз независимо от порядка остановки клиента и Hub.
 func (s *ChatSubscription) endLocked() {
 	if !s.ended {
@@ -139,6 +184,9 @@ func (s *ChatSubscription) Events(ctx context.Context, limit int) (core.ChatEven
 	if s.released {
 		s.hub.mu.Unlock()
 		return core.ChatEventPage{}, core.ErrClosed
+	}
+	if s.hub.testRevoked() {
+		s.endTestLocked()
 	}
 	// result хранит кадры одной страницы и соответствующий сигнал изменения.
 	result := core.ChatEventPage{Cursor: s.cursor, Changed: s.changed}

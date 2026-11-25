@@ -261,6 +261,11 @@ Opus/MP3/AC-3 допускают `live_audio_mode: "copy"` либо `"transcode"
 | Политика Stream | `GET/PUT /streams/{id}/fallback-policy` |
 | Текущий общий снимок | `GET /events/snapshot` |
 | Изменения | `GET /events` — SSE |
+| Источники чатов | `GET/POST /destinations/{destinationId}/chat-sources`, `GET/PATCH/DELETE /chat-sources/{id}` |
+| Аккаунты чатов | `GET /chat/accounts`, `GET/PATCH/DELETE /chat/accounts/{id}` |
+| Подключение чатов | `POST /chat/accounts/connect`, `GET/DELETE /chat/accounts/authorizations/{attemptId}` |
+| Выбор эфира чата | `GET/POST /chat-sources/{id}/broadcast-selection` |
+| Снимок и отдельный SSE чатов | `GET /chat/streams/{streamId}/snapshot`, `GET /chat/streams/{streamId}/events` |
 | Возможности и здоровье | `GET /system/capabilities`, `/health/live`, `/health/ready` |
 
 Вложенный ресурс проверяется относительно указанного родителя. Выход другой Session или поколение другой заглушки даёт `404`, без выполнения команды над чужим объектом. Маршрута `/sessions/{id}/events` и долговечной истории телеметрии нет.
@@ -354,6 +359,8 @@ Current и pending Asset имеют разные назначения. Ошиб�
 Клиенты, размер страницы и кадра, heartbeat и время записи ограничены. Deadline действует до первой записи и flush. Неподдерживаемый transport не допускает неограниченную запись; медленный клиент отключается. Сеть не удерживает authority и не блокирует медиатракт. Отмена запроса и закрытие API завершают принадлежащие им streams. После начала SSE нельзя изменить HTTP status; допустимы безопасный control frame и закрытие.
 
 RAM-снимок не является общей транзакцией с историей SQLite. Квитанции команд клиент при необходимости читает отдельно.
+
+Снимок и SSE чатов принадлежат отдельной ленте и используют собственный cursor и транспортные лимиты. Они исключают ключи, токены и реквизиты площадок. Dashboard и Overlay открываются за пределами префикса API по `/chat/dashboard?stream_id=…` и `/chat/overlay?stream_id=…`. [REST, SSE и авторизация чатов](chat-contracts.md#целевой-http-контракт)
 
 ## Возможности, готовность и ошибки
 

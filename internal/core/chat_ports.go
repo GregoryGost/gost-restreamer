@@ -128,6 +128,8 @@ const (
 	ChatEventSourceStatus ChatEventKind = "chat.source_status"
 	// ChatEventGap сообщает об утрате входа, включая возможный upstream-пробел.
 	ChatEventGap ChatEventKind = "chat.gap"
+	// ChatEventCleared фиксирует удаление сообщений на отдельной позиции текущей ленты.
+	ChatEventCleared ChatEventKind = "chat.cleared"
 	// ChatEventResync требует нового согласованного snapshot.
 	ChatEventResync ChatEventKind = "resync_required"
 	// ChatEventSessionClosed закрывает ленту точной Session.
@@ -177,7 +179,7 @@ func (e ChatEvent) Validate() error {
 		if e.Message != nil || e.Status != nil || e.Lost != 0 || chatID(e.SessionID) != nil {
 			return ErrInvalid
 		}
-	case ChatEventResync:
+	case ChatEventResync, ChatEventCleared:
 		if e.Message != nil || e.Status != nil || e.Lost != 0 {
 			return ErrInvalid
 		}
@@ -194,7 +196,7 @@ func (e ChatEvent) Validate() error {
 type ChatSnapshot struct {
 	// StreamID адресует существующий поток; неизвестный Stream возвращает ErrNotFound.
 	StreamID ID
-	// Session равно nil до активной Session, при этом Messages пуст, а настройки доступны.
+	// Session равно nil до активной Session. Messages может содержать записи тестовой ленты.
 	Session *RuntimeSessionFence
 	// Sources содержит текущие конфигурации без полномочий.
 	Sources []ChatSource
@@ -389,9 +391,11 @@ type ChatAuthorizationRequest struct {
 	ExpectedRevision uint64
 	// Name содержит необязательное имя нового аккаунта.
 	Name string
-	// ClientID задаёт публичное приложение Twitch до получения первого набора токенов.
+	// ClientID задаёт приложение Twitch или VK Видео Live до получения первого набора токенов.
 	ClientID string
-	// Bundle передаёт первоначальные серверные реквизиты без публикации в состоянии попытки.
+	// ClientSecret передаёт закрытый ключ приложения VK Видео Live без публикации в состоянии попытки.
+	ClientSecret string
+	// Bundle передаёт исходный API Key YouTube без публикации в состоянии попытки.
 	Bundle ChatCredentialBundle
 }
 
@@ -399,11 +403,11 @@ type ChatAuthorizationRequest struct {
 type ChatAuthorizationState string
 
 const (
-	// ChatAuthorizationPending означает незавершённое подтверждение либо проверку.
+	// ChatAuthorizationPending означает незавершённую проверку либо ещё не подтверждённое сохранение.
 	ChatAuthorizationPending ChatAuthorizationState = "PENDING"
 	// ChatAuthorizationSucceeded означает принятую и сохранённую конфигурацию.
 	ChatAuthorizationSucceeded ChatAuthorizationState = "SUCCEEDED"
-	// ChatAuthorizationFailed означает отказ проверки без изменения прежнего аккаунта.
+	// ChatAuthorizationFailed означает доказанный отказ проверки или сохранения данной попытки.
 	ChatAuthorizationFailed ChatAuthorizationState = "FAILED"
 	// ChatAuthorizationCancelled означает отмену до принятия сохранения.
 	ChatAuthorizationCancelled ChatAuthorizationState = "CANCELLED"
@@ -415,15 +419,19 @@ const (
 type ChatAuthorization struct {
 	// AttemptID адресует ограниченную RAM-попытку, не восстанавливаемую после рестарта.
 	AttemptID ID
+	// Provider указывает площадку текущей попытки.
+	Provider ChatProvider
 	// AccountID заполняется для замены либо после принятого создания нового аккаунта.
 	AccountID ID
 	// State содержит текущее безопасное состояние попытки.
 	State ChatAuthorizationState
+	// Cancelable указывает, что проверку ещё можно отменить до допуска сохранения.
+	Cancelable bool
 	// UserCode содержит публичный Device Code user_code, если он нужен платформе.
 	UserCode string
 	// VerificationURI содержит публичный адрес подтверждения, без платформенных секретов.
 	VerificationURI string
-	// ExpiresAt ограничивает RAM-попытку более строгим сроком провайдера либо локальной политики.
+	// ExpiresAt ограничивает проверку до допуска записи меньшим из сроков Manager и площадки.
 	ExpiresAt time.Time
 	// Reason содержит безопасную причину отказа без диагностической ошибки.
 	Reason ChatReason

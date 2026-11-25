@@ -130,6 +130,23 @@ DTO, схемы и единая доменная проверка описыва
 
 Строковые поля observation обязательны внутри существующего объекта. Пустые неприменимые значения перечислены в общей SSE-схеме; их нельзя подменять состоянием другого владельца. `connected` и `heartbeat` остаются транспортными комментариями SSE, не новыми значениями RuntimeEvent.kind. Объекты метрик и progress могут отсутствовать через null по прежнему контракту.
 
+## Чаты
+
+| Поле | Доменный тип или владелец | Значения |
+| --- | --- | --- |
+| `provider` источника, аккаунта и подключения | `core.ChatProvider` | `youtube`, `twitch`, `vk_video_live`. |
+| `provider` сообщения | `core.ChatMessage` | `youtube`, `twitch`, `vk_video_live`, `test`. Значение `test` обозначает сообщение серверного генератора. |
+| `test_provider` сообщения | `core.ChatMessage` | `youtube`, `twitch`, `vk_video_live`. Поле задаёт значок имитируемой площадки при `provider: "test"` и отсутствует у реальных сообщений. |
+| `authorization_state` аккаунта | API | `CONFIGURED` подтверждает сохранённую конфигурацию. |
+| `state` попытки авторизации | `core.ChatAuthorizationState` | `PENDING`, `SUCCEEDED`, `FAILED`, `CANCELLED`, `EXPIRED`. |
+| `code` попытки авторизации | API и `core.ChatReason` | Безопасная причина из каталога чатов или `credential_commit_unknown` для неподтверждённой записи. Пустой код опускается. |
+| `state` статуса источника | `core.ChatSourceState` | `DISABLED`, `WAITING_OUTPUT`, `DISCOVERING`, `WAITING_CHAT`, `CONNECTING`, `CONNECTED`, `RETRYING`, `AUTH_REQUIRED`, `FAILED`, `STOPPED`. |
+| `reason` статуса и события чата | `core.ChatReason` | `""`, `no_broadcast`, `selection_required`, `chat_unavailable`, `chat_ended`, `chat_disabled`, `credentials_required`, `network`, `quota`, `configuration`, `limit`, `upstream_gap`. |
+| `kind` сообщения, `parts[].kind` | `core.ChatMessageKind`, `core.ChatPartKind` | Для сообщения `message`, `supported_system_event`. Для фрагмента `text`, `emote`. |
+| `kind` события SSE чата | `core.ChatEventKind` | `chat.message`, `chat.source_status`, `chat.gap`, `chat.cleared`, `resync_required`, `chat.session_closed`. |
+
+Идентификаторы, имена, текст сообщений, cursor, заголовки эфиров и штатные публичные параметры подтверждения Twitch остаются строками. Необязательные URL визуальных элементов проверяются на схему HTTPS. Токены и исходная диагностика платформы не попадают в эти представления.
+
 ## Возможности, здоровье и ошибки
 
 | Маршрут/поле | Владелец набора | Значения |

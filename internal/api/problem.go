@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/GregoryGost/gost-restreamer/internal/chat"
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/fallback"
 	"github.com/danielgtaylor/huma/v2"
@@ -166,6 +167,8 @@ func catalogText(code string) (problemText, bool) {
 		text = problemText{"Истекло время передачи файла заглушки.", "Проверьте соединение и состояние поколения заглушки."}
 	case "state_conflict":
 		text = problemText{"Операция конфликтует с текущим состоянием или версией.", "Прочитайте актуальное состояние объекта."}
+	case "credential_commit_unknown":
+		text = problemText{"Результат сохранения полномочий пока не установлен.", "Проверьте состояние принятой попытки подключения."}
 	case "body_too_large":
 		text = problemText{"Превышен допустимый размер тела запроса.", "Уменьшите размер передаваемого тела."}
 	case "preparation_limit":
@@ -609,6 +612,9 @@ func writeProblemCode(w http.ResponseWriter, status int, code string) {
 // builtinProblem распознаёт доказанные встроенные причины отдельного узла дерева.
 // Выбор между несколькими узлами выполняет diagnosticProblem; порядок switch не задаёт новый приоритет.
 func builtinProblem(err error, status int) *trustedProblem {
+	if status == 409 && err == chat.ErrCredentialCommitUnknown {
+		return newProblem(status, "credential_commit_unknown")
+	}
 	if status == 413 {
 		// isBodyLimit подтверждает конкретную ошибку предела тела без обхода соседних ветвей.
 		if _, isBodyLimit := err.(*http.MaxBytesError); isBodyLimit {
@@ -647,7 +653,7 @@ func builtinProblem(err error, status int) *trustedProblem {
 
 // problemCodes перечисляет закрытые машинные коды публичного Problem Details.
 func problemCodes() []string {
-	return []string{"fallback_not_configured", "fallback_not_prepared", "fallback_profile_not_prepared", "fallback_variant_not_ready", "preparation_active", "session_active", "request_id_conflict", "revision_conflict", "session_state_conflict", "output_detached", "output_already_running", "output_cleanup_pending", "destination_attached", "resource_in_use", "resource_ownership_conflict", "session_start_failed", "output_start_failed", "session_stop_failed", "output_stop_failed", "session_pause_failed", "session_resume_failed", "execution_interrupted", "command_superseded", "invalid_json", "invalid_request", "invalid_cursor", "sse_cursor_conflict", "resource_not_found", "nested_resource_not_found", "route_not_found", "schema_not_found", "method_not_allowed", "body_read_timeout", "upload_timeout", "state_conflict", "body_too_large", "preparation_limit", "request_limit", "unsupported_media_type", "invalid_parameters", "invalid_field", "service_unavailable", "api_closed", "service_busy", "runtime_unavailable", "resource_limit", "operation_canceled", "operation_timeout", "sse_client_limit", "sse_transport_unavailable", "internal_error", "empty_upload", "upload_canceled", "invalid_time", "invalid_profile", "invalid_custom", "duplicate_custom", "custom_conflict", "unknown_custom"}
+	return []string{"fallback_not_configured", "fallback_not_prepared", "fallback_profile_not_prepared", "fallback_variant_not_ready", "preparation_active", "session_active", "request_id_conflict", "revision_conflict", "session_state_conflict", "output_detached", "output_already_running", "output_cleanup_pending", "destination_attached", "resource_in_use", "resource_ownership_conflict", "session_start_failed", "output_start_failed", "session_stop_failed", "output_stop_failed", "session_pause_failed", "session_resume_failed", "execution_interrupted", "command_superseded", "invalid_json", "invalid_request", "invalid_cursor", "sse_cursor_conflict", "resource_not_found", "nested_resource_not_found", "route_not_found", "schema_not_found", "method_not_allowed", "body_read_timeout", "upload_timeout", "state_conflict", "credential_commit_unknown", "body_too_large", "preparation_limit", "request_limit", "unsupported_media_type", "invalid_parameters", "invalid_field", "service_unavailable", "api_closed", "service_busy", "runtime_unavailable", "resource_limit", "operation_canceled", "operation_timeout", "sse_client_limit", "sse_transport_unavailable", "internal_error", "empty_upload", "upload_canceled", "invalid_time", "invalid_profile", "invalid_custom", "duplicate_custom", "custom_conflict", "unknown_custom"}
 }
 
 // TransformSchema публикует закрытый каталог code общей модели Problem Details.

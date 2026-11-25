@@ -79,7 +79,7 @@ func (m *Manager) scheduleSourcesLocked() {
 		return
 	}
 	// waiting содержит активных участников, которым ещё нужно обнаружение или подключение.
-	waiting := make([]*managedSource, 0, m.limits.Sources)
+	var waiting []*managedSource
 	// session является очередной действующей эпохой.
 	for _, session := range m.sessions {
 		// member может уже удерживать доступ к разделяемому обработчику.

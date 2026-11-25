@@ -61,7 +61,7 @@ func TestTwitchDevicePollingBacksOffWithinProviderTTL(t *testing.T) {
 		// manager хранит только состояние, которое необходимо для авторизации без медиавыходов.
 		manager := &Manager{
 			ctx: ctx, limits: limits, adapters: map[core.ChatProvider]core.ChatAdapterPort{core.ChatTwitch: adapter},
-			discoverSlots: make(chan struct{}, limits.HTTPRequests), twitchAuthorizations: make(map[core.ID]*twitchAuthorization),
+			discoverSlots: make(chan struct{}, limits.HTTPRequests), authorizations: make(map[core.ID]*chatAuthorizationAttempt),
 		}
 		// Функция прекращает попытку и ждёт физического освобождения её работы.
 		defer func() {

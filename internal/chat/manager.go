@@ -35,14 +35,23 @@ type Manager struct {
 	// sessions содержит текущую эпоху по потоку, а hubs считает также закрывающиеся эпохи.
 	sessions map[core.ID]*managedSession
 	hubs     int
+	// testFeeds хранит текущие тестовые эпохи, а testHubs учитывает также завершающиеся.
+	testFeeds map[core.ID]*managedTestFeed
+	testHubs  int
+	// testMutation сериализует команды тестовой ленты и временный допуск очистки.
+	testMutation chan struct{}
+	// waitingClears содержит последние очистки потоков с действующими SSE-допусками.
+	waitingClears map[core.ID]waitingChatClear
+	// waitingClearOrder назначает отдельные позиции очистки без смены курсоров других потоков.
+	waitingClearOrder uint64
 	// readers удерживает обработчики по ключу, включая конечные состояния с живыми участниками.
 	readers map[managedReaderKey]*managedReader
 	// readerSlots считает физические попытки и ожидающие переподключения вплоть до возврата.
 	readerSlots int
 	// connections учитывает основные и дополнительные соединения до физического закрытия.
 	connections chan struct{}
-	// twitchAuthorizations хранит ограниченный набор попыток под защитой mu.
-	twitchAuthorizations map[core.ID]*twitchAuthorization
+	// authorizations хранит ограниченный набор попыток всех площадок под защитой mu.
+	authorizations map[core.ID]*chatAuthorizationAttempt
 	// wake объединяет запросы на сверку. changed будит клиентов при смене эпохи или конфигурации.
 	wake    chan struct{}
 	changed chan struct{}
@@ -73,7 +82,7 @@ type Manager struct {
 	subscribers int
 	// cursorKey различает курсоры ожидания этого экземпляра Manager.
 	cursorKey chatCursorKey
-	// work учитывает управляющую горутину, Hub, читателей, обнаружение и конфигурационные операции.
+	// work учитывает сверку, Hub, генераторы, читателей и выполняемые операции.
 	work sync.WaitGroup
 	// done закрывается после физического завершения работ.
 	done chan struct{}
@@ -177,7 +186,8 @@ func New(ctx context.Context, service *core.Service, store core.UnitOfWork, limi
 	m := &Manager{
 		ctx: workerCtx, cancel: cancel, service: service, store: store, credentials: reader, ownedCredentials: owner,
 		limits: limits, adapters: byProvider, sessions: make(map[core.ID]*managedSession), readers: make(map[managedReaderKey]*managedReader),
-		connections: make(chan struct{}, limits.Connections), twitchAuthorizations: make(map[core.ID]*twitchAuthorization),
+		testFeeds: make(map[core.ID]*managedTestFeed), testMutation: make(chan struct{}, 1), waitingClears: make(map[core.ID]waitingChatClear),
+		connections: make(chan struct{}, limits.Connections), authorizations: make(map[core.ID]*chatAuthorizationAttempt),
 		wake: make(chan struct{}, 1), changed: make(chan struct{}), topologyChanged: make(chan struct{}), mutation: make(chan struct{}, 1),
 		discoverSlots: httpSlots, snapshotSlots: make(chan struct{}, limits.Snapshots), eventSlots: make(chan struct{}, limits.SSEClients),
 		subscriptions: make(map[core.ID]int), cursorKey: key, done: make(chan struct{}),
@@ -203,7 +213,7 @@ func (m *Manager) refreshRejectedCredentials(ctx context.Context, rejected core.
 func (m *Manager) join() {
 	m.work.Wait()
 	m.mu.Lock()
-	clear(m.twitchAuthorizations)
+	clear(m.authorizations)
 	m.mu.Unlock()
 	if m.ownedCredentials != nil {
 		_ = m.ownedCredentials.Close(context.Background())
@@ -242,7 +252,7 @@ func (m *Manager) requestReconcile() {
 	}
 }
 
-// signalChangedLocked пробуждает потребителей предсессионного курсора после изменения.
+// signalChangedLocked будит ожидающих SSE после смены видимой ленты или её предсессионной позиции.
 func (m *Manager) signalChangedLocked() {
 	close(m.changed)
 	m.changed = make(chan struct{})
@@ -273,6 +283,7 @@ func (m *Manager) newSessionLocked(streamID core.ID, fence core.RuntimeSessionFe
 	// session является новой эпохой, даже когда долговечное удостоверение совпало с прежним.
 	session := &managedSession{owner: owner, fence: fence, streamID: streamID, hub: hub, members: make(map[core.ID]*managedSource)}
 	m.sessions[streamID] = session
+	delete(m.waitingClears, streamID)
 	m.hubs++
 	m.visibility++
 	m.signalChangedLocked()

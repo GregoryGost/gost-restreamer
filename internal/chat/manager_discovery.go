@@ -366,9 +366,80 @@ func (m *Manager) BroadcastChoices(ctx context.Context, session core.RuntimeSess
 	if member == nil {
 		return BroadcastChoices{}, core.ErrStale
 	}
-	// values копирует уже проверенные варианты вместе с указателями времени.
+	return copyBroadcastChoices(member), nil
+}
+
+// BroadcastChoicesForSession возвращает ограниченный набор для публичной Session ID.
+// Поколение родителя и его публикация проверяются внутри Manager.
+func (m *Manager) BroadcastChoicesForSession(ctx context.Context, sessionID, sourceID core.ID) (BroadcastChoices, error) {
+	// choices получает результат только после проверки точного оперативного источника.
+	var choices BroadcastChoices
+	// err сообщает о неизвестном Source, устаревшем выборе или отмене запроса.
+	err := m.withBroadcastSession(ctx, sessionID, sourceID, func(member *managedSource) error {
+		choices = copyBroadcastChoices(member)
+		return nil
+	})
+	return choices, err
+}
+
+// SelectBroadcastForSession принимает выбор для публичной Session ID при совпадении
+// конфигурационной ревизии, поколения обнаружения и видео из актуального набора.
+func (m *Manager) SelectBroadcastForSession(ctx context.Context, sessionID, sourceID core.ID, revision, generation uint64, videoID string) error {
+	if revision == 0 || generation == 0 || !validDiscoveryID(videoID) {
+		return core.ErrInvalid
+	}
+	// Callback применяет выбор под действующим допуском участника.
+	return m.withBroadcastSession(ctx, sessionID, sourceID, func(member *managedSource) error {
+		return selectBroadcastLocked(member, revision, generation, videoID)
+	})
+}
+
+// withBroadcastSession отличает неизвестный Source от устаревшей RAM-привязки.
+// Конфигурационное чтение выполняется до Manager.mu. Под блокировкой сверяются
+// прочитанная ревизия, действующий владелец сессии и хотя бы один опубликованный выход.
+func (m *Manager) withBroadcastSession(ctx context.Context, sessionID, sourceID core.ID, use func(*managedSource) error) error {
+	if !validDiscoveryID(string(sessionID)) || !validDiscoveryID(string(sourceID)) {
+		return core.ErrInvalid
+	}
+	// operation удерживает Store, finish освобождает учёт Manager, err сообщает об отказе запроса.
+	operation, finish, err := m.beginOperation(ctx)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	// source содержит актуальную сохранённую ревизию, err отличает отсутствующий источник от сбоя.
+	source, err := m.service.GetChatSource(operation, sourceID)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// session проверяется по публичному ID и точному действующему владельцу публикации.
+	for _, session := range m.sessions {
+		if session.fence.SessionID != sessionID {
+			continue
+		}
+		// member соответствует Source, который ещё ожидает выбор из текущего набора.
+		member := session.members[sourceID]
+		if member != nil && member.value.Revision == source.Revision && member.discovery != nil &&
+			operation.Err() == nil && m.currentDiscoveryLocked(operation, member) && operation.Err() == nil {
+			return use(member)
+		}
+	}
+	if err = operation.Err(); err != nil {
+		return err
+	}
+	return core.ErrStale
+}
+
+// copyBroadcastChoices копирует проверенные варианты вместе с указателями времени.
+func copyBroadcastChoices(member *managedSource) BroadcastChoices {
+	// values содержит независимую копию набора обнаружения.
 	values, _ := boundedBroadcasts(member.discovery.values, ^uint64(0))
-	return BroadcastChoices{Session: session, SourceID: sourceID, SourceRevision: member.value.Revision, DiscoveryGeneration: member.discovery.generation, Broadcasts: values}, nil
+	return BroadcastChoices{
+		Session: member.session.fence, SourceID: member.value.ID, SourceRevision: member.value.Revision,
+		DiscoveryGeneration: member.discovery.generation, Broadcasts: values,
+	}
 }
 
 // SelectBroadcast принимает одно видео, только если все удостоверения относятся к текущему набору.
@@ -383,12 +454,17 @@ func (m *Manager) SelectBroadcast(ctx context.Context, selection core.ChatBroadc
 	defer m.mu.Unlock()
 	// member относится к точному RUNNING-родителю и ещё ожидает первый выбор текущего набора.
 	member := m.broadcastMemberLocked(selection.Session, selection.SourceID)
-	if member == nil || member.value.Revision != selection.SourceRevision || member.discovery.generation != selection.DiscoveryGeneration {
+	return selectBroadcastLocked(member, selection.SourceRevision, selection.DiscoveryGeneration, selection.VideoID)
+}
+
+// selectBroadcastLocked передаёт только видео текущего набора и гасит поколение после единственного выбора.
+func selectBroadcastLocked(member *managedSource, revision, generation uint64, videoID string) error {
+	if member == nil || member.value.Revision != revision || member.discovery.generation != generation {
 		return core.ErrStale
 	}
 	// value сверяется с исходным набором, выданным именно текущим обнаружением.
 	for _, value := range member.discovery.values {
-		if value.VideoID == selection.VideoID {
+		if value.VideoID == videoID {
 			member.discovery = nil
 			member.selection <- value
 			return nil

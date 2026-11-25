@@ -41,6 +41,16 @@ type DeviceChallenge struct {
 	Interval time.Duration
 }
 
+// Validate подтверждает форму данных перед опросом и публикацией. Ссылка содержит только
+// разрешённые параметры активации, а код устройства нельзя выдать за публичный код.
+func (c DeviceChallenge) Validate() error {
+	if c.ExpiresIn <= 0 || c.Interval <= 0 || !validOAuthValue(c.DeviceCode, core.ChatCredentialBytes) ||
+		!validOAuthValue(c.UserCode, core.ChatIDBytes) || !validVerificationURI(c.VerificationURI, c.UserCode, c.DeviceCode) {
+		return core.ErrNotReady
+	}
+	return nil
+}
+
 // DeviceState показывает, требуется ли ещё опрашивать Twitch для этой попытки.
 type DeviceState uint8
 
@@ -157,26 +167,21 @@ func (a *Adapter) BeginDevice(ctx context.Context, clientID string) (DeviceChall
 	if json.Unmarshal(body, &response) != nil {
 		return DeviceChallenge{}, core.ErrNotReady
 	}
-	// expiresIn хранит выданный срок в единицах локального таймера.
-	expiresIn := oauthSeconds(response.ExpiresIn)
 	// interval использует пять секунд из RFC 8628 при отсутствии поля.
 	interval := 5 * time.Second
 	if response.Interval != nil {
 		interval = oauthSeconds(*response.Interval)
 	}
-	if expiresIn <= 0 || interval <= 0 || !validOAuthValue(response.DeviceCode, core.ChatCredentialBytes) ||
-		!validOAuthValue(response.UserCode, core.ChatIDBytes) ||
-		!validVerificationURI(response.VerificationURI, response.UserCode, response.DeviceCode) {
-		return DeviceChallenge{}, core.ErrNotReady
-	}
-	expiresIn -= max(a.now().Sub(startedAt), 0)
-	if expiresIn <= 0 {
-		return DeviceChallenge{}, core.ErrNotReady
-	}
-	return DeviceChallenge{
+	// challenge отделяет код устройства для опроса от полей, доступных браузеру после проверки.
+	challenge := DeviceChallenge{
 		DeviceCode: response.DeviceCode, UserCode: response.UserCode, VerificationURI: response.VerificationURI,
-		ExpiresIn: expiresIn, Interval: interval,
-	}, nil
+		ExpiresIn: oauthSeconds(response.ExpiresIn) - max(a.now().Sub(startedAt), 0), Interval: interval,
+	}
+	// err сообщает, почему параметры нельзя вернуть для публичного подтверждения или опроса.
+	if err := challenge.Validate(); err != nil {
+		return DeviceChallenge{}, err
+	}
+	return challenge, nil
 }
 
 // PollDevice опрашивает текущий код устройства один раз. Только DeviceComplete

@@ -70,7 +70,9 @@ func (a *Adapter) ValidateAPIKey(ctx context.Context, key string) (core.ChatReas
 	if ctx.Err() != nil {
 		return core.ChatReasonNone, ctx.Err()
 	}
-	if !validAPIKey(key) || uint64(len(key)) > a.limits.CredentialBytes {
+	// bundle учитывает ключ вместе с оболочкой сохранённого набора.
+	bundle := core.ChatCredentialBundle{YouTube: &core.YouTubeChatCredentials{APIKey: key}}
+	if !validAPIKey(key) || bundle.ValidateLimit(core.ChatYouTube, a.limits.CredentialBytes) != nil {
 		return core.ChatReasonCredentials, nil
 	}
 	// page содержит выдачу проверки, которой нужны только возвращённые ID.

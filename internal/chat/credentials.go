@@ -97,6 +97,8 @@ type credentialLane struct {
 	gate chan struct{}
 	// users считает допущенные вызовы данного аккаунта под CredentialOwner.mu.
 	users int
+	// retired отмечает доказанное удаление аккаунта под CredentialOwner.mu.
+	retired bool
 	// pending хранит ожидаемый полный результат записи, исход которой пока нельзя проверить.
 	pending *pendingCredentialWrite
 	// spent запоминает сохранённый набор, токен которого мог быть потрачен на одноразовый обмен.
@@ -358,10 +360,28 @@ func (o *CredentialOwner) release(id core.ID, lane *credentialLane) {
 	defer o.mu.Unlock()
 	lane.users--
 	o.inFlight--
-	if lane.users == 0 && lane.pending == nil && lane.spent.revision == 0 {
+	if lane.users == 0 && (lane.retired || lane.pending == nil && lane.spent.revision == 0) {
 		delete(o.lanes, id)
 	}
 	o.completeIfIdle()
+}
+
+// retire освобождает существующий слот доказанно удалённого аккаунта. Слот с пользователями
+// остаётся единственным до последнего release, даже если в нём удерживается квитанция или
+// отметка об израсходованном токене. Операция не требует свободного места в реестре.
+func (o *CredentialOwner) retire(id core.ID) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	// lane указывает только на уже существующий слот точного аккаунта.
+	lane := o.lanes[id]
+	if lane == nil {
+		return
+	}
+	if lane.users == 0 {
+		delete(o.lanes, id)
+		return
+	}
+	lane.retired = true
 }
 
 // completeIfIdle освобождает оставшиеся квитанции и один раз закрывает done под CredentialOwner.mu.

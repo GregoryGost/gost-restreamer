@@ -68,7 +68,7 @@
 - Правила Git: `git.md`
 - Поиск документации: `context7_documentation.md`
 - Правила Go: `go_core.md`, `go_testing.md`, `go_observability.md`, `go_security.md`, `go_huma_v2.md`, `go_local_cache.md`, `go_gorm.md`, `go_gorm_sqlite_goose.md`
-- Правила веб-интерфейса: `css.md`, `ui_ux_validation.md`, `playwright_ui_validation.md`
+- Правила веб-интерфейса: `css.md`, `ui_ux_validation.md`, `playwright_ui_validation.md`, `apple_design.md`
 
 Имена файлов правил без каталога разрешаются относительно `.codex/rules/`.
 
@@ -79,7 +79,7 @@
 - Навыки языкового оформления: `comment-language-audit`
 - Навык качества комментариев к коду: `code-comment-quality`
 - Навыки Go: `go-core`, `go-testing`, `go-observability`, `go-security`, `go-huma-v2`, `go-local-cache`, `go-gorm`, `go-gorm-sqlite-goose`
-- Навыки веб-интерфейса: `css-expert`, `ui-ux-review`, `playwright-ui-checks-mcp`, `dashboard-design`
+- Навыки веб-интерфейса: `css-expert`, `ui-ux-review`, `playwright-ui-checks-mcp`, `apple-hig-design`
 
 Имена навыков разрешаются в `.agents/skills/<name>/SKILL.md`. Полная цепочка обязательных зависимостей:
 
@@ -93,6 +93,7 @@
 - `go_gorm.md` → `go-core`, `go-gorm`; `go-gorm` → `go-core`.
 - `go_gorm_sqlite_goose.md` → `go-core`, `go-gorm`, `go-gorm-sqlite-goose`; `go-gorm-sqlite-goose` → `go-gorm`.
 - `css.md` ↔ `css-expert`; `ui_ux_validation.md` ↔ `ui-ux-review`; `playwright_ui_validation.md` ↔ `playwright-ui-checks-mcp`. У каждой пары взаимная зависимость; правило и навык активированы отдельными записями выше.
+- `apple_design.md` → `apple-hig-design`. Оба материала активированы отдельными записями. У навыка нет обязательных зависимостей.
 
 <a id="web-profile"></a>
 
@@ -100,6 +101,9 @@
 
 - Страницы чата `/chat/overlay` и `/chat/dashboard` описаны в [архитектуре чатов](chat-architecture.md#11-html-интерфейсы). Go-сервер отдаёт HTML, CSS и Vanilla JavaScript ES modules из `embed.FS`. Браузер загружает обычные таблицы стилей. CSS Modules, PostCSS, Autoprefixer и сборщик фронтенда не предусмотрены. При изменениях сверять фактические HTML-точки входа и подключённые ими таблицы стилей.
 - Использовать семантические элементы HTML, подписи полей, нативные элементы управления и видимый клавиатурный фокус. Текст сообщений выводить через `textContent`, эмодзи и бейджи собирать через DOM API. Проверять схему `https:` для ссылок и изображений.
+- При проектировании и ревью интерфейсов применять `apple_design.md` и `apple-hig-design` с учётом требований веб-платформы, доступности и контрактов страниц.
+- В Dashboard лента сообщений занимает центральное место. Фильтры, состояния источников и элементы управления группируются отдельно от сообщений. У каждого состояния есть текстовая подпись. Если источник требует внимания, показать доступное действие. При сбое подключения дать переход к настройкам источника. Использовать системный стек шрифтов и различать заголовки, основной текст и метаданные размером и насыщенностью шрифта.
+- Проверять Dashboard при узкой и широкой области просмотра и увеличении текста. Длинные имена и сообщения должны переноситься, а элементы управления оставаться доступными. При поступлении новых сообщений положение ручной прокрутки сохраняется. Счётчик новых сообщений размещается рядом с лентой.
 - Перед применением CSS-функции в Overlay сверять поддержку с целевой версией OBS Browser Source. Отображение Overlay проверяется также в целевом OBS.
 
 ### Playwright MCP
@@ -471,8 +475,9 @@ AAC LC и конечные аудиопривязки Opus CELT120, FLAC s16, MP
 ## Источники материалов
 
 - Источник: [GregoryGost/agent-projects-tools](https://github.com/GregoryGost/agent-projects-tools).
-- Версия источника: `v1.21.1`.
-- Коммит источника: `faa2d863d9d76d51f14c90ed5e433b5c2b921bef`.
+- Версия источника: `v1.22.0`.
+- Коммит источника: `29bf0e1b0651a8f9cdc80fdd9faa853b176d2af1`.
+- Уведомление о лицензии исходного репозитория для импортированных материалов Apple HIG: [MIT](.agents/skills/apple-hig-design/LICENSE).
 - Локальные настройки: корневой `AGENTS.md` задаёт правила проверки фактов, ревью и работы с консолью для проекта; этот профиль и пример конфигурации принадлежат проекту.
 - Нормализация импорта: в `.agents/skills/code-comment-quality/references/examples-and-antipatterns.md` завершающие пробелы строк не сохраняются.
 - Обновлять переносимые материалы согласованно: начальные инструкции, маршрутизацию, зависимости, координацию, роли, навыки и этот профиль. Не заменять профиль полным шаблоном с чужими стеками.

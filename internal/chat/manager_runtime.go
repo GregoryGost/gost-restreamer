@@ -99,6 +99,10 @@ func (m *Manager) stopSessions() {
 	for _, session := range m.sessions {
 		m.retireSessionLocked(session)
 	}
+	// feed адресует одну тестовую эпоху, которую закрывают вместе с Manager.
+	for _, feed := range m.testFeeds {
+		m.retireTestLocked(feed)
+	}
 	m.signalChangedLocked()
 }
 
@@ -367,7 +371,7 @@ func (m *Manager) readOutputProofs(r core.Repositories, snapshot core.SessionRun
 // страницами по назначению. Отключённые записи не расходуют лимит активных привязок.
 func (m *Manager) readSourceCandidates(r core.Repositories, outputs map[core.ID][]*core.ChatOutputPublication, existing []core.ID) ([]topologyMember, error) {
 	// result удерживает не более SourcesPerSession кандидатов, а seen исключает повтор активного ID.
-	result := make([]topologyMember, 0, m.limits.SourcesPerSession)
+	result := make([]topologyMember, 0, min(len(existing), m.limits.SourcesPerSession))
 	seen := make(map[core.ID]struct{}, len(existing))
 	// add включает только активную конфигурацию, для которой остаётся место в пределах этой эпохи.
 	add := func(source core.ChatSource) {
@@ -451,6 +455,10 @@ func (m *Manager) applyTopologyLocked(topologies []runtimeTopology) {
 		topology := &topologies[i]
 		if topology.owner.Active() {
 			byStream[topology.streamID] = topology
+			// feed относится к тому же Stream, даже если свободного места для реального Hub пока нет.
+			if feed := m.testFeeds[topology.streamID]; feed != nil {
+				m.retireTestLocked(feed)
+			}
 		}
 	}
 	// streamID и session задают ранее допущенную эпоху для сравнения с точным родителем.
@@ -464,7 +472,7 @@ func (m *Manager) applyTopologyLocked(topologies []runtimeTopology) {
 	// totals учитывает все удерживаемые активные привязки, прежде чем допустить расширение.
 	totals := m.activeBudgetLocked()
 	// admitted хранит доступные физические эпохи в стабильном порядке.
-	admitted := make([]*runtimeTopology, 0, m.limits.Sessions)
+	admitted := make([]*runtimeTopology, 0, min(len(topologies), m.limits.Sessions))
 	// i адресует родителя, для которого может быть доступен слот Hub.
 	for i := range topologies {
 		// topology выбирается по сохранённому порядку RuntimeAnchor.
