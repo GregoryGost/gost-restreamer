@@ -1,4 +1,4 @@
-import { byID, errorMessage, notice } from "./controls.js";
+import { byID, errorMessage, notice, returnFocusOnClose } from "./controls.js";
 import { httpsURL, providerLabel } from "./feed.js";
 import { apiRoot, ChatHTTPError, requestJSON } from "./transport.js";
 
@@ -14,8 +14,12 @@ const failureMessages = Object.freeze({
   network: "Не удалось связаться с площадкой. Повторите подключение после восстановления связи.",
   quota: "Площадка ограничила запросы. Повторите подключение позже.",
   limit: "Достигнут предел запросов сервера. Повторите подключение позже.",
-  configuration: "Не удалось сохранить подключение. Проверьте текущие настройки аккаунта.",
+  configuration: "Не удалось завершить подключение. Проверьте настройки и повторите попытку.",
 });
+
+// retryableFailures перечисляет подтверждённые отказы, после которых можно повторить ввод.
+// Результат с неизвестным исходом сохранения обрабатывается до проверки этого списка.
+const retryableFailures = new Set(["credentials_required", "network", "quota", "limit", "configuration"]);
 
 // pollDelay отделяет чтения состояния. Интервалы запросов к площадке определяет сервер.
 const pollDelay = 2000;
@@ -67,12 +71,13 @@ export class AuthorizationView {
     });
     this.#dialog.addEventListener("close", () => {
       // Убирает реквизиты, если закрывается незаполненная либо завершённая форма.
-      this.#form.reset();
+      if (!this.#dialog.open) this.#form.reset();
     });
   }
 
-  // Открывает общий диалог создания или замены, фиксируя ревизию выбранного аккаунта.
-  open(account = null) {
+  // Открывает создание или замену выбранного аккаунта и запоминает trigger для возврата фокуса.
+  // fallback используется, если запись, из которой открыли диалог, исчезла во время подключения.
+  open(account, trigger, fallback) {
     if (this.#dialog.open) return;
     this.#target = account;
     this.#form.reset();
@@ -84,6 +89,7 @@ export class AuthorizationView {
     this.#showFields();
     this.#showDevice(null);
     notice(this.#status, "");
+    returnFocusOnClose(this.#dialog, trigger, fallback);
     this.#dialog.showModal();
   }
 
@@ -135,10 +141,14 @@ export class AuthorizationView {
       body[name] = this.#form.elements[name].value;
       this.#form.elements[name].value = "";
     }
-    this.#form.hidden = true;
+    // close блокирует выход до ответа, active указывает, потребуется ли заменить скрываемый фокус.
+    const close = byID("close-authorization");
+    const active = document.activeElement;
     this.#busy = true;
-    byID("close-authorization").disabled = true;
     notice(this.#status, "Запускаем подключение…");
+    if (this.#form.contains(active) || active === close) this.#status.focus({ preventScroll: true });
+    this.#form.hidden = true;
+    close.disabled = true;
     try {
       // status подтверждает принятие запроса; data содержит открытые поля, location адресует точный ID.
       const { data, location, status } = await requestJSON(`${accountPath}/connect`, { method: "POST", body });
@@ -150,9 +160,12 @@ export class AuthorizationView {
       this.#attempt = { path, id: data.attempt_id, provider, cancelable: false, expiresAt: Date.parse(data.expires_at) };
       this.#apply(this.#attempt, data);
     } catch (error) {
-      // error различает подтверждённый отказ HTTP и потерянный ответ после отправки.
-      this.#finish(error instanceof ChatHTTPError && error.status < 500
-        ? errorMessage(error) : "Результат запуска неизвестен. Обновите настройки и проверьте аккаунты перед новой попыткой.");
+      // error различает проверку входных данных, другие отказы HTTP и неизвестный исход запуска.
+      if (error instanceof ChatHTTPError && error.status < 500 && error.code !== "credential_commit_unknown") {
+        this.#finish(errorMessage(error), error.status === 422);
+      } else {
+        this.#finish("Результат запуска неизвестен. Обновите настройки и проверьте аккаунты перед новой попыткой.");
+      }
     }
   }
 
@@ -169,12 +182,19 @@ export class AuthorizationView {
       return;
     }
     if (data.state === "PENDING") {
+      // active, link и cancel позволяют сохранить фокус при обновлении окна подтверждения.
+      const active = document.activeElement;
+      const link = byID("device-link");
+      const cancel = byID("cancel-authorization");
       this.#showDevice(data);
       attempt.expiresAt = Date.parse(data.expires_at);
       attempt.cancelable = data.cancelable === true;
-      byID("cancel-authorization").hidden = !attempt.cancelable;
-      byID("cancel-authorization").disabled = false;
+      cancel.hidden = !attempt.cancelable;
+      cancel.disabled = false;
       notice(this.#status, data.user_code ? "Подтвердите подключение на Twitch." : `Ожидаем подтверждение от ${providerLabel(data.provider)}…`);
+      if (active === this.#status || (active === link && !link.hasAttribute("href")) || (active === cancel && cancel.hidden)) {
+        (link.hasAttribute("href") ? link : cancel.hidden ? this.#status : cancel).focus({ preventScroll: true });
+      }
       this.#schedule(attempt);
       return;
     }
@@ -184,7 +204,8 @@ export class AuthorizationView {
         this.#onSaved();
         break;
       case "FAILED":
-        this.#finish(Object.hasOwn(failureMessages, data.code) ? failureMessages[data.code] : "Не удалось подключить аккаунт.");
+        this.#finish(Object.hasOwn(failureMessages, data.code) ? failureMessages[data.code] : "Не удалось подключить аккаунт.",
+          retryableFailures.has(data.code));
         break;
       case "CANCELLED": this.#finish("Подключение отменено."); break;
       case "EXPIRED": this.#finish("Время подключения истекло."); break;
@@ -221,8 +242,9 @@ export class AuthorizationView {
       } else if (Date.now() >= attempt.expiresAt) {
         this.#finish("Не удалось проверить состояние в срок. Исход подключения неизвестен.");
       } else {
-        this.#showDevice(null);
         notice(this.#status, "Связь потеряна. Проверяем состояние подключения…");
+        if (document.activeElement === byID("device-link")) this.#status.focus({ preventScroll: true });
+        this.#showDevice(null);
         this.#schedule(attempt);
       }
     }
@@ -238,7 +260,11 @@ export class AuthorizationView {
     clearTimeout(this.#timer);
     attempt.request?.abort();
     attempt.request = null;
-    byID("cancel-authorization").disabled = true;
+    // cancel останется недоступна до подтверждения отмены либо нового чтения текущей попытки.
+    const cancel = byID("cancel-authorization");
+    notice(this.#status, "Отменяем подключение…");
+    if (document.activeElement === cancel) this.#status.focus({ preventScroll: true });
+    cancel.disabled = true;
     try {
       await requestJSON(attempt.path, { method: "DELETE" });
       if (this.#attempt === attempt) this.#finish("Подключение отменено.");
@@ -255,15 +281,27 @@ export class AuthorizationView {
     }
   }
 
-  // Завершает наблюдение, удаляет временные параметры Twitch и оставляет видимое сообщение.
-  #finish(text) {
+  // Завершает наблюдение и удаляет временные параметры Twitch. retry разрешает новый ручной ввод
+  // при подтверждённом отказе. Площадка и имя остаются в форме, реквизиты уже очищены.
+  #finish(text, retry = false) {
+    // active, link и cancel определяют, исчезает ли или меняет назначение текущий фокус.
+    const active = document.activeElement;
+    const link = byID("device-link");
+    const cancel = byID("cancel-authorization");
+    // close закрывает завершённую попытку, а credential позволяет сразу исправить реквизиты.
+    const close = byID("close-authorization");
+    const credential = retry ? this.#form.elements[credentials[this.#form.elements.provider.value][0]] : null;
     clearTimeout(this.#timer);
     this.#attempt?.request?.abort();
     this.#attempt = null;
     this.#busy = false;
     this.#showDevice(null);
-    byID("cancel-authorization").hidden = true;
-    byID("close-authorization").disabled = false;
+    cancel.hidden = true;
+    close.disabled = false;
+    this.#form.hidden = !retry;
     notice(this.#status, text);
+    if (active === this.#status || active === link || active === cancel) {
+      (credential ?? close).focus({ preventScroll: true });
+    }
   }
 }

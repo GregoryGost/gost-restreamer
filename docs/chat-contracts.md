@@ -126,6 +126,7 @@ YouTube-выбор хранится только в RAM текущего зап�
 | `POST /chat-sources/{id}/broadcast-selection` | Принимает `session_id`, `expected_revision`, `discovery_generation` и `video_id` из текущего набора. Подтверждённый выбор даёт 204; устаревший — 409. |
 | `GET /chat/streams/{streamId}/snapshot` | Согласованные `stream_id`, `session`, `sources`, `statuses`, `messages` и `cursor`. При активном запуске `session` содержит `session_id`. До эфира `session: null`, а `messages` содержит тестовую историю или пустой список. |
 | `GET /chat/streams/{streamId}/events` | SSE с `cursor`/`Last-Event-ID` и проверкой их совпадения. События `chat.message`, `chat.source_status`, `chat.gap`, `chat.cleared`, `resync_required`, `chat.session_closed`. |
+| `GET/PUT /chat/streams/{streamId}/appearance` | Возвращает `revision` потока и полный профиль `appearance`. PUT принимает `expected_revision` и `appearance`, атомарно заменяет оформление и возвращает новую ревизию. Неизвестный поток даёт `404`, устаревшая ревизия — `409`. |
 | `POST /chat/streams/{streamId}/test/start` | Запускает один генератор до эфира. Необязательный `interval_ms` от 100 до 60 000 мс, по умолчанию 1 000 мс. Возвращает `200` и фактический `interval_ms`. Повторная команда сохраняет текущий интервал. Эфир даёт `409`, исчерпание бюджета — `503`. |
 | `POST /chat/streams/{streamId}/test/stop` | Прекращает генерацию с сохранением истории и возвращает `204`, в том числе при повторной остановке. |
 | `POST /chat/streams/{streamId}/clear` | Очищает выбранную ленту до или во время эфира и возвращает `204`. |

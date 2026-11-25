@@ -1,7 +1,8 @@
+import { watchOverlayAppearance } from "./appearance.js";
 import { FeedView, streamIDFromPage } from "./feed.js";
 import { ChatStream, supportsExactJSON } from "./transport.js";
 
-// Overlay оставляет холст прозрачным до доступного снимка. При смене Session удаляет прежнюю ленту.
+// Запускает ленту и оформление независимо. До получения снимка холст не содержит сообщений.
 function showOverlay() {
   // streamID адресует выбранный в URL поток без преобразования к числу.
   const streamID = streamIDFromPage();
@@ -12,7 +13,7 @@ function showOverlay() {
   // sessionID различает эфир и ленту до эфира, которую можно сразу убрать при смене эпохи.
   let sessionID = "";
   const stream = new ChatStream(streamID, {
-    // Подменяет историю согласованным снимком. Пустой снимок оставляет прозрачный холст.
+    // Заменяет сообщения согласованным снимком, сохраняя настроенный фон холста.
     snapshot(data) {
       sessionID = data.session?.session_id ?? "";
       feed.replace(data.messages, false);
@@ -28,9 +29,12 @@ function showOverlay() {
       if (!sessionID) feed.replace([], false);
     },
   });
+  // stopAppearance завершает чтение настроек независимо от состояния подписки на ленту.
+  const stopAppearance = watchOverlayAppearance(document.querySelector(".overlay-feed"), streamID);
   stream.start();
   window.addEventListener("pagehide", () => {
-    // Освобождает запросы перед уходом со страницы или помещением документа в кэш браузера.
+    // Освобождает запросы оформления и ленты перед уходом или помещением документа в кэш браузера.
+    stopAppearance();
     stream.stop();
   }, { once: true });
 }

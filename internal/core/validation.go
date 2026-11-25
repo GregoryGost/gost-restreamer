@@ -52,9 +52,12 @@ func (s OutputState) Validate() error {
 	}
 }
 
-// Validate проверяет Stream и начальные группы, запрещает повтор группы и несогласованные ссылки на
-// Stream и профиль.
+// Validate проверяет Stream и начальные группы, запрещает оформление чата в снимке, повтор группы и
+// несогласованные ссылки на Stream и профиль.
 func (s SessionSnapshot) Validate() error {
+	if s.Stream.ChatAppearance != nil {
+		return fmt.Errorf("%w: оформление чата в снимке сессии", ErrInvalid)
+	}
 	// err сообщает об ошибке проверки настроек потока начального снимка.
 	if err := s.Stream.Validate(); err != nil {
 		return err

@@ -1,5 +1,6 @@
+import { applyChatAppearance, editChatAppearance } from "./appearance.js";
 import { BroadcastView } from "./broadcast.js";
-import { actionButton, byID, errorMessage, fillSelect, notice } from "./controls.js";
+import { actionButton, byID, errorMessage, fillSelect, notice, replaceEntryRows, returnFocusOnClose } from "./controls.js";
 import { element, FeedView, providerLabel, streamIDFromPage } from "./feed.js";
 import { SettingsView, sourceLabel } from "./settings.js";
 import { apiRoot, ChatHTTPError, ChatStream, requestJSON, supportsExactJSON } from "./transport.js";
@@ -24,6 +25,9 @@ const connectionLabels = Object.freeze({
   open: "Сервер на связи", retrying: "Восстанавливаем связь…", missing: "Трансляция не найдена",
 });
 
+// unreadAnnouncementDelay задаёт окно объединения объявлений в миллисекундах.
+const unreadAnnouncementDelay = 2000;
+
 // Запускает панель для streamID из URL. Связывает оперативную ленту и настройки через публичные
 // строковые идентификаторы. История, статусы и предупреждения принадлежат текущему запуску.
 function showDashboard() {
@@ -38,10 +42,14 @@ function showDashboard() {
     notice(byID("no-accounts"), "Аккаунты недоступны.");
     return;
   }
-  // viewport прокручивает ленту, follow задаёт режим, more возвращает зрителя к её концу.
+  // viewport прокручивает ленту, follow задаёт режим, more возвращает зрителя к её концу,
+  // unreadStatus отдельно сообщает экранному диктору количество новых сообщений.
   const viewport = byID("feed");
   const follow = byID("follow");
   const more = byID("new-messages");
+  const unreadStatus = byID("new-messages-status");
+  // unreadAnnouncement хранит таймер ближайшего объявления либо undefined между объявлениями.
+  let unreadAnnouncement;
   // filter выбирает источник, feed удерживает ограниченные DOM-строки, broadcasts ведёт выбор эфира.
   const filter = byID("filter");
   const feed = new FeedView(byID("messages"), 200, viewport);
@@ -67,14 +75,16 @@ function showDashboard() {
     showSources();
   });
 
-  // Перечисляет источники текущего запуска и доступную конфигурацию. Показывает статусы отдельно
-  // от ленты и предлагает выбор эфира либо замену полномочий именно у нужного источника.
+  // Перечисляет источники текущего запуска и доступную конфигурацию. Действия адресуют выбор
+  // эфира, замену полномочий или переход к настройкам именно того источника, у которого возник сбой.
   function showSources() {
     // sources связывает настройки с оперативными статусами по публичному идентификатору.
     const sources = new Map();
     // source обозначает сохранённую конфигурацию. После отдельной загрузки её список отражает
     // удаления через форму, даже если снимок всё ещё содержит прежний источник.
     for (const source of settings.loaded ? settings.sources : snapshotSources) sources.set(source.id, source);
+    // configuredSourceIDs включает только записи, для которых доступны строки настроек.
+    const configuredSourceIDs = new Set(settings.loaded ? sources.keys() : []);
     // source из согласованного снимка может остаться активным у Session после переноса назначения.
     for (const source of snapshotSources) {
       // state показывает, что источник ещё участвует в текущем запуске.
@@ -90,8 +100,9 @@ function showDashboard() {
       return [source.id, sourceLabel(source)];
     }), currentFilter, "Все источники");
     if (filter.value !== currentFilter) feed.filter(filter.value);
-    // rows содержит строки опубликованных статусов и сохранённых источников без активного запуска.
+    // rows содержит строки статусов, statusTitle принимает фокус при исчезновении записи.
     const rows = [];
+    const statusTitle = byID("status-title");
     // id адресует конфигурационный источник, даже если SSE-статус пришёл после предыдущего снимка.
     for (const id of new Set([...sources.keys(), ...statuses.keys()])) {
       // source содержит подпись и связи, status — текущее состояние, row и stateText — его разметку.
@@ -100,6 +111,8 @@ function showDashboard() {
       if (settings.loaded && !source && status?.state === "STOPPED") continue;
       const row = element("li", "entry");
       const stateText = element("p", "status-text", stateLabels[status?.state] ?? (source?.enabled === false ? "Отключён" : "Ожидает публикации"));
+      row.dataset.entryId = id;
+      row.tabIndex = -1;
       if (status) stateText.dataset.state = status.state;
       row.append(element("strong", "entry-title", source ? sourceLabel(source) : id), stateText);
       if (source) row.append(element("p", "entry-meta", providerLabel(source.provider)));
@@ -107,27 +120,46 @@ function showDashboard() {
       if (status?.dropped > 0n) row.append(element("p", "entry-meta", `Пропущено сообщений: ${status.dropped}`));
       // account нужен только для кнопки восстановления чтения этого источника.
       const account = status?.state === "AUTH_REQUIRED" && source ? settings.account(source.account_id) : null;
-      if (account) row.append(actionButton("Подключить заново", () => {
-        // Запускает общий сценарий подключения с заменой точного аккаунта.
-        settings.reconnect(account);
-      }));
-      if (status?.reason === "selection_required" && sessionID) row.append(actionButton("Выбрать эфир", () => {
+      if (account) row.append(actionButton("Подключить заново", (event) => {
+        // Открывает замену точного аккаунта. event указывает кнопку для возврата фокуса.
+        settings.reconnect(account, event.currentTarget, statusTitle);
+      }, "secondary", "reconnect"));
+      if (status?.reason === "selection_required" && sessionID) row.append(actionButton("Выбрать эфир", (event) => {
         // Получает варианты для источника и Session, действующей в момент нажатия.
+        returnFocusOnClose(byID("broadcast-dialog"), event.currentTarget, statusTitle);
         void broadcasts.open(id);
-      }));
+      }, "secondary", "broadcast"));
+      if (status?.state === "FAILED" && configuredSourceIDs.has(id)) row.append(actionButton("Перейти к настройкам источника", () => {
+        // Раскрывает настройки и переводит фокус на редактор сохранённого источника.
+        settings.focusSource(id);
+      }, "secondary", "settings"));
       rows.push(row);
     }
-    byID("statuses").replaceChildren(...rows);
+    replaceEntryRows(byID("statuses"), rows, statusTitle);
     notice(byID("no-status"), rows.length ? "" : "У потока пока нет источников чата.");
     showFeedState();
   }
 
-  // Обновляет счётчик и подпись пустой ленты. До эфира пустая лента не показывает ожидание.
+  // Обновляет кнопку сразу, а счётчик для экранного диктора объявляет накопленным итогом.
+  // При обнулении удаляет прежнее объявление и отменяет ещё не сработавший таймер.
   function showFeedState() {
-    // count — число сообщений для видимого фильтра во время чтения предыдущих строк.
+    // count учитывает текущий фильтр, unreadText содержит подпись кнопки и краткое объявление.
     const count = feed.unread;
+    const unreadText = `Новые сообщения: ${count}`;
+    if (count === 0 && document.activeElement === more) viewport.focus({ preventScroll: true });
     more.hidden = count === 0;
-    more.textContent = `Новые сообщения: ${count}`;
+    if (more.textContent !== unreadText) more.textContent = unreadText;
+    if (count === 0) {
+      clearTimeout(unreadAnnouncement);
+      unreadAnnouncement = undefined;
+      if (unreadStatus.textContent) unreadStatus.textContent = "";
+    } else if (unreadStatus.textContent !== unreadText && unreadAnnouncement === undefined) {
+      unreadAnnouncement = setTimeout(() => {
+        // Читает текущий итог, объединяя сообщения, пришедшие после запуска таймера.
+        unreadAnnouncement = undefined;
+        unreadStatus.textContent = `Новые сообщения: ${feed.unread}`;
+      }, unreadAnnouncementDelay);
+    }
     notice(byID("empty-feed"), !feed.empty || (ready && !sessionID) ? "" : !ready ? "Загрузка сообщений…"
       : filter.value ? "От этого источника пока нет сообщений." : "Сообщений пока нет.");
   }
@@ -139,16 +171,28 @@ function showDashboard() {
     showFeedState();
   }
 
-  // Разрешает тестовые команды до эфира. Очистка доступна для любой загруженной ленты.
+  // Разрешает тестовые команды до эфира и очистку загруженной ленты. Во время запроса
+  // команды остаются в порядке Tab. Уход фокуса требуется только при смене доступности.
   function syncFeedCommands() {
-    clear.disabled = !ready || commandPending;
+    // active определяет, теряет ли текущий контрол доступность после обновления ленты.
+    const active = document.activeElement;
+    clear.disabled = !ready;
     interval.disabled = start.disabled = stop.disabled = clear.disabled || Boolean(sessionID);
+    interval.readOnly = commandPending;
+    // button последовательно объявляет ту же блокировку для всех вариантов команды.
+    for (const button of [start, stop, clear]) {
+      if (commandPending && !button.disabled) button.setAttribute("aria-disabled", "true");
+      else button.removeAttribute("aria-disabled");
+    }
+    if ((active === start || active === stop || active === interval || active === clear) && active.disabled) {
+      (clear.disabled ? viewport : clear).focus({ preventScroll: true });
+    }
   }
 
   // Отправляет одну команду выбранному потоку. action задаёт её путь, body содержит интервал при запуске.
   // Историю обновляет SSE, поэтому обе страницы видят одну серверную границу очистки.
   async function runFeedCommand(action, body) {
-    if (commandPending) return;
+    if (commandPending || (action === "clear" ? clear.disabled : start.disabled)) return;
     commandPending = true;
     syncFeedCommands();
     notice(commandStatus, "");
@@ -275,12 +319,18 @@ function showDashboard() {
     void runFeedCommand("clear");
   });
   window.addEventListener("pagehide", () => {
-    // Завершает запрос снимка и EventSource при уходе со страницы.
+    // Завершает запрос снимка, EventSource и ожидающее объявление при уходе со страницы.
     stream?.stop();
+    clearTimeout(unreadAnnouncement);
+    unreadAnnouncement = undefined;
   });
   window.addEventListener("pageshow", (event) => {
     // Открывает новое соединение после возврата страницы из кэша браузера.
     if (event.persisted) startFeed();
+  });
+  editChatAppearance(byID("appearance-form"), streamID, (appearance) => {
+    // Сохраняет видимую историю, когда новый размер шрифта меняет высоту уже показанных строк.
+    feed.preserveScroll(() => applyChatAppearance(viewport, appearance));
   });
   startFeed();
   void settings.reload();

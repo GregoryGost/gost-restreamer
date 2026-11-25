@@ -1,5 +1,5 @@
 import { AuthorizationView } from "./authorization.js";
-import { actionButton, bindClose, byID, errorMessage, fillSelect, notice } from "./controls.js";
+import { actionButton, bindClose, byID, errorMessage, fillSelect, findEntry, notice, replaceEntryRows, returnFocusOnClose } from "./controls.js";
 import { element, providerLabel } from "./feed.js";
 import { apiRoot, listItems, requestJSON } from "./transport.js";
 
@@ -39,6 +39,8 @@ export class SettingsView {
   #status = byID("settings-status");
   // Контроллер текущей загрузки настроек. Следующая загрузка отменяет предыдущую.
   #request;
+  // Пути записей, для которых ещё выполняется удаление, включая обновление строк списка.
+  #removing = new Set();
   // Назначения хранят только id и отображаемое имя из публичного списка медиаконфигурации.
   #destinations = [];
   // Сохранённая проекция публичных аккаунтов для текущих действий и формы источника.
@@ -73,17 +75,17 @@ export class SettingsView {
     });
     bindClose(this.#sourceDialog);
     bindClose(this.#renameDialog);
-    byID("add-source").addEventListener("click", () => {
-      // Открывает редактор с пустыми полями и текущим набором вариантов.
-      this.#editSource(null);
+    byID("add-source").addEventListener("click", (event) => {
+      // Открывает пустой редактор и запоминает кнопку добавления из event.
+      this.#editSource(null, event.currentTarget);
     });
-    byID("add-account").addEventListener("click", () => {
-      // Вызывает ту же форму подключения, которая используется для замены.
-      this.#authorization.open();
+    byID("add-account").addEventListener("click", (event) => {
+      // Открывает общую форму для создания аккаунта с возвратом к кнопке из event.
+      this.#authorization.open(null, event.currentTarget, byID("settings-title"));
     });
     byID("refresh-settings").addEventListener("click", () => {
-      // Читает текущую конфигурацию после конфликта ревизии или неизвестного исхода подключения.
-      void this.reload();
+      // Читает текущую конфигурацию, если обновление ещё не запущено.
+      if (!this.#request) void this.reload();
     });
     this.#sourceForm.elements.account.addEventListener("change", () => {
       // Уточняет назначение поля канала при выборе аккаунта другой площадки.
@@ -119,9 +121,20 @@ export class SettingsView {
     });
   }
 
-  // Открывает форму повторного подключения после действия в настройках или оперативном статусе.
-  reconnect(account) {
-    this.#authorization.open(account);
+  // Открывает форму замены аккаунта, сохраняя trigger и fallback для возврата фокуса.
+  reconnect(account, trigger, fallback) {
+    this.#authorization.open(account, trigger, fallback);
+  }
+
+  // Раскрывает настройки и переводит фокус на кнопку редактирования сохранённого источника id.
+  // Если запись уже исчезла, оставляет пользователя в панели состояний.
+  focusSource(id) {
+    // edit принадлежит ровно тому источнику, который указан в состоянии чата.
+    const edit = findEntry(byID("sources"), id)?.querySelector('[data-focus-action="edit"]');
+    if (!edit) return;
+    byID("settings").open = true;
+    edit.scrollIntoView({ block: "center" });
+    edit.focus({ preventScroll: true });
   }
 
   // Перечитывает назначения текущего потока, аккаунты и источники. Разные назначения читаются
@@ -129,10 +142,12 @@ export class SettingsView {
   // Применяет результат только если загрузка ещё актуальна после всех чтений.
   async reload() {
     this.#request?.abort();
-    // request отличает эту загрузку от последующего вызова reload.
+    // request отличает эту загрузку от следующей, refresh сохраняет фокус до её завершения.
     const request = new AbortController();
+    const refresh = byID("refresh-settings");
     this.#request = request;
-    byID("refresh-settings").disabled = true;
+    refresh.disabled = false;
+    refresh.setAttribute("aria-disabled", "true");
     notice(this.#status, "Загружаем настройки…");
     try {
       // destinations ограничены текущим потоком; accounts служат вариантами всех провайдеров.
@@ -165,27 +180,36 @@ export class SettingsView {
       byID("no-accounts").hidden = true;
       notice(this.#status, errorMessage(error));
     } finally {
-      if (this.#request === request) byID("refresh-settings").disabled = false;
+      if (this.#request === request) {
+        this.#request = undefined;
+        refresh.removeAttribute("aria-disabled");
+      }
     }
   }
 
   // Показывает доступные операции с каждым источником и аккаунтом. Состояния площадок находятся
   // отдельно в панели ленты, поэтому сохранённая запись аккаунта получает подпись «Сохранён».
   #render() {
-    byID("add-account").disabled = false;
-    byID("add-source").disabled = !this.#destinations.length || !this.#accounts.length;
+    // addSource доступна при наличии назначений и аккаунтов; addAccount доступна после загрузки.
+    const addSource = byID("add-source");
+    const addAccount = byID("add-account");
+    // active проверяет, нужно ли перенести фокус, когда добавление источника становится недоступно.
+    const active = document.activeElement;
+    addAccount.disabled = false;
+    addSource.disabled = !this.#destinations.length || !this.#accounts.length;
+    if (active === addSource && addSource.disabled) byID("refresh-settings").focus({ preventScroll: true });
     notice(byID("no-sources"), !this.#destinations.length ? "У потока пока нет медианазначений."
       : !this.#accounts.length ? "Подключите аккаунт, чтобы добавить источник."
       : this.#sources.length ? "" : "Источники ещё не добавлены.");
     notice(byID("no-accounts"), this.#accounts.length ? "" : "Аккаунты ещё не подключены.");
-    byID("sources").replaceChildren(...this.#sources.map((source) => {
+    replaceEntryRows(byID("sources"), this.#sources.map((source) => {
       // Возвращает конфигурацию и действия для этого источника.
       return this.#sourceRow(source);
-    }));
-    byID("accounts").replaceChildren(...this.#accounts.map((account) => {
+    }), addSource.disabled ? byID("refresh-settings") : addSource);
+    replaceEntryRows(byID("accounts"), this.#accounts.map((account) => {
       // Возвращает метаданные и действия только для этого аккаунта.
       return this.#accountRow(account);
-    }));
+    }), addAccount);
   }
 
   // Собирает строку конфигурации источника с родительским назначением и явным признаком включения.
@@ -198,15 +222,15 @@ export class SettingsView {
     // row содержит строку списка. actions группирует редактор и удаление этой записи.
     const row = element("li", "entry");
     const actions = element("div", "entry-actions");
+    row.dataset.entryId = source.id;
+    row.tabIndex = -1;
     row.append(element("strong", "entry-title", sourceLabel(source)), element("p", "entry-meta",
       `${providerLabel(source.provider)} · ${destination?.name || source.destination_id} · ${source.enabled ? "Включён" : "Отключён"}`));
-    actions.append(actionButton("Изменить", () => {
-      // Открывает свойства источника с ревизией из этой строки.
-      this.#editSource(source);
-    }), actionButton("Удалить источник", (event) => {
-      // Запрашивает подтверждение удаления именно выбранного источника.
-      void this.#remove(event.currentTarget, `${sourcePath}/${encodeURIComponent(source.id)}`, source.revision, `Удалить источник «${sourceLabel(source)}»?`);
-    }, "danger"));
+    actions.append(actionButton("Изменить", (event) => {
+      // Открывает свойства источника и берёт кнопку возврата фокуса из event.
+      this.#editSource(source, event.currentTarget);
+    }, "secondary", "edit"), this.#removeButton("Удалить источник", `${sourcePath}/${encodeURIComponent(source.id)}`,
+      source.revision, `Удалить источник «${sourceLabel(source)}»?`));
     row.append(actions);
     return row;
   }
@@ -216,23 +240,24 @@ export class SettingsView {
     // row представляет публичные метаданные, actions содержит допустимые изменения аккаунта.
     const row = element("li", "entry");
     const actions = element("div", "entry-actions");
+    row.dataset.entryId = account.id;
+    row.tabIndex = -1;
     row.append(element("strong", "entry-title", accountLabel(account)), element("p", "entry-meta", "Сохранён"));
-    actions.append(actionButton("Переименовать", () => {
-      // Открывает редактирование без изменения полномочий.
-      this.#editName(account);
-    }), actionButton("Подключить заново", () => {
-      // Начинает ручную замену полномочий через общую форму.
-      this.reconnect(account);
-    }), actionButton("Удалить аккаунт", (event) => {
-      // Просит сервер проверить отсутствие зависимых источников по текущей ревизии.
-      void this.#remove(event.currentTarget, `${accountPath}/${encodeURIComponent(account.id)}`, account.revision, `Удалить аккаунт «${accountLabel(account)}»?`);
-    }, "danger"));
+    actions.append(actionButton("Переименовать", (event) => {
+      // Открывает редактор имени с возвратом к кнопке из event.
+      this.#editName(account, event.currentTarget);
+    }, "secondary", "rename"), actionButton("Подключить заново", (event) => {
+      // Начинает замену полномочий. При исчезновении аккаунта фокус получает кнопка добавления.
+      this.reconnect(account, event.currentTarget, byID("add-account"));
+    }, "secondary", "reconnect"), this.#removeButton("Удалить аккаунт", `${accountPath}/${encodeURIComponent(account.id)}`,
+      account.revision, `Удалить аккаунт «${accountLabel(account)}»?`));
     row.append(actions);
     return row;
   }
 
-  // Открывает редактор источника. При изменении сохраняет родителя и заполняет текущие значения.
-  #editSource(source) {
+  // Открывает редактор источника и запоминает trigger для возврата фокуса. При изменении
+  // сохраняет родителя и заполняет текущие значения source.
+  #editSource(source, trigger) {
     if (this.#sourceDialog.open) return;
     this.#sourceTarget = source;
     // fields связывает нативные элементы редактора с выбранной записью.
@@ -252,6 +277,7 @@ export class SettingsView {
     fields.enabled.checked = source?.enabled ?? true;
     this.#setChannelHint();
     notice(this.#sourceForm.querySelector(".notice"), "");
+    returnFocusOnClose(this.#sourceDialog, trigger, byID("settings-title"));
     this.#sourceDialog.showModal();
   }
 
@@ -281,12 +307,13 @@ export class SettingsView {
     await this.#save(this.#sourceDialog, this.#sourceForm, path, source ? "PATCH" : "POST", body);
   }
 
-  // Открывает редактор имени и фиксирует ревизию выбранных метаданных.
-  #editName(account) {
+  // Открывает редактор имени, фиксирует ревизию account и запоминает кнопку trigger.
+  #editName(account, trigger) {
     if (this.#renameDialog.open) return;
     this.#renameTarget = account;
     this.#renameForm.elements.name.value = account.name;
     notice(this.#renameForm.querySelector(".notice"), "");
+    returnFocusOnClose(this.#renameDialog, trigger, byID("add-account"));
     this.#renameDialog.showModal();
   }
 
@@ -298,15 +325,17 @@ export class SettingsView {
       { expected_revision: account.revision, name: this.#renameForm.elements.name.value });
   }
 
-  // Отправляет одно изменение, временно блокируя диалог. По успеху перечитывает конфигурацию,
-  // а по отказу показывает его рядом с сохранёнными значениями формы.
+  // Отправляет одно изменение и блокирует повторную отправку и закрытие. Кнопка сохранения
+  // остаётся доступной для фокуса, а при ошибке форма сохраняет текущие значения.
   async #save(dialog, form, path, method, body) {
-    // submit исключает повторную отправку, close блокирует закрытие кнопкой, status содержит результат.
+    // submit остаётся на месте во время запроса, close блокирует выход, status содержит результат.
     const submit = form.querySelector('[type="submit"]');
-    if (submit.disabled) return;
+    if (submit.getAttribute("aria-disabled") === "true") return;
     const close = form.querySelector("[data-close]");
     const status = form.querySelector(".notice");
-    submit.disabled = close.disabled = true;
+    submit.setAttribute("aria-disabled", "true");
+    if (document.activeElement === close) submit.focus({ preventScroll: true });
+    close.disabled = true;
     // hold удерживает форму во время записи, чтобы запоздалый ответ не менял следующий редактор.
     const hold = (event) => {
       // Отключает Escape до завершения уже отправленного запроса.
@@ -316,22 +345,39 @@ export class SettingsView {
     notice(status, "Сохраняем…");
     try {
       await requestJSON(path, { method, body });
-      dialog.close();
-      await this.reload();
     } catch (error) {
       // error определяет текст отказа для созданной или изменённой записи.
       notice(status, errorMessage(error));
+      return;
     } finally {
       dialog.removeEventListener("cancel", hold);
-      submit.disabled = close.disabled = false;
+      submit.removeAttribute("aria-disabled");
+      close.disabled = false;
     }
+    dialog.close();
+    await this.reload();
+  }
+
+  // Создаёт кнопку удаления и отражает выполняющийся запрос, даже если строка уже пересобрана.
+  #removeButton(text, path, revision, prompt) {
+    // button позволяет сохранить фокус на том же действии до результата запроса.
+    const button = actionButton(text, (event) => {
+      // Использует актуальную кнопку записи из event и запрашивает подтверждение её удаления.
+      void this.#remove(event.currentTarget, path, revision, prompt);
+    }, "danger", "delete");
+    if (this.#removing.has(path)) button.setAttribute("aria-disabled", "true");
+    return button;
   }
 
   // Удаляет ровно выбранную запись после явного подтверждения. Ревизия передаётся в query
   // в точной десятичной форме. Ошибка оставляет видимый список для чтения и исправления.
   async #remove(button, path, revision, prompt) {
-    if (button.disabled || !window.confirm(prompt)) return;
-    button.disabled = true;
+    if (this.#removing.has(path) || !window.confirm(prompt)) return;
+    // row и list позволяют разблокировать актуальную кнопку после замены строки при чтении.
+    const row = button.closest("[data-entry-id]");
+    const list = row.parentElement;
+    this.#removing.add(path);
+    button.setAttribute("aria-disabled", "true");
     notice(this.#status, "Удаляем…");
     try {
       await requestJSON(`${path}?${new URLSearchParams({ expected_revision: revision.toString() })}`, { method: "DELETE" });
@@ -340,7 +386,8 @@ export class SettingsView {
       // error содержит отказ ревизии, зависимости либо связи с сервером.
       notice(this.#status, errorMessage(error));
     } finally {
-      button.disabled = false;
+      this.#removing.delete(path);
+      findEntry(list, row.dataset.entryId)?.querySelector('[data-focus-action="delete"]')?.removeAttribute("aria-disabled");
     }
   }
 }

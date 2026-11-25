@@ -188,6 +188,15 @@ export class FeedView {
     this.#restore(anchor);
   }
 
+  // Вызывает layout для обновления оформления и затем возвращает видимую строку на прежнее
+  // место либо прокручивает в конец. История и счётчик при этом сохраняются.
+  preserveScroll(layout) {
+    // anchor фиксирует прежние позиции строк до изменения размера текста.
+    const anchor = this.#anchor();
+    layout();
+    this.#restore(anchor);
+  }
+
   // Включает или останавливает автоматический переход к концу. При возобновлении очищает счётчик.
   follow(enabled) {
     this.#following = enabled;
@@ -264,7 +273,11 @@ export class FeedView {
     // message обозначает очередную удержанную запись, row хранит её новую позицию в ленте.
     for (const { message, row } of this.#entries) {
       if (row.hidden || !offsets.has(message.seq)) continue;
-      this.#scroll.scrollTop += row.getBoundingClientRect().top - this.#scroll.getBoundingClientRect().top - offsets.get(message.seq);
+      // rect даёт новый размер строки. Offset оставляет строку видимой, если при изменении
+      // оформления она стала короче ранее прокрученной части.
+      const rect = row.getBoundingClientRect();
+      const offset = Math.max(offsets.get(message.seq), 1 - rect.height);
+      this.#scroll.scrollTop += rect.top - this.#scroll.getBoundingClientRect().top - offset;
       return;
     }
     this.#scroll.scrollTop = 0;

@@ -65,6 +65,7 @@
 | `DELETE /chat-sources/{id}`, `DELETE /chat/accounts/{id}` | `expected_revision` передаётся как query. Успешный ответ пуст. |
 | `GET/POST /chat-sources/{id}/broadcast-selection` | GET возвращает `source_revision` и `discovery_generation`. POST принимает `expected_revision` и `discovery_generation`; успешный ответ пуст. |
 | `POST /chat/streams/{streamId}/test/start` | `interval_ms` — целое число миллисекунд от 100 до 60 000 включительно. При отсутствии поля применяется 1 000 мс. Ответ содержит фактический `interval_ms` работающего генератора. |
+| `GET/PUT /chat/streams/{streamId}/appearance` | PUT принимает точный `expected_revision`. Ответ GET и PUT содержит точный `revision`. В обоих направлениях `appearance` содержит целые проценты `overlay_transparency` и `*.transparency` от 0 до 100, `text_outline.width_px` от 0 до 8 и `message_text.size_px` от 8 до 72. |
 | `GET /chat/streams/{streamId}/snapshot`, ответ | `sources[].revision`, `sources[].options.version`, `statuses[].dropped`, `messages[].seq`. |
 | `GET /system/capabilities`, `/health/live`, `/health/ready`, успешные ответы | Числовых доменных полей нет; времена проверок остаются строками или `null`. |
 | Ошибка любого маршрута | `status` в Problem Details — число HTTP-статуса (`int`). |

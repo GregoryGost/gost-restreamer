@@ -26,12 +26,64 @@ export function errorMessage(error) {
 }
 
 // Создаёт кнопку действия и привязывает обработчик к текущей записи экрана.
-export function actionButton(text, action, style = "secondary") {
+// focusAction обозначает одно и то же действие при обновлении строки списка.
+export function actionButton(text, action, style = "secondary", focusAction) {
   // button получает только локальный текст действия и класс стиля.
   const button = element("button", `button ${style}`, text);
   button.type = "button";
+  if (focusAction) button.dataset.focusAction = focusAction;
   button.addEventListener("click", action);
   return button;
+}
+
+// Возвращает строку списка по точному идентификатору записи независимо от её подписи и позиции.
+export function findEntry(list, id) {
+  return Array.from(list.children).find((row) => {
+    // Сравнивает идентификатор без интерпретации символов как части CSS-селектора.
+    return row.dataset.entryId === id;
+  });
+}
+
+// Находит прежнее действие в новой строке. Если оно исчезло, выбирает другое действие той же
+// записи, а при отсутствии действий возвращает саму строку. Строки доступны для фокуса из кода.
+function findEntryFocus(list, id, action) {
+  // row обозначает актуальную строку, buttons — её доступные для фокуса действия.
+  const row = findEntry(list, id);
+  if (!row) return null;
+  const buttons = Array.from(row.querySelectorAll("button[data-focus-action]:not(:disabled)"));
+  return buttons.find((button) => {
+    // Ищет то же действие внутри прежней записи, даже когда соседние кнопки изменились.
+    return button.dataset.focusAction === action;
+  }) ?? buttons[0] ?? row;
+}
+
+// Заменяет строки и восстанавливает фокус, только когда он был внутри этого списка. fallback
+// получает фокус, если запись исчезла целиком. Положение страницы при обновлении сохраняется.
+export function replaceEntryRows(list, rows, fallback) {
+  // active хранит элемент до замены, row связывает его с записью, ownsFocus отмечает этот список.
+  const active = document.activeElement;
+  const row = active?.closest("[data-entry-id]");
+  const ownsFocus = row?.parentElement === list;
+  list.replaceChildren(...rows);
+  if (ownsFocus && !active.isConnected && document.activeElement === document.body) {
+    (findEntryFocus(list, row.dataset.entryId, active.dataset.focusAction) ?? fallback).focus({ preventScroll: true });
+  }
+}
+
+// Запоминает кнопку открытия диалога. После нативного закрытия восстанавливает фокус, если
+// браузер не нашёл прежнюю кнопку, например когда список обновился во время работы с диалогом.
+export function returnFocusOnClose(dialog, trigger, fallback) {
+  // row и list запоминают, где искать кнопку с тем же действием после обновления списка.
+  const row = trigger.closest("[data-entry-id]");
+  const list = row?.parentElement;
+  dialog.addEventListener("close", () => {
+    // Сохраняет фокус, если браузер или пользователь уже перевёл его на доступный элемент.
+    if (dialog.open || document.activeElement !== document.body) return;
+    // target выбирает исходную кнопку, её актуальную замену или запасной элемент страницы.
+    const target = trigger.isConnected && !trigger.disabled ? trigger
+      : list ? findEntryFocus(list, row.dataset.entryId, trigger.dataset.focusAction) : null;
+    (target ?? fallback).focus({ preventScroll: true });
+  }, { once: true });
 }
 
 // Заполняет нативный список парами идентификатор и подпись, восстанавливая выбранное значение,

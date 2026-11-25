@@ -31,6 +31,7 @@
         <footer class="feed-controls">
           <label class="checkbox"><input id="follow" type="checkbox" checked> Автопрокрутка</label>
           <button id="new-messages" type="button" class="button secondary" hidden>К новым сообщениям</button>
+          <p id="new-messages-status" class="visually-hidden" role="status"></p>
           <form id="test-feed-form" class="test-feed-actions">
             <label class="filter">Интервал между сообщениями, мс
               <input id="test-feed-interval" type="number" min="100" max="60000" step="1" value="1000" required disabled>
@@ -43,12 +44,62 @@
         </footer>
       </section>
       <aside class="panel status-panel" aria-labelledby="status-title">
-        <header class="panel-heading"><h2 id="status-title">Состояние чатов</h2></header>
+        <header class="panel-heading"><h2 id="status-title" tabindex="-1">Состояние чатов</h2></header>
         <p id="gap" class="notice" role="status" hidden></p>
         <p id="no-status" class="empty-note">Загрузка источников…</p>
         <ul id="statuses" class="entry-list"></ul>
       </aside>
     </div>
+    <section class="panel settings-panel" aria-labelledby="appearance-title">
+      <details>
+        <summary id="appearance-title">Оформление чата</summary>
+        <form id="appearance-form" class="appearance-form settings-content" aria-describedby="appearance-help">
+          <p id="appearance-help">Прозрачность 0% означает непрозрачный слой, 100% скрывает его полностью.</p>
+          <fieldset id="appearance-fields" class="appearance-fields" disabled>
+            <legend class="visually-hidden">Параметры оформления</legend>
+            <div class="appearance-grid">
+              <fieldset>
+                <legend>Фон ленты Dashboard</legend>
+                <label class="checkbox"><input type="checkbox" name="dashboard_background.enabled"> Показывать фон ленты</label>
+                <label>Цвет фона ленты <input type="color" name="dashboard_background.color"></label>
+                <label>Прозрачность фона ленты, % <input type="number" name="dashboard_background.transparency" min="0" max="100" required></label>
+              </fieldset>
+              <fieldset>
+                <legend>Overlay</legend>
+                <label>Общая прозрачность, % <input type="number" name="overlay_transparency" min="0" max="100" required></label>
+                <label class="checkbox"><input type="checkbox" name="overlay_background.enabled"> Показывать общий фон Overlay</label>
+                <label>Цвет общего фона <input type="color" name="overlay_background.color"></label>
+                <label>Прозрачность общего фона, % <input type="number" name="overlay_background.transparency" min="0" max="100" required></label>
+              </fieldset>
+              <fieldset>
+                <legend>Фон сообщений</legend>
+                <label class="checkbox"><input type="checkbox" name="message_background.enabled"> Показывать фон сообщений</label>
+                <label>Цвет фона сообщений <input type="color" name="message_background.color"></label>
+                <label>Прозрачность фона сообщений, % <input type="number" name="message_background.transparency" min="0" max="100" required></label>
+              </fieldset>
+              <fieldset>
+                <legend>Обводка текста и ников</legend>
+                <label class="checkbox"><input type="checkbox" name="text_outline.enabled"> Показывать обводку</label>
+                <label>Цвет обводки <input type="color" name="text_outline.color"></label>
+                <label>Толщина обводки, px <input type="number" name="text_outline.width_px" min="0" max="8" required></label>
+                <label>Прозрачность обводки, % <input type="number" name="text_outline.transparency" min="0" max="100" required></label>
+              </fieldset>
+              <fieldset>
+                <legend>Текст сообщений</legend>
+                <label>Цвет текста <input type="color" name="message_text.color"></label>
+                <label>Размер шрифта, px <input type="number" name="message_text.size_px" min="8" max="72" required></label>
+                <label>Прозрачность текста, % <input type="number" name="message_text.transparency" min="0" max="100" required></label>
+              </fieldset>
+            </div>
+          </fieldset>
+          <div class="appearance-actions">
+            <button id="appearance-save" type="submit" class="button primary" aria-disabled="true" disabled>Сохранить оформление</button>
+            <button id="appearance-reload" type="button" class="button secondary">Загрузить сохранённое оформление</button>
+          </div>
+          <p id="appearance-status" class="appearance-status" role="status"></p>
+        </form>
+      </details>
+    </section>
     <section class="panel settings-panel" aria-labelledby="settings-title">
       <details id="settings">
         <summary id="settings-title">Настройки чатов</summary>
@@ -125,7 +176,7 @@
           <button type="submit" class="button primary">Подключить</button>
         </fieldset>
       </form>
-      <p id="authorization-status" class="notice" role="status" hidden></p>
+      <p id="authorization-status" class="notice" role="status" tabindex="-1" hidden></p>
       <div id="device" class="device" hidden>
         <a id="device-link" target="_blank" rel="noopener noreferrer">Открыть Twitch для подтверждения</a>
         <p>Код подключения <strong id="device-code"></strong></p>

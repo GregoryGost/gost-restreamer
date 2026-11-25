@@ -120,7 +120,7 @@ func (p FallbackPolicy) Validate() error {
 	return p.Watchdog.Validate()
 }
 
-// Stream хранит текущие настройки потока, постоянный ключ публикации и политику заглушки.
+// Stream хранит текущие настройки потока, постоянный ключ публикации, политику заглушки и оформление чата.
 type Stream struct {
 	// Record содержит идентификатор, ревизию и временные метки сущности.
 	Record
@@ -130,9 +130,11 @@ type Stream struct {
 	PublicationKey string
 	// Fallback задаёт выбранную заглушку и контроль LIVE-источника.
 	Fallback FallbackPolicy
+	// ChatAppearance содержит сохранённое оформление. При его отсутствии страницы используют значения по умолчанию.
+	ChatAppearance *ChatAppearance `json:",omitempty"`
 }
 
-// Validate проверяет имя и ключ публикации; полностью незаданная политика заглушки допустима.
+// Validate проверяет имя, ключ публикации, заданное оформление и политику заглушки при её наличии.
 func (s Stream) Validate() error {
 	// err содержит причину отказа проверки имени потока.
 	if err := validText("Stream.Name", s.Name); err != nil {
@@ -141,6 +143,12 @@ func (s Stream) Validate() error {
 	// err содержит причину отказа проверки ключа публикации потока.
 	if err := validText("Stream.PublicationKey", s.PublicationKey); err != nil {
 		return err
+	}
+	if s.ChatAppearance != nil {
+		// err сообщает о недопустимых настройках оформления независимо от состояния политики заглушки.
+		if err := s.ChatAppearance.Validate(); err != nil {
+			return err
+		}
 	}
 	if s.Fallback.AssetID == "" && s.Fallback.Watchdog == (WatchdogPolicy{}) {
 		return nil

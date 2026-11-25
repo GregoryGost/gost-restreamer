@@ -137,11 +137,12 @@ func (chatOptionsBody) Schema(huma.Registry) *huma.Schema {
 	return &huma.Schema{Type: huma.TypeObject, OneOf: variants}
 }
 
-// registerChatControl публикует операции конфигурации, авторизации и выбора эфира до построения OpenAPI.
+// registerChatControl публикует операции конфигурации, авторизации, выбора эфира и оформления до построения OpenAPI.
 func (a *API) registerChatControl() {
 	a.registerChatSources()
 	a.registerChatAccounts()
 	a.registerChatBroadcasts()
+	a.registerChatAppearance()
 }
 
 // chatControlOperation применяет независимый проверенный бюджет управляющего тела чата.
