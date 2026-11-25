@@ -11,6 +11,7 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.40.0
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/mattn/go-sqlite3 v1.14.22
+	github.com/oaswrap/spec-ui v0.2.2
 	github.com/pressly/goose/v3 v3.27.0
 	go.yaml.in/yaml/v3 v3.0.5
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1

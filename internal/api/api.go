@@ -6,13 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"html"
 	"io"
 	"log/slog"
 	"net/http"
 	"path"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,8 +150,8 @@ type API struct {
 }
 
 // New связывает маршрутизатор с доменом и заданными владельцами команд и подготовки. После регистрации
-// он однократно формирует неизменяемые спецификации, схемы и документацию; обработчики и SSE затем
-// завершает Close.
+// он однократно формирует неизменяемые спецификации и схемы и подключает страницу документации.
+// Обработчики и SSE завершает Close.
 func New(config Config) (*API, error) {
 	if config.Core == nil || config.Logger == nil {
 		return nil, core.ErrInvalid
@@ -304,53 +302,9 @@ func New(config Config) (*API, error) {
 		cancel()
 		return nil, err
 	}
-	a.router.Get(Prefix+"/openapi.json", immutable("application/openapi+json", spec))
+	a.router.Get(openAPIJSONPath, immutable("application/openapi+json", spec))
 	a.router.Get(Prefix+"/openapi.yaml", immutable("application/openapi+yaml", yaml))
-	// docs накапливает локальную HTML-документацию из зарегистрированных путей и публичных схем.
-	var docs bytes.Buffer
-	docs.WriteString(`<!doctype html><html lang="ru"><meta charset="utf-8"><title>Управление трансляциями</title><h1>Управляющий API</h1><p><a href="` + Prefix + `/openapi.json">OpenAPI JSON</a> · <a href="` + Prefix + `/openapi.yaml">OpenAPI YAML</a></p><ul>`)
-	// paths собирает пути OpenAPI для упорядоченного вывода в HTML-документации.
-	paths := make([]string, 0, len(a.huma.OpenAPI().Paths))
-	// path содержит очередной ключ пути OpenAPI, добавляемый в сортируемый список.
-	for path := range a.huma.OpenAPI().Paths {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	// path содержит очередной отсортированный путь для вывода его операций.
-	for _, path := range paths {
-		// item содержит операции OpenAPI текущего публичного пути.
-		item := a.huma.OpenAPI().Paths[path]
-		// method задаёт HTTP-метод строки документации; op содержит соответствующую
-		// зарегистрированную операцию либо nil.
-		for method, op := range map[string]*huma.Operation{"GET": item.Get, "POST": item.Post, "PUT": item.Put, "PATCH": item.Patch, "DELETE": item.Delete} {
-			if op == nil {
-				continue
-			}
-			docs.WriteString("<li><code>")
-			docs.WriteString(html.EscapeString(method + " " + path))
-			docs.WriteString("</code> — ")
-			docs.WriteString(html.EscapeString(op.Summary))
-			docs.WriteString("</li>")
-		}
-	}
-	docs.WriteString("</ul><h2>Схемы</h2><ul>")
-	// names собирает имена подготовленных схем для упорядоченного вывода ссылок.
-	names := make([]string, 0, len(schemas))
-	// name содержит очередное имя подготовленной схемы, добавляемое в сортируемый список.
-	for name := range schemas {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	// name содержит очередное отсортированное имя схемы для HTML-ссылки.
-	for _, name := range names {
-		docs.WriteString(`<li><a href="` + Prefix + `/schemas/`)
-		docs.WriteString(html.EscapeString(name))
-		docs.WriteString(`">`)
-		docs.WriteString(html.EscapeString(name))
-		docs.WriteString(`</a></li>`)
-	}
-	docs.WriteString("</ul></html>")
-	a.router.Get(Prefix+"/docs", immutable("text/html; charset=utf-8", docs.Bytes()))
+	a.registerDocs()
 	return a, nil
 }
 

@@ -169,6 +169,8 @@ func catalogText(code string) (problemText, bool) {
 		text = problemText{"Операция конфликтует с текущим состоянием или версией.", "Прочитайте актуальное состояние объекта."}
 	case "credential_commit_unknown":
 		text = problemText{"Результат сохранения полномочий пока не установлен.", "Проверьте состояние принятой попытки подключения."}
+	case "precondition_failed":
+		text = problemText{"Условие запроса к ресурсу не выполнено.", "Проверьте условные заголовки запроса."}
 	case "body_too_large":
 		text = problemText{"Превышен допустимый размер тела запроса.", "Уменьшите размер передаваемого тела."}
 	case "preparation_limit":
@@ -177,6 +179,8 @@ func catalogText(code string) (problemText, bool) {
 		text = problemText{"Превышено допустимое ограничение запроса или подготовки.", "Проверьте ограничения выбранной операции."}
 	case "unsupported_media_type":
 		text = problemText{"Тип содержимого не поддерживается этой операцией.", "Используйте Content-Type, объявленный в схеме операции."}
+	case "range_not_satisfiable":
+		text = problemText{"Запрошенный диапазон байтов недоступен.", "Проверьте границы диапазона по размеру ресурса."}
 	case "invalid_parameters":
 		text = problemText{"Параметры запроса недопустимы.", "Проверьте параметры по схеме операции."}
 	case "invalid_field":
@@ -220,10 +224,14 @@ func defaultProblemCode(status int) string {
 		return "body_read_timeout"
 	case 409:
 		return "state_conflict"
+	case 412:
+		return "precondition_failed"
 	case 413:
 		return "request_limit"
 	case 415:
 		return "unsupported_media_type"
+	case 416:
+		return "range_not_satisfiable"
 	case 422:
 		return "invalid_parameters"
 	case 503:
