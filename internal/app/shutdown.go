@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"net"
 	"net/http"
+
+	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
 // ErrPending сообщает, что приложение сохраняет незавершённых владельцев и общие зависимости для
@@ -194,6 +195,14 @@ func (a *Application) Shutdown(ctx context.Context) error {
 		defer cancel()
 		ctx = bounded
 	}
+	// chatCtx удерживает один срок ожидания чатов на вызов Shutdown, включая повторное ожидание.
+	chatCtx := ctx
+	if a.config.Chat.ShutdownTimeout > 0 {
+		// cancelChat освобождает таймер отдельного срока ожидания чатов.
+		var cancelChat context.CancelFunc
+		chatCtx, cancelChat = context.WithTimeout(ctx, a.config.Chat.ShutdownTimeout)
+		defer cancelChat()
+	}
 	select {
 	case <-a.gate:
 		defer func() {
@@ -207,9 +216,16 @@ func (a *Application) Shutdown(ctx context.Context) error {
 		return errors.Join(a.errors...)
 	}
 	// Все независимые владельцы получают сигнал остановки до ожидания первого результата.
+	a.owners.chat.begin(chatCtx)
 	// joined учитывает завершение независимых компонентов и затем сетевых Serve до закрытия общих
 	// зависимостей.
 	joined := a.waitOwners(ctx, a.owners.api, a.owners.transport, a.owners.manager, a.owners.ingest, a.owners.preparation, a.owners.gpu, a.owners.httpListener, a.owners.ingestListener)
+	// chatErr сообщает об истечении собственного срока ожидания ещё работающего Manager.
+	var chatErr error
+	if !a.waitOwner(chatCtx, a.owners.chat) {
+		joined = false
+		chatErr = chatCtx.Err()
+	}
 	if a.serveCancel != nil {
 		a.serveCancel()
 	}
@@ -231,7 +247,7 @@ func (a *Application) Shutdown(ctx context.Context) error {
 		}
 	}
 	if !joined {
-		return errors.Join(errors.Join(a.errors...), ErrPending, ctx.Err())
+		return errors.Join(errors.Join(a.errors...), ErrPending, ctx.Err(), chatErr)
 	}
 	if !a.waitOwners(ctx, a.owners.registry, a.owners.files) {
 		return errors.Join(errors.Join(a.errors...), ErrPending, ctx.Err())

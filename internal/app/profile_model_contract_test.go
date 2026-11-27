@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/GregoryGost/gost-restreamer/internal/config"
 	"github.com/GregoryGost/gost-restreamer/internal/core"
@@ -196,17 +197,38 @@ func TestProfileModelFreshInstallationPreservesPreviousRoots(t *testing.T) {
 		if err = current.CloseContext(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		// results, next и err подтверждают реальный проход восстановления только нового реестра.
-		results, next, err := application.processes.RecoverPage(context.Background(), "", application.processes.PageLimit())
-		if err != nil || next != "" || len(results) != cycle+1 {
-			t.Fatal("Новый реестр содержит посторонние области либо не завершил сверку", results, next, err)
-		}
-		// result требует завершённости каждой собственной области и отсутствия прежней области в выдаче.
-		for _, result := range results {
-			if result.ID == previousScopeID || !result.Joined || result.Unknown {
-				t.Fatal("Нарушена независимость восстановления runtime", result)
+		// ctx ограничивает всю сверку штатным сроком операции; cancel освобождает её таймер.
+		ctx, cancel := context.WithTimeout(context.Background(), fresh.Session.OperationTimeout)
+		t.Cleanup(cancel)
+		// ticker задаёт период повторного чтения при временно занятой блокировке операции.
+		ticker := time.NewTicker(5 * time.Millisecond)
+		t.Cleanup(ticker.Stop)
+		for {
+			// results содержит только текущую полную страницу; next и err выявляют неполную либо неудачную сверку.
+			results, next, err := application.processes.RecoverPage(ctx, "", application.processes.PageLimit())
+			if err != nil || next != "" || len(results) != cycle+1 {
+				t.Fatal("Новый реестр содержит посторонние области либо не завершил сверку", results, next, err)
+			}
+			// allJoined требует завершённости всех областей в одном текущем проходе, без накопления прежних доказательств.
+			allJoined := true
+			// result проверяет принадлежность и достоверность каждой области до решения о повторе.
+			for _, result := range results {
+				if result.ID == previousScopeID || result.Unknown {
+					t.Fatal("Нарушена независимость восстановления runtime", result)
+				}
+				allJoined = allJoined && result.Joined
+			}
+			if allJoined {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatal("Не подтверждена завершённость новых областей runtime", results, ctx.Err())
+			case <-ticker.C:
 			}
 		}
+		ticker.Stop()
+		cancel()
 		if _, err = os.Stat(current.Namespace()); !errors.Is(err, os.ErrNotExist) {
 			t.Fatal("Не подтверждена физическая очистка новой области", err)
 		}

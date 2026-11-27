@@ -6,18 +6,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"html"
 	"io"
 	"log/slog"
 	"net/http"
 	"path"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/GregoryGost/gost-restreamer/internal/chat"
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/fallback"
 	"github.com/danielgtaylor/huma/v2"
@@ -107,6 +106,10 @@ func (l Limits) Validate() error {
 type Config struct {
 	// Core предоставляет доменные операции и согласованное чтение оперативных наблюдений.
 	Core *core.Service
+	// Chat управляет конфигурационными барьерами, авторизацией и лентами чатов. При nil маршруты чата не регистрируются.
+	Chat *chat.Manager
+	// ChatLimits задаёт проверенные бюджеты запросов и транспорта чатов.
+	ChatLimits core.ChatLimits
 	// Commands передаёт асинхронные команды владельцу сессий; отсутствие зависимости обрабатывается
 	// маршрутами команд.
 	Commands Commands
@@ -147,8 +150,8 @@ type API struct {
 }
 
 // New связывает маршрутизатор с доменом и заданными владельцами команд и подготовки. После регистрации
-// он однократно формирует неизменяемые спецификации, схемы и документацию; обработчики и SSE затем
-// завершает Close.
+// он однократно формирует неизменяемые спецификации и схемы и подключает страницу документации.
+// Обработчики и SSE завершает Close.
 func New(config Config) (*API, error) {
 	if config.Core == nil || config.Logger == nil {
 		return nil, core.ErrInvalid
@@ -156,6 +159,12 @@ func New(config Config) (*API, error) {
 	// err содержит отказ проверки HTTP-бюджетов до создания маршрутизатора и контекста API.
 	if err := config.Limits.Validate(); err != nil {
 		return nil, err
+	}
+	if config.Chat != nil {
+		// err сообщает об отказе проверки бюджетов чата до публикации его маршрутов.
+		if err := ValidateChatLimits(config.ChatLimits); err != nil {
+			return nil, err
+		}
 	}
 	// ctx задаёт общий срок жизни обработчиков API; cancel прекращает его при Close или ошибке
 	// регистрации.
@@ -242,6 +251,11 @@ func New(config Config) (*API, error) {
 	a.registerFallback()
 	a.registerRuntime()
 	a.registerSystem()
+	if config.Chat != nil {
+		a.registerChatControl()
+		a.registerChatStream()
+		a.registerChatWeb()
+	}
 	if a.registrationErr != nil {
 		cancel()
 		return nil, a.registrationErr
@@ -288,53 +302,9 @@ func New(config Config) (*API, error) {
 		cancel()
 		return nil, err
 	}
-	a.router.Get(Prefix+"/openapi.json", immutable("application/openapi+json", spec))
+	a.router.Get(openAPIJSONPath, immutable("application/openapi+json", spec))
 	a.router.Get(Prefix+"/openapi.yaml", immutable("application/openapi+yaml", yaml))
-	// docs накапливает локальную HTML-документацию из зарегистрированных путей и публичных схем.
-	var docs bytes.Buffer
-	docs.WriteString(`<!doctype html><html lang="ru"><meta charset="utf-8"><title>Управление трансляциями</title><h1>Управляющий API</h1><p><a href="` + Prefix + `/openapi.json">OpenAPI JSON</a> · <a href="` + Prefix + `/openapi.yaml">OpenAPI YAML</a></p><ul>`)
-	// paths собирает пути OpenAPI для упорядоченного вывода в HTML-документации.
-	paths := make([]string, 0, len(a.huma.OpenAPI().Paths))
-	// path содержит очередной ключ пути OpenAPI, добавляемый в сортируемый список.
-	for path := range a.huma.OpenAPI().Paths {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	// path содержит очередной отсортированный путь для вывода его операций.
-	for _, path := range paths {
-		// item содержит операции OpenAPI текущего публичного пути.
-		item := a.huma.OpenAPI().Paths[path]
-		// method задаёт HTTP-метод строки документации; op содержит соответствующую
-		// зарегистрированную операцию либо nil.
-		for method, op := range map[string]*huma.Operation{"GET": item.Get, "POST": item.Post, "PUT": item.Put, "PATCH": item.Patch, "DELETE": item.Delete} {
-			if op == nil {
-				continue
-			}
-			docs.WriteString("<li><code>")
-			docs.WriteString(html.EscapeString(method + " " + path))
-			docs.WriteString("</code> — ")
-			docs.WriteString(html.EscapeString(op.Summary))
-			docs.WriteString("</li>")
-		}
-	}
-	docs.WriteString("</ul><h2>Схемы</h2><ul>")
-	// names собирает имена подготовленных схем для упорядоченного вывода ссылок.
-	names := make([]string, 0, len(schemas))
-	// name содержит очередное имя подготовленной схемы, добавляемое в сортируемый список.
-	for name := range schemas {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	// name содержит очередное отсортированное имя схемы для HTML-ссылки.
-	for _, name := range names {
-		docs.WriteString(`<li><a href="` + Prefix + `/schemas/`)
-		docs.WriteString(html.EscapeString(name))
-		docs.WriteString(`">`)
-		docs.WriteString(html.EscapeString(name))
-		docs.WriteString(`</a></li>`)
-	}
-	docs.WriteString("</ul></html>")
-	a.router.Get(Prefix+"/docs", immutable("text/html; charset=utf-8", docs.Bytes()))
+	a.registerDocs()
 	return a, nil
 }
 
@@ -445,6 +415,8 @@ func classify(err error) int {
 		return 400
 	case errors.Is(err, core.ErrNotFound):
 		return 404
+	case errors.Is(err, chat.ErrCredentialCommitUnknown):
+		return 409
 	case errors.Is(err, core.ErrConflict), errors.Is(err, core.ErrInUse), errors.Is(err, core.ErrNotReady), errors.Is(err, core.ErrStale):
 		return 409
 	case errors.Is(err, core.ErrInvalid), errors.Is(err, core.ErrInvalidProfile), errors.Is(err, core.ErrInvalidFormat), errors.Is(err, core.ErrInvalidWatchdogPolicy), errors.Is(err, fallback.ErrInvalid):
@@ -469,8 +441,9 @@ func operation(method, path, id, summary string) huma.Operation {
 	return huma.Operation{Method: method, Path: Prefix + path, OperationID: id, Summary: summary, Errors: []int{400, 404, 405, 408, 409, 413, 415, 422, 500, 503}}
 }
 
-// register добавляет ограничение тела и срока чтения, контекст операции и безопасное преобразование
-// ошибок. Ответ проверяется на представимость в JSON до записи; профильные 422 сохраняют отдельную схему.
+// register применяет предел тела операции либо общий предел JSON, срок чтения, контекст операции и
+// безопасное преобразование ошибок. Ответ проверяется на представимость в JSON до записи.
+// Профильные 422 сохраняют отдельную схему.
 func register[I, O any](a *API, op huma.Operation, handler func(context.Context, *I) (*O, error)) {
 	if a.registrationErr != nil {
 		return
@@ -508,7 +481,9 @@ func register[I, O any](a *API, op huma.Operation, handler func(context.Context,
 		op.RequestBody.Content["application/json"] = bodyMedia
 	}
 	a.setProblemResponses(&op)
-	op.MaxBodyBytes = a.config.Limits.JSONBytes
+	if op.MaxBodyBytes == 0 {
+		op.MaxBodyBytes = a.config.Limits.JSONBytes
+	}
 	op.BodyReadTimeout = a.config.Limits.OperationTimeout
 	huma.Register(a.huma, op, func(ctx context.Context, in *I) (*O, error) {
 		// Ограничивает время операции, проверяет сериализацию результата и переводит ошибку обработчика в

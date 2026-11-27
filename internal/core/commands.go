@@ -389,6 +389,8 @@ func (s *Service) StartSession(ctx context.Context, request StartSessionRequest)
 		if err != nil {
 			return err
 		}
+		// Оформление относится к текущей конфигурации чата и не входит в снимок запуска.
+		stream.ChatAppearance = nil
 		// session содержит новый STARTING-запуск с самостоятельным снимком потока и групп.
 		session := Session{Record: record, StreamID: stream.ID, Incarnation: s.incarnation, State: SessionStarting, Lifecycle: 1, Snapshot: SessionSnapshot{Stream: stream, Groups: snapshots}}
 		if err = r.Runtime.InsertSession(ctx, session); err != nil {

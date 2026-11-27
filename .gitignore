@@ -1,13 +1,14 @@
 .DS_Store
-/.codex/config.toml
-/.agent-handoffs/
+.codex/config.toml
+.agent-handoffs/
 .env
 .env.*
 !.env.example
-/bin/
-/dist/
+bin/
+dist/
 #
 TASKS.md
 TASKS_ARCHIVE.md
 # Видеофайлы для тестов.
 *.mkv
+.playwright-mcp/

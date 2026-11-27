@@ -7,11 +7,16 @@ require (
 	github.com/abema/go-mp4 v1.7.1
 	github.com/bluenviron/gortmplib v1.0.1
 	github.com/bluenviron/mediacommon/v2 v2.9.3
+	github.com/coder/websocket v1.8.15
 	github.com/danielgtaylor/huma/v2 v2.40.0
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/mattn/go-sqlite3 v1.14.22
+	github.com/oaswrap/spec-ui v0.2.2
 	github.com/pressly/goose/v3 v3.27.0
 	go.yaml.in/yaml/v3 v3.0.5
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1
+	google.golang.org/grpc v1.85.0
+	google.golang.org/protobuf v1.36.12
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.2
 )
@@ -23,6 +28,8 @@ require (
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/sethvargo/go-retry v0.3.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
+	golang.org/x/net v0.61.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )

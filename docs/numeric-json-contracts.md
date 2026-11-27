@@ -60,6 +60,13 @@
 | `DELETE /streams/{id}`, `/transcode-profiles/{id}`, `/transcode-groups/{id}`, `/destinations/{id}`, `/fallback-assets/{id}` | JSON-запроса и успешного JSON-ответа нет; `expected_revision` находится в query. |
 | `GET /sessions/{id}/metrics`, ответ | `snapshot` по карте оперативной Session, когда доступен. |
 | `GET /events/snapshot`, ответ | `sessions[]` по карте оперативной Session; `gpu` по карте GPU. |
+| `GET/POST /destinations/{destinationId}/chat-sources`, `GET/PATCH /chat-sources/{id}` | В ответах ресурса и `items[]` — `revision`, `options.version`. В создании числовой параметр — `options.version`; PATCH дополнительно требует `expected_revision`. |
+| `GET /chat/accounts`, `GET/PATCH /chat/accounts/{id}`, `POST /chat/accounts/connect` | Метаданные ресурса и `items[]` содержат `revision`. PATCH требует `expected_revision`; connect использует её только при замене вместе с `account_id`. Публичная попытка не содержит ревизий. |
+| `DELETE /chat-sources/{id}`, `DELETE /chat/accounts/{id}` | `expected_revision` передаётся как query. Успешный ответ пуст. |
+| `GET/POST /chat-sources/{id}/broadcast-selection` | GET возвращает `source_revision` и `discovery_generation`. POST принимает `expected_revision` и `discovery_generation`; успешный ответ пуст. |
+| `POST /chat/streams/{streamId}/test/start` | `interval_ms` — целое число миллисекунд от 100 до 60 000 включительно. При отсутствии поля применяется 1 000 мс. Ответ содержит фактический `interval_ms` работающего генератора. |
+| `GET/PUT /chat/streams/{streamId}/appearance` | PUT принимает точный `expected_revision`. Ответ GET и PUT содержит точный `revision`. В обоих направлениях `appearance` содержит целые проценты `overlay_transparency` и `*.transparency` от 0 до 100, `text_outline.width_px` от 0 до 8 и `message_text.size_px` от 8 до 72. |
+| `GET /chat/streams/{streamId}/snapshot`, ответ | `sources[].revision`, `sources[].options.version`, `statuses[].dropped`, `messages[].seq`. |
 | `GET /system/capabilities`, `/health/live`, `/health/ready`, успешные ответы | Числовых доменных полей нет; времена проверок остаются строками или `null`. |
 | Ошибка любого маршрута | `status` в Problem Details — число HTTP-статуса (`int`). |
 | `GET /openapi.json`, `/schemas/{schema}.json` и спецификация YAML | Числовые ограничения/перечисления/значения по умолчанию и примеры публикуются согласно типам описываемых полей; точные границы не округляются. |
@@ -70,6 +77,10 @@
 | --- | --- | --- |
 | `revision` любого сохраняемого ресурса, вложенной конфигурации или квитанции; `PolicyResult.revision` | `Decimal` / `integer` | Номер ревизии `1…U64.max`; переполнение следующей ревизии даёт конфликт. |
 | JSON `expected_revision` | `Decimal` / `integer` | Ожидаемая ревизия `1…U64.max`; отсутствие, `null`, 0 и строка недопустимы. |
+| `options.version` источника чата | целое / `integer` | Версия настроек площадки, единственное допустимое значение — 1. |
+| `source_revision`, `discovery_generation` выбора эфира чата | `uint64` или `Decimal` / `integer` | Точные положительные ревизия источника и поколение обнаружения, `1…U64.max`. |
+| `seq` сообщения чата | `uint64` / `integer` | Порядковый номер принятого сообщения в Session, `1…U64.max`. |
+| `dropped` статуса чата, `lost` события чата | `uint64` / `integer` | Известное число отброшенных сообщений или потерь, `U64`. Ноль допустим. |
 | `watchdog.video_timeout_ns` | `Decimal` → `time.Duration` / `integer` | Допустимое отсутствие видео, `1…D.max` нс. |
 | `watchdog.audio_timeout_ns` | `Decimal` → `time.Duration` / `integer` | Допустимое отсутствие аудио, `1…D.max` нс. |
 | `watchdog.recovery_window_ns` | `Decimal` → `time.Duration` / `integer` | Окно восстановления LIVE, `1…D.max` нс. |
@@ -260,6 +271,8 @@ HEVC/VP9 имеют следующие зависимости:
 - `gpu.stale_after_ns` и все показатели `devices[]`.
 
 Неприменимое поддерево остаётся `null`. Управляющее событие `resync_required` содержит строки `reason` и `snapshot_url` и не содержит чисел. Комментарии `: connected` и heartbeat, а также служебные `event:`/`id:` не являются JSON-данными. Описание события в OpenAPI связывает JSON payload с опубликованной схемой; транспорт всего ответа остаётся `text/event-stream`.
+
+В потоке `GET /chat/streams/{streamId}/events` числовые поля встречаются в `chat.message` (`message.seq`), `chat.source_status` (`status.dropped`) и `chat.gap` (`lost`). `chat.cleared`, `resync_required` и `chat.session_closed` передают управляющие данные без числовых полей. `cursor` в payload и `id:` кадра остаются одинаковыми непрозрачными строками.
 
 ## Строки, схемы и сохранённые данные
 

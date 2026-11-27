@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -609,11 +611,6 @@ func TestAcceptanceImmutablePublicSpecConcurrentFirstGET(t *testing.T) {
 	for _, path := range []string{"/openapi-3.0.json", "/openapi-3.0.yaml", "/sessions/missing/events"} {
 		apiAcceptanceRequest(t, f.api, "GET", path, "", 404)
 	}
-	// docs содержит публичную HTML-документацию для проверки ссылки на действующую спецификацию.
-	docs := apiAcceptanceRequest(t, f.api, "GET", "/docs", "", 200)
-	if !strings.Contains(docs.Body.String(), api.Prefix+"/openapi.json") {
-		t.Fatal("docs не ссылается на опубликованную спецификацию")
-	}
 	// response содержит обычный ответ списка потоков для извлечения публичной ссылки схемы.
 	response := apiAcceptanceRequest(t, f.api, "GET", "/streams", "", 200)
 	// link содержит заголовок describedBy с адресом схемы ответа.
@@ -631,4 +628,129 @@ func TestAcceptanceImmutablePublicSpecConcurrentFirstGET(t *testing.T) {
 		t.Fatal("schema link вне API prefix", link)
 	}
 	apiAcceptanceRequest(t, f.api, "GET", strings.TrimPrefix(schemaPath, api.Prefix), "", 200)
+}
+
+// TestAcceptanceScalarDocsUseLocalSpecAndAssets проверяет, что публичная страница Scalar
+// работает со спецификацией на том же сервере и подключает доступные по HTTP встроенные CSS и JS.
+// Неизвестный ресурс и попытки записи в маршруты документации отклоняются.
+func TestAcceptanceScalarDocsUseLocalSpecAndAssets(t *testing.T) {
+	// f предоставляет зарегистрированный маршрутизатор с временным хранилищем.
+	f := newAPIAcceptanceFixture(t, nil)
+	// docs записывает заголовки и тело страницы, запрошенной без учётных данных.
+	docs := apiAcceptanceRequest(t, f.api, http.MethodGet, "/docs", "", http.StatusOK)
+	// mediaType определяет тип страницы без параметров кодировки; err отмечает некорректный заголовок.
+	mediaType, _, err := mime.ParseMediaType(docs.Header().Get("Content-Type"))
+	if err != nil || mediaType != "text/html" {
+		t.Fatalf("тип страницы документации = %q, ожидается text/html", docs.Header().Get("Content-Type"))
+	}
+	// page содержит настройки Scalar и адреса ресурсов, которые загружает браузер.
+	page := docs.Body.String()
+	if !strings.Contains(page, "Scalar.createApiReference(") || !strings.Contains(page, "hideTestRequestButton: false") {
+		t.Fatal("страница документации не включает интерактивный интерфейс Scalar")
+	}
+	if strings.Contains(page, "proxyUrl:") {
+		t.Fatal("страница документации настраивает прокси для запросов API")
+	}
+	if docs.Header().Get("Content-Security-Policy") != "connect-src 'self'" {
+		t.Fatal("браузерные подключения не ограничены адресом страницы")
+	}
+	// specSource начинается со строкового литерала URL; found показывает, что шаблон задаёт URL.
+	_, specSource, found := strings.Cut(page, "url: new URL(")
+	if !found {
+		t.Fatal("страница документации не задаёт адрес OpenAPI")
+	}
+	// specLiteral содержит первый аргумент new URL, задающий путь к спецификации.
+	specLiteral, _, _ := strings.Cut(specSource, ",")
+	// specURL хранит декодированный адрес, который браузер использует для загрузки спецификации.
+	var specURL string
+	if err = json.Unmarshal([]byte(specLiteral), &specURL); err != nil || specURL != api.Prefix+"/openapi.json" {
+		t.Fatalf("адрес OpenAPI в документации = %q, ошибка разбора = %v, ожидается %s/openapi.json", specURL, err, api.Prefix)
+	}
+	// asset задаёт ожидаемую ссылку браузера и признаки корректной HTTP-выдачи одного файла Scalar.
+	for _, asset := range []struct {
+		// path задаёт публичный путь встроенного ресурса без общего префикса API.
+		path string
+		// attribute задаёт HTML-атрибут, из которого браузер получает адрес файла.
+		attribute string
+		// mediaTypes перечисляет допустимые типы содержимого, включая распространённые типы JavaScript.
+		mediaTypes []string
+		// signature содержит характерный фрагмент ресурса Scalar для отличия от заглушки или страницы ошибки.
+		signature string
+	}{
+		{"/docs/_assets/style.min.css", "href", []string{"text/css"}, ".scalar-app"},
+		{"/docs/_assets/browser/standalone.min.js", "src", []string{"text/javascript", "application/javascript"}, "createApiReference"},
+	} {
+		if !strings.Contains(page, asset.attribute+`="`+api.Prefix+asset.path+`"`) {
+			t.Fatalf("страница документации не подключает %s%s", api.Prefix, asset.path)
+		}
+		// response записывает выдачу встроенного файла по опубликованному адресу без учётных данных.
+		response := apiAcceptanceRequest(t, f.api, http.MethodGet, asset.path, "", http.StatusOK)
+		mediaType, _, err = mime.ParseMediaType(response.Header().Get("Content-Type"))
+		if err != nil || !slices.Contains(asset.mediaTypes, mediaType) {
+			t.Fatalf("тип содержимого %s = %q, ожидается один из %v", asset.path, response.Header().Get("Content-Type"), asset.mediaTypes)
+		}
+		if !bytes.Contains(response.Body.Bytes(), []byte(asset.signature)) {
+			t.Fatalf("ответ %s не содержит ресурс Scalar", asset.path)
+		}
+	}
+	// missing записывает отказ для неизвестного файла Scalar в общем формате ошибок API.
+	missing := apiAcceptanceRequest(t, f.api, http.MethodGet, "/docs/_assets/missing.js", "", http.StatusNotFound)
+	if missing.Header().Get("Content-Type") != "application/problem+json" || apiAcceptanceJSON(t, missing)["code"] != "route_not_found" {
+		t.Fatalf("неизвестный ресурс вернул ответ вне контракта Problem Details: %s", missing.Body)
+	}
+	apiAcceptanceRequest(t, f.api, http.MethodPost, "/docs", "", http.StatusMethodNotAllowed)
+	// postAsset сохраняет статус попытки записи в маршрут JS без печати всего файла при ошибке.
+	postAsset := httptest.NewRecorder()
+	f.api.ServeHTTP(postAsset, httptest.NewRequest(http.MethodPost, api.Prefix+"/docs/_assets/browser/standalone.min.js", nil))
+	if postAsset.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST к ресурсу JavaScript вернул %d, ожидается %d", postAsset.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+// TestAcceptanceScalarAssetConditions проверяет частичное чтение встроенного файла.
+// Отказы по условиям и диапазонам должны сохранять формат Problem Details.
+func TestAcceptanceScalarAssetConditions(t *testing.T) {
+	// f предоставляет настоящий маршрутизатор с документацией Scalar.
+	f := newAPIAcceptanceFixture(t, nil)
+	// assetPath указывает на существующий встроенный файл JavaScript.
+	const assetPath = api.Prefix + "/docs/_assets/browser/standalone.min.js"
+	// partial описывает запрос первых 16 байтов, а partialResponse сохраняет ответ сервера.
+	partial := httptest.NewRequest(http.MethodGet, assetPath, nil)
+	partial.Header.Set("Range", "bytes=0-15")
+	partialResponse := httptest.NewRecorder()
+	f.api.ServeHTTP(partialResponse, partial)
+	if partialResponse.Code != http.StatusPartialContent || partialResponse.Body.Len() != 16 ||
+		!strings.HasPrefix(partialResponse.Header().Get("Content-Range"), "bytes 0-15/") {
+		t.Fatalf("частичное чтение вернуло %d, Content-Range %q и %d байтов",
+			partialResponse.Code, partialResponse.Header().Get("Content-Range"), partialResponse.Body.Len())
+	}
+	// scenario связывает условия запроса к существующему файлу с ожидаемым отказом.
+	for _, scenario := range []struct {
+		// header задаёт имя проверяемого заголовка, а value содержит его значение.
+		header, value string
+		// status и code задают статус HTTP и код причины из Problem Details.
+		status int
+		code   string
+	}{
+		{"Range", "bytes=999999999-", http.StatusRequestedRangeNotSatisfiable, "range_not_satisfiable"},
+		{"If-Match", `"nonmatching"`, http.StatusPreconditionFailed, "precondition_failed"},
+	} {
+		// request задаёт запрос ресурса с невыполнимым условием, response сохраняет его отказ.
+		request := httptest.NewRequest(http.MethodGet, assetPath, nil)
+		request.Header.Set(scenario.header, scenario.value)
+		response := httptest.NewRecorder()
+		f.api.ServeHTTP(response, request)
+		if response.Code != scenario.status || response.Header().Get("Content-Type") != "application/problem+json" {
+			t.Fatalf("%s: статус %d и тип %q, ожидаются %d и application/problem+json", scenario.header,
+				response.Code, response.Header().Get("Content-Type"), scenario.status)
+		}
+		// problem содержит публичный JSON отказа, который должен соответствовать HTTP-статусу.
+		problem := apiAcceptanceJSON(t, response)
+		if problem["status"] != json.Number(strconv.Itoa(scenario.status)) || problem["code"] != scenario.code {
+			t.Fatalf("%s: неожиданный Problem Details %v", scenario.header, problem)
+		}
+		if scenario.header == "Range" && !strings.HasPrefix(response.Header().Get("Content-Range"), "bytes */") {
+			t.Fatalf("отказ Range потерял размер файла: %v", response.Header())
+		}
+	}
 }

@@ -206,7 +206,7 @@ func TestAcceptanceYAMLDocumentsAndDefaults(t *testing.T) {
 func TestAcceptanceNestedOverlayAndExplicitZero(t *testing.T) {
 	// path указывает файл для проверки частичного наложения и последующего повторного чтения.
 	path := filepath.Join(t.TempDir(), "config.yml")
-	acceptanceWriteConfig(t, path, "http:\n  address: '127.0.0.1:8181'\n  idle_timeout: 17s\nstorage:\n  max_idle_conns: 0\nffmpeg:\n  max_restarts: 0\n")
+	acceptanceWriteConfig(t, path, "http:\n  address: '127.0.0.1:8181'\n  idle_timeout: 17s\nstorage:\n  max_idle_conns: 0\nffmpeg:\n  max_restarts: 0\nchat:\n  sse_queue:\n    count: 16\n  sse_write_timeout: 2s\n  overlay_messages: 32\n")
 	// got содержит конфигурацию после первого наложения YAML; err содержит отказ первой загрузки.
 	got, err := Load(path)
 	if err != nil {
@@ -218,6 +218,9 @@ func TestAcceptanceNestedOverlayAndExplicitZero(t *testing.T) {
 	want.HTTP.IdleTimeout = 17 * time.Second
 	want.Storage.MaxIdleConns = 0
 	want.FFmpeg.MaxRestarts = 0
+	want.Chat.SSEQueue.Count = 16
+	want.Chat.SSEWriteTimeout = 2 * time.Second
+	want.Chat.OverlayMessages = 32
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("частичное переопределение изменило пропущенные поля или потеряло 0:\nполучено: %+v\nожидалось: %+v", got, want)
 	}
@@ -241,6 +244,13 @@ func TestAcceptanceInvalidNestedSettings(t *testing.T) {
 	}{
 		{"неизвестное вложенное поле", "http:\n  unknown_nested: 1\n", "unknown_nested"},
 		{"неизвестное глубокое поле", "publisher:\n  transport:\n    unknown_transport: 1\n", "unknown_transport"},
+		{"неизвестный бюджет чата", "chat:\n  sse_queue:\n    unknown_queue: 1\n", "unknown_queue"},
+		{"очередь чата больше жёсткого предела", "chat:\n  sse_queue:\n    count: 257\n", "chat"},
+		{"слишком малая длина курсора", "chat:\n  cursor_bytes: 31\n", "chat"},
+		{"недостаточный предел кадра чата", "chat:\n  sse_frame_bytes: 1\n", "chat"},
+		{"переполнение тела чата", "chat:\n  rest_body_bytes: 9223372036854775808\n", "chat"},
+		{"окно Overlay больше жёсткого предела", "chat:\n  overlay_messages: 51\n", "chat"},
+		{"окно Dashboard больше жёсткого предела", "chat:\n  dashboard_messages: 201\n", "chat"},
 		{"повтор известного поля", "http:\n  address: ':8080'\n  address: ':8181'\n", "address"},
 		{"нулевой обязательный бюджет", "storage:\n  max_open_conns: 0\n", ""},
 		{"отрицательный беззнаковый бюджет", "router:\n  max_consumers: -1\n", ""},

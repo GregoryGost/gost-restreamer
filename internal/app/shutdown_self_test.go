@@ -7,6 +7,63 @@ import (
 	"time"
 )
 
+// Проверяет собственный срок остановки чатов, одновременную остановку API и удержание Store.
+func TestShutdownUsesChatDeadlineAndKeepsStoreUntilChatJoins(t *testing.T) {
+	// a моделирует приложение с раздельными владельцами чатов, API и Store.
+	a := &Application{gate: make(chan struct{}, 1), done: make(chan struct{})}
+	a.gate <- struct{}{}
+	a.config.Chat.ShutdownTimeout = 50 * time.Millisecond
+	// complete разрешает завершить работу под вторым вызовом Shutdown.
+	complete := make(chan struct{})
+	// firstWaitEnded сообщает, что первый вызов остановки чатов дождался собственного срока.
+	firstWaitEnded := make(chan struct{})
+	a.owners.chat = &stopOwner{name: "chat", close: func(ctx context.Context) stopResult {
+		// Имитирует владельца, который остаётся в работе до подтверждения фактического завершения.
+		if isClosed(complete) {
+			return stopResult{joined: true}
+		}
+		<-ctx.Done()
+		close(firstWaitEnded)
+		return stopResult{err: ctx.Err()}
+	}}
+	// apiStopped подтверждает завершение API до освобождения чатов.
+	apiStopped := make(chan struct{})
+	a.owners.api = sharedOwner("api", func(context.Context) error {
+		// Подтверждает, что независимому HTTP-владельцу передали команду завершения.
+		close(apiStopped)
+		return nil
+	})
+	// storeClosed сообщает об освобождении общего хранилища.
+	storeClosed := make(chan struct{})
+	a.owners.store = sharedOwner("store", func(context.Context) error {
+		// Подтверждает, что общий Store больше не нужен прежним пользователям.
+		close(storeClosed)
+		return nil
+	})
+	// ctx задаёт общий срок, который больше отдельного chat.shutdown_timeout.
+	// cancel освобождает таймер после обоих вызовов остановки.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	// err содержит результат первой попытки, пока чат продолжает владеть Store.
+	err := a.Shutdown(ctx)
+	if !errors.Is(err, ErrPending) || !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		t.Fatalf("отдельный срок чатов не сработал: %v, общий срок: %v", err, ctx.Err())
+	}
+	if !isClosed(apiStopped) || isClosed(storeClosed) || isClosed(a.Done()) {
+		t.Fatal("остановка API или порядок освобождения Store нарушены")
+	}
+	select {
+	case <-firstWaitEnded:
+	case <-ctx.Done():
+		t.Fatal("тайм-аут не дошёл до владельца чатов")
+	}
+	close(complete)
+	err = a.Shutdown(ctx)
+	if errors.Is(err, ErrPending) || !errors.Is(err, context.DeadlineExceeded) || !isClosed(storeClosed) || !isClosed(a.Done()) {
+		t.Fatalf("позднее завершение чатов не освободило Store: %v", err)
+	}
+}
+
 // Проверяет независимую инициацию остановки GPU при зависшем менеджере и сохранение Store до позднего
 // завершения менеджера.
 func TestShutdownInitiatesIndependentOwnersAndRetainsShared(t *testing.T) {

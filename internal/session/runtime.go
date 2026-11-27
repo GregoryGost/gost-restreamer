@@ -253,6 +253,7 @@ func (m *Manager) startSession(c core.CommandReceipt) {
 		node.cleanup()
 		return
 	}
+	node.observer.NotifyChatRunning()
 	node.finishStartup(nil)
 	m.commandFinished(c.ID)
 	m.signal()

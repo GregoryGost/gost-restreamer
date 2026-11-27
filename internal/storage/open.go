@@ -377,7 +377,7 @@ func (s *Store) Diagnostics(ctx context.Context) (_ Diagnostics, retErr error) {
 // ErrIncompatibleFormat обозначает БД с неподдерживаемым форматом управления.
 var ErrIncompatibleFormat = errors.New("несовместимый формат хранилища")
 
-// checkStorageFormat требует единственную запись storage_format с singleton=1 и version=4; отсутствие
+// checkStorageFormat требует единственную запись storage_format с singleton=1 и version=5; отсутствие
 // таблицы и иной маркер дают ErrIncompatibleFormat.
 // ctx ограничивает чтение обязательного маркера формата из SQLite.
 func (s *Store) checkStorageFormat(ctx context.Context) error {
@@ -388,7 +388,7 @@ func (s *Store) checkStorageFormat(ctx context.Context) error {
 	if err := s.sqlDB.QueryRowContext(ctx, "SELECT count(*), coalesce(min(singleton),0), coalesce(min(version),0) FROM storage_format").Scan(&count, &singleton, &version); err != nil {
 		return fmt.Errorf("%w: требуется первичная инициализация поддерживаемого формата: %w", ErrIncompatibleFormat, err)
 	}
-	if count != 1 || singleton != 1 || version != 4 {
+	if count != 1 || singleton != 1 || version != 5 {
 		return fmt.Errorf("%w: неизвестный маркер формата", ErrIncompatibleFormat)
 	}
 	return nil

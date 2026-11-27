@@ -305,6 +305,31 @@ func TestAcceptanceApplicationBootPersistenceAndTransportStop(t *testing.T) {
 		if stored["name"] != "Сохранённый поток" || stored["publication_key"] != "synthetic-bootstrap-key" {
 			t.Fatal("имя или ключ публикации не совпадают с сохранёнными значениями", stored)
 		}
+		// chatPath адресует общую ленту сохранённого потока после выхода из startup.
+		chatPath := "/chat/streams/" + streamID
+		// snapshot содержит текущий снимок чата, который до запуска должен иметь пустую ленту.
+		snapshot := acceptanceHTTP(t, a, "GET", chatPath+"/snapshot", "", 200)
+		if snapshot["session"] != nil || len(snapshot["messages"].([]any)) != 0 || snapshot["stream_id"] != streamID {
+			t.Fatalf("некорректный снимок известного потока до сессии: %v", snapshot)
+		}
+		// chatConn открывает отдельную подписку чатов до появления Session.
+		chatConn := acceptanceConnection(t, a.HTTPAddress())
+		// err сообщает об отказе передачи запроса к SSE чатов.
+		if _, err := fmt.Fprintf(chatConn, "GET /api/v1%s/events HTTP/1.1\r\nHost: localhost\r\n\r\n", chatPath); err != nil {
+			t.Fatal(err)
+		}
+		// chatResponse подтверждает начало ожидания сессии; err сообщает об отказе чтения статуса.
+		chatResponse, err := http.ReadResponse(bufio.NewReader(chatConn), &http.Request{Method: http.MethodGet})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			// Освобождает тело ответа подписки, которой владеет тест.
+			_ = chatResponse.Body.Close()
+		})
+		if chatResponse.StatusCode != http.StatusOK || !strings.HasPrefix(chatResponse.Header.Get("Content-Type"), "text/event-stream") {
+			t.Fatalf("подписка чатов до Session не открыта: %s", chatResponse.Status)
+		}
 		// idle содержит исправное keep-alive-соединение; idleReader позволяет проверить его
 		// закрытие после Shutdown.
 		idle, idleReader := acceptanceIdleHTTP(t, a)
@@ -337,6 +362,10 @@ func TestAcceptanceApplicationBootPersistenceAndTransportStop(t *testing.T) {
 		// закрыть.
 		ingest := acceptanceConnection(t, a.IngestAddress())
 		acceptanceStop(t, a)
+		// err сообщает об отказе штатного завершения ожидающей подписки чатов при Shutdown.
+		if _, err := io.Copy(io.Discard, chatResponse.Body); err != nil || !isClosed(a.chat.Done()) {
+			t.Fatalf("остановка не завершила ожидание SSE и Manager чатов: %v", err)
+		}
 		// err содержит результат чтения idle HTTP после Shutdown, ожидается EOF.
 		if _, err := idleReader.ReadByte(); !errors.Is(err, io.EOF) {
 			t.Fatalf("idle HTTP transport остался открыт после Shutdown: %v", err)
@@ -415,13 +444,12 @@ func TestAcceptanceInvalidConfigAndHelperPrecedeAcquisitions(t *testing.T) {
 	}
 }
 
-// Проверяет освобождение каждого приобретённого владельца при отказе на любой из двенадцати границ
-// частичной сборки.
+// Проверяет освобождение приобретённых владельцев при отказе на каждой границе частичной сборки.
 func TestAcceptancePartialStartupReleasesEveryAcquiredOwner(t *testing.T) {
 	// helper содержит настоящий бинарник для всех границ частичной сборки.
 	helper := acceptanceHelper(t)
-	// stage задаёт одну из двенадцати точек отказа после приобретения очередного ресурса.
-	for _, stage := range []string{"logger", "http_listener", "ingest_listener", "store", "files", "processes", "preparation", "ingest", "manager", "gpu", "api", "http"} {
+	// stage задаёт точку отказа после приобретения очередного ресурса.
+	for _, stage := range []string{"logger", "http_listener", "ingest_listener", "store", "files", "processes", "preparation", "ingest", "manager", "chat", "gpu", "api", "http"} {
 		t.Run(stage, func(t *testing.T) {
 			// Проверяет освобождение всех уже приобретённых ресурсов при отказе выбранной стадии сборки
 			// приложения.
@@ -450,6 +478,9 @@ func TestAcceptancePartialStartupReleasesEveryAcquiredOwner(t *testing.T) {
 			case <-a.Done():
 			default:
 				t.Fatal("очистка частичного startup не завершена")
+			}
+			if a.chat != nil && !isClosed(a.chat.Done()) {
+				t.Fatal("частичный startup не завершил Manager чатов")
 			}
 			// listener содержит очередной приобретённый HTTP- или ingest-слушатель для
 			// проверки закрытия.

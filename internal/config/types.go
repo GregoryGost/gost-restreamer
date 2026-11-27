@@ -4,6 +4,8 @@ package config
 import (
 	"log/slog"
 	"time"
+
+	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
 // Router задаёт серверные бюджеты маршрутизатора медиапакетов для создаваемых сессий.
@@ -322,6 +324,8 @@ type Config struct {
 	Logging Logging `yaml:"logging"`
 	// API задаёт пределы REST, загрузки файлов и SSE.
 	API API `yaml:"api"`
+	// Chat задаёт бюджеты чтения площадок, авторизации, ленты, REST/SSE чатов и страниц.
+	Chat core.ChatLimits `yaml:"chat"`
 	// Observation задаёт общий бюджет точных узлов оперативных наблюдений.
 	Observation Observation `yaml:"observation"`
 	// OutputExecution задаёт общий бюджет удержаний физического исполнения выходов.

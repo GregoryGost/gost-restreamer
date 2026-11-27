@@ -1,6 +1,10 @@
 package config
 
-import "time"
+import (
+	"time"
+
+	"github.com/GregoryGost/gost-restreamer/internal/core"
+)
 
 // Default возвращает начальные конечные бюджеты; это не обещание производительности.
 func Default() Config {
@@ -31,6 +35,7 @@ func Default() Config {
 		GPU:             GPU{MaxDevices: 8, MaxUUIDBytes: 128, MaxSnapshotBytes: 16 << 10, StaleAfter: 6 * second, ShutdownTimeout: 30 * second},
 		Logging:         Logging{MaxRecords: 1024, MaxBytes: 8 << 20, MaxRecordBytes: 1 << 20, ShutdownTimeout: 30 * second, Level: 0},
 		API:             API{JSONBytes: 1 << 20, UploadBytes: 1 << 30, UploadReadTimeout: 5 * time.Minute, OperationTimeout: 10 * second, ShutdownTimeout: 30 * second, SSEClients: 16, SSEPageSize: 100, SSEFrameBytes: 1 << 20, SSEWriteTimeout: 5 * second, SSEHeartbeat: 15 * second},
+		Chat:            core.DefaultChatLimits(),
 		Observation:     Observation{MaxSessions: 2, MaxGroups: 16, MaxOutputs: 32, MaxFFmpegWorkers: 32, MaxIdentifierBytes: 256, MaxErrorBytes: 64 << 10, MaxBytes: 16 << 20},
 		OutputExecution: OutputExecution{MaxReservations: 32, MaxIdentifierBytes: 256, MaxBytes: 1 << 20}, Preparation: Preparation{MaxQueued: 8, MaxProfiles: 16},
 	}

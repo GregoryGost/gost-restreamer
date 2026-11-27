@@ -101,8 +101,8 @@ func (s *Service) CreateStream(ctx context.Context, value Stream) (Stream, error
 	return value, err
 }
 
-// UpdateStream заменяет конфигурацию при ожидаемой ревизии, сохраняя неизменный ключ публикации и
-// увеличивая ревизию записи.
+// UpdateStream заменяет конфигурацию при ожидаемой ревизии, сохраняя ключ публикации и текущее
+// оформление чата. Успешная замена увеличивает ревизию записи.
 // s предоставляет транзакции, ctx ограничивает запись, value задаёт новую конфигурацию,
 // expected — ожидаемую ревизию. Конфликт возвращает ID прочитанного потока без изменения данных.
 func (s *Service) UpdateStream(ctx context.Context, value Stream, expected uint64) (Stream, error) {
@@ -113,8 +113,8 @@ func (s *Service) UpdateStream(ctx context.Context, value Stream, expected uint6
 	// err содержит причину отказа транзакционного изменения потока; r предоставляет репозитории
 	// функции, которая сверяет и сохраняет конфигурацию в той же транзакции.
 	err := s.uow.Write(ctx, func(r Repositories) error {
-		// В транзакции сверяет ожидаемую Revision и неизменность PublicationKey, затем назначает следующую
-		// Record и сохраняет Stream.
+		// В транзакции сверяет ожидаемую Revision и неизменность PublicationKey, затем переносит
+		// текущее оформление, назначает следующую Record и сохраняет Stream.
 
 		// current содержит сохранённую конфигурацию потока для проверки ревизии, а err — причину
 		// отказа её чтения.
@@ -128,6 +128,7 @@ func (s *Service) UpdateStream(ctx context.Context, value Stream, expected uint6
 		if value.PublicationKey != current.PublicationKey {
 			return fmt.Errorf("%w: ключ публикации неизменяем", ErrConflict)
 		}
+		value.ChatAppearance = current.ChatAppearance
 		value.Record, err = revise(current.Record)
 		if err != nil {
 			return err
@@ -137,11 +138,66 @@ func (s *Service) UpdateStream(ctx context.Context, value Stream, expected uint6
 	return value, err
 }
 
-// DeleteStream передаёт удаление Stream с ожидаемой ревизией репозиторию внутри транзакции записи.
+// UpdateChatAppearance заменяет только оформление чата потока с идентификатором id и увеличивает
+// его ревизию. Проверка expected и запись выполняются в одной транзакции ctx. При отсутствии потока
+// или несовпадении ревизии изменение отклоняется.
+func (s *Service) UpdateChatAppearance(ctx context.Context, id ID, appearance ChatAppearance, expected uint64) (Stream, error) {
+	// err сообщает о недопустимом идентификаторе потока до чтения записи.
+	if err := id.Validate(); err != nil {
+		return Stream{}, err
+	}
+	if expected == 0 {
+		return Stream{}, fmt.Errorf("%w: ожидалась положительная ревизия потока", ErrInvalid)
+	}
+	// err сообщает о недопустимом оформлении до открытия транзакции.
+	if err := appearance.Validate(); err != nil {
+		return Stream{}, err
+	}
+	// updated принимает конфигурацию с новой ревизией после условной записи.
+	var updated Stream
+	// err содержит итог транзакции, включая возможный отказ фиксации.
+	err := s.uow.Write(ctx, func(r Repositories) error {
+		// Читает через r текущий поток, сверяет его ревизию и сохраняет оформление вместе с новой ревизией.
+		// current содержит конфигурацию потока, а err — причину отказа чтения или записи.
+		current, err := r.Config.Stream(ctx, id)
+		if err != nil {
+			return err
+		}
+		if err = checkRevision(current.Revision, expected, FailureContext{StreamID: current.ID}); err != nil {
+			return err
+		}
+		current.Record, err = revise(current.Record)
+		if err != nil {
+			return err
+		}
+		current.ChatAppearance = &appearance
+		if err = r.Config.UpdateStream(ctx, current, expected); err != nil {
+			return err
+		}
+		updated = current
+		return nil
+	})
+	if err != nil {
+		return Stream{}, err
+	}
+	return updated, nil
+}
+
+// DeleteStream удаляет Stream с ожидаемой ревизией. GuardWrite отзывает допуск тестовой ленты
+// этого потока после подтверждения удаления.
 func (s *Service) DeleteStream(ctx context.Context, id ID, expected uint64) error {
-	return s.uow.Write(ctx, func(r Repositories) error {
-		// Удаляет Stream через репозиторий с проверкой ожидаемой Revision в UnitOfWork.
-		return r.Config.DeleteStream(ctx, id, expected)
+	// target адресует допуск удаляемого потока после успешной операции репозитория.
+	var target chatTestWriteTarget
+	return s.uow.Write(context.WithValue(ctx, chatTestWriteKey{}, &target), func(r Repositories) error {
+		// Удаляет Stream с проверкой ревизии и передаёт его ID в GuardWrite только для текущей
+		// успешной попытки удаления.
+		target = chatTestWriteTarget{}
+		// err сообщает об отказе удаления, например при конфликте ревизии или наличии связей.
+		if err := r.Config.DeleteStream(ctx, id, expected); err != nil {
+			return err
+		}
+		target.streamID = id
+		return nil
 	})
 }
 

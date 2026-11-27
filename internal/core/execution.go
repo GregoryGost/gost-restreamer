@@ -246,14 +246,23 @@ func (s *Service) MarkIssued(ctx context.Context, f ExecutionFence) error {
 
 // Complete сохраняет результат точной ISSUED-попытки; отказ допустим и из CLAIMED. Переходы сессии,
 // отзыв неуспешного выхода, квитанция и событие записываются вместе; успех выхода не создаёт
-// наблюдение PUBLISHING.
+// наблюдение PUBLISHING. Успешный запуск сессии передаёт GuardWrite точную квитанцию для отзыва
+// допуска тестовой ленты после COMMIT.
 func (s *Service) Complete(ctx context.Context, f ExecutionFence, result Completion) error {
 	result.FailureReason = CloneFailureReason(result.FailureReason)
-	return s.uow.Write(ctx, func(r Repositories) error {
+	// target заполняется только после подготовки перехода точной сессии в RUNNING.
+	var target chatTestWriteTarget
+	// writeCtx передаёт target в GuardWrite при завершении команды, способной запустить сессию.
+	writeCtx := ctx
+	if result.Success && f.OutputID == "" {
+		writeCtx = context.WithValue(ctx, chatTestWriteKey{}, &target)
+	}
+	return s.uow.Write(writeCtx, func(r Repositories) error {
 		// В транзакции принимает результат только актуальной попытки, обновляет жизненный цикл и квитанцию,
 		// при отказе отзывает намерение и сохраняет необходимость очистки; успех выхода не создаёт наблюдаемое
-		// PUBLISHING.
+		// PUBLISHING. Перед повторной попыткой очищает сведения о возможном COMMIT предыдущей попытки.
 
+		target = chatTestWriteTarget{}
 		// c содержит квитанцию, session — родительскую сессию, o — необязательный выход, а err —
 		// результат сверки завершаемой попытки.
 		c, session, o, err := s.fenced(ctx, r, f)
@@ -394,6 +403,9 @@ func (s *Service) Complete(ctx context.Context, f ExecutionFence, result Complet
 		}
 		if err = insertEvent(ctx, r, session.ID, c.OutputID, "command_completed", "Получен результат исполнения команды"); err != nil {
 			return err
+		}
+		if c.Kind == CommandStartSession && result.Success {
+			target = chatTestWriteTarget{streamID: session.StreamID, fence: f, receiptRevision: old}
 		}
 		if session.State.Terminal() {
 			return releaseTerminalHolds(ctx, r, session)

@@ -16,6 +16,7 @@ import (
 
 	"github.com/GregoryGost/gost-restreamer/internal/api"
 	"github.com/GregoryGost/gost-restreamer/internal/buildinfo"
+	"github.com/GregoryGost/gost-restreamer/internal/chat"
 	"github.com/GregoryGost/gost-restreamer/internal/config"
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 	"github.com/GregoryGost/gost-restreamer/internal/fallback"
@@ -66,6 +67,8 @@ type Application struct {
 	preparation *fallback.Manager
 	// manager владеет жизненным циклом сессий и связывает их входы, группы и отправителей.
 	manager *session.Manager
+	// chat владеет лентами действующих сессий, чтением площадок и попытками подключения аккаунтов.
+	chat *chat.Manager
 	// ingest принимает публикации OBS и связывает их с готовыми сессиями менеджера.
 	ingest *rtmp.Server
 	// gpu связывает нативный сборщик GPU с общей системой наблюдений.
@@ -102,6 +105,8 @@ type shutdownOwners struct {
 	// сессии; ingest останавливает вход OBS; preparation завершает задания; gpu завершает нативный
 	// сборщик.
 	api, transport, manager, ingest, preparation, gpu *stopOwner
+	// chat подтверждает завершение попыток подключения, читателей и владельца полномочий.
+	chat *stopOwner
 	// httpListener закрывает ещё не переданный HTTP-транспорту слушатель; ingestListener закрывает
 	// ещё не переданный RTMP-транспорту слушатель.
 	httpListener, ingestListener *stopOwner
@@ -367,6 +372,12 @@ func (a *Application) acquire(ctx context.Context, helper string, d dependencies
 	if err = checkpoint("manager"); err != nil {
 		return err
 	}
+	if err = a.acquireChat(); err != nil {
+		return err
+	}
+	if err = checkpoint("chat"); err != nil {
+		return err
+	}
 	a.gpu, err = monitoring.StartGPU(ctx, a.core, gpu.Config(a.config.GPU), gpu.NativeProvider())
 	if a.gpu != nil {
 		a.owners.gpu = &stopOwner{name: "gpu", close: func(ctx context.Context) stopResult {
@@ -384,7 +395,11 @@ func (a *Application) acquire(ctx context.Context, helper string, d dependencies
 	if err = checkpoint("gpu"); err != nil {
 		return err
 	}
-	a.api, err = api.New(api.Config{Core: a.core, Commands: a.manager, Fallback: a.preparation, Capabilities: capabilities{api.ExecutableCapabilities{FFmpeg: a.config.Executables.FFmpeg, FFprobe: a.config.Executables.FFprobe, Helper: helper}}, Logger: a.sink.Logger(), Limits: api.Limits(a.config.API)})
+	a.api, err = api.New(api.Config{
+		Core: a.core, Commands: a.manager, Fallback: a.preparation, Chat: a.chat, ChatLimits: a.config.Chat,
+		Capabilities: capabilities{api.ExecutableCapabilities{FFmpeg: a.config.Executables.FFmpeg, FFprobe: a.config.Executables.FFprobe, Helper: helper}},
+		Logger:       a.sink.Logger(), Limits: api.Limits(a.config.API),
+	})
 	if a.api != nil {
 		a.owners.api = newStopOwner("api", a.api.Close)
 	}

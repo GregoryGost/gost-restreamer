@@ -43,7 +43,7 @@ func (r *repositories) access(ctx context.Context, write bool) (*gorm.DB, error)
 // contracts возвращает доменные интерфейсы одного набора репозиториев, связанных с текущей
 // транзакцией.
 func (r *repositories) contracts() core.Repositories {
-	return core.Repositories{Config: r, Runtime: r, Artifacts: r}
+	return core.Repositories{Config: r, Runtime: r, Artifacts: r, Chat: r}
 }
 
 // View выполняет согласованное чтение на одном соединении без захвата блокировки записи.
@@ -264,6 +264,9 @@ var _ core.RuntimeAuthorityProvider = (*Store)(nil)
 var _ core.ConfigRepository = (*repositories)(nil)
 var _ core.RuntimeRepository = (*repositories)(nil)
 var _ core.ArtifactRepository = (*repositories)(nil)
+
+// Проверка соответствия не даёт потерять часть chat-контракта при изменении репозиториев.
+var _ core.ChatRepository = (*repositories)(nil)
 
 // WriteOwned проверяет точный токен наблюдателя под тем же допуском, что и запись БД.
 func (s *Store) WriteOwned(ctx context.Context, owner *core.OutputObserver, callback func(core.Repositories) error) error {

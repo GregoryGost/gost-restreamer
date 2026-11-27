@@ -34,7 +34,7 @@ Semantic completeness, factual rationale, and documentation coverage belong to t
 
 - Literal translations can be grammatically correct yet useless. Recover the verified declaration purpose before translating expressions such as English "owns transport" or "settings for one graph" into Russian.
 - For a resource owner, say who **creates, uses and closes** it only to the extent these facts are established. For a configuration reader, describe what it actually reads or returns. Avoid imperative fragments like "Владеть транспортом интеграции" and topic-only labels such as "Настройки одного графа" where the role is a reader.
-- Do not blacklist grammatical forms. A noun phrase is appropriate for some data containers; an infinitive can be natural in context. Judge the completeness, naturalness, and truth of the whole explanation.
+- Do not blacklist grammatical forms. A noun phrase is appropriate for some data containers; an infinitive can be natural in context. For Russian docstrings, a method's present-tense action ("Открывает...", "Возвращает...") often explains behavior more naturally than a task-like infinitive ("Открыть...", "Вернуть..."). A data class may legitimately use "Хранит..." or a noun phrase if that matches its role; an adapter should describe its real operation rather than claiming to store values. Judge the completeness, naturalness, and truth of the whole explanation.
 - This skill audits natural language when independently active; the source-comment quality pair must still check explanatory meaning when this language skill is inactive.
 
 ## Audit Workflow

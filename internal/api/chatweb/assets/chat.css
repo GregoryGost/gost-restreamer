@@ -1,0 +1,220 @@
+/* Общая типографика страниц и свойства, используемые также на прозрачном холсте OBS. */
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  line-height: 1.5;
+  --radius: .9rem; /* Скругление общих поверхностей панели. */
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+.visually-hidden { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+body { margin: 0; }
+h1, h2, p { margin: 0; }
+button, input, select { font: inherit; }
+button, summary, select { cursor: pointer; }
+:focus-visible { outline: .15rem solid var(--focus, #69d3ff); outline-offset: .19rem; }
+
+/* Поверхности и контраст Dashboard. При отсутствии пользовательских стилей HTML остаётся читаемым. */
+.dashboard {
+  color-scheme: dark;
+  color: #eff4fb;
+  background: #0d131d;
+  --panel: #151e2b; /* Фон панели и диалога. */
+  --inset: #101823; /* Фон ленты, полей и текстовых уведомлений. */
+  --border: #334357; /* Граница панелей, разделителей и второстепенных кнопок. */
+  --control-border: #7187a2; /* Контрастная граница полей на подложке панели. */
+  --muted: #b1c0d3; /* Цвет подписей и второстепенных сведений. */
+  --focus: #69d3ff; /* Цвет контура при навигации с клавиатуры. */
+  --accent: #8de2ff; /* Цвет текста подтверждённого подключения. */
+  --action: #b9ecff; /* Цвет ссылок и кнопок действий. */
+}
+
+.workspace { max-inline-size: 84rem; margin-inline: auto; padding: clamp(1rem, 4vw, 3.5rem); }
+.workspace-header, .panel-heading, .feed-controls, .list-heading, .dialog-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .8rem;
+}
+.workspace-header { margin-block-end: 1.65rem; }
+.app-name { color: var(--muted); font-size: .875rem; margin-block-end: .2rem; }
+h1 { font-size: clamp(1.75rem, 4vw, 2.6rem); line-height: 1.2; letter-spacing: -.03em; overflow-wrap: anywhere; }
+h2 { font-size: 1.1rem; line-height: 1.3; overflow-wrap: anywhere; }
+.workspace-header > div { min-inline-size: 0; }
+.connection { color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
+.connection[data-state="open"] { color: var(--accent); }
+.workspace-grid { display: flex; flex-wrap: wrap; gap: 1rem; align-items: start; }
+.panel { min-inline-size: 0; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
+.workspace-grid .feed-panel { flex: 2.25 1 0; min-inline-size: min(100%, 25rem); }
+.workspace-grid .status-panel { flex: 1 1 0; min-inline-size: min(100%, 15rem); }
+.panel-heading { padding: .9rem 1.1rem; min-block-size: 3.6rem; }
+.feed-heading { border-block-end: 1px solid var(--border); }
+.filter { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; color: var(--muted); font-size: .9rem; min-inline-size: 0; overflow-wrap: anywhere; }
+.filter select { max-inline-size: 100%; inline-size: min(14rem, 60vw); }
+
+.feed-scroll {
+  block-size: min(56vh, 37rem);
+  min-block-size: 15rem;
+  background: var(--chat-surface, var(--inset));
+  overflow-y: auto;
+  overflow-anchor: none;
+  padding: .85rem 1.1rem;
+}
+.feed-scroll:focus-visible { outline-offset: -.2rem; }
+.empty-feed, .empty-note { color: var(--muted); font-size: .95rem; overflow-wrap: anywhere; }
+.empty-feed { padding: .35rem 0; }
+.feed-controls { border-block-start: 1px solid var(--border); padding: .7rem 1.1rem; min-block-size: 4rem; }
+.test-feed-actions { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.test-feed-actions input { inline-size: 6.5rem; max-inline-size: 100%; }
+.feed-command-status { flex-basis: 100%; color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
+.status-panel { padding-block-end: 1rem; }
+.status-panel > .empty-note, .status-panel > .entry-list, .status-panel > .notice { margin-inline: 1.1rem; }
+.status-panel > .notice { margin-block-end: .85rem; }
+.status-text { color: var(--muted); overflow-wrap: anywhere; }
+.status-text[data-state="CONNECTED"] { color: var(--accent); }
+.status-text[data-state="FAILED"], .status-text[data-state="AUTH_REQUIRED"] { color: #ffcc9f; }
+
+.settings-panel { margin-block-start: 1rem; }
+.settings-panel summary { padding: .95rem 1.1rem; font-weight: 650; }
+.settings-content { padding: 1rem 1.1rem; border-block-start: 1px solid var(--border); }
+.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; }
+.settings-toolbar { display: flex; justify-content: end; margin-block-end: .6rem; }
+.settings-content > .notice { margin-block-end: 1rem; }
+.list-heading { padding-block-end: .6rem; }
+.appearance-form, .appearance-grid, .appearance-grid fieldset, .appearance-grid label:not(.checkbox) { display: grid; }
+.appearance-form, .appearance-grid { gap: .9rem; }
+.appearance-fields, .appearance-grid fieldset { min-inline-size: 0; margin: 0; }
+.appearance-fields { padding: 0; border: 0; }
+.appearance-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); }
+.appearance-grid fieldset {
+  align-content: start;
+  gap: .65rem;
+  padding: .75rem;
+  border: 1px solid var(--border);
+  border-radius: .45rem;
+  overflow-wrap: anywhere;
+}
+.appearance-grid legend { max-inline-size: 100%; padding-inline: .2rem; font-weight: 650; }
+.appearance-grid label:not(.checkbox) { gap: .2rem; }
+.appearance-grid input[type="color"] { inline-size: min(100%, 5rem); cursor: pointer; }
+.appearance-grid input[type="number"] { inline-size: min(100%, 7rem); }
+.appearance-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+.appearance-form p { color: var(--muted); overflow-wrap: anywhere; }
+.appearance-status:empty { margin-block-start: -.9rem; }
+.entry-list { list-style: none; padding: 0; margin: 0; }
+.entry { border-block-start: 1px solid var(--border); padding: .7rem 0; display: grid; gap: .25rem; overflow-wrap: anywhere; }
+.entry:first-child { border-block-start: 0; }
+.entry-title { display: block; font-weight: 650; }
+.entry-meta { color: var(--muted); font-size: .88rem; }
+.entry-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-block-start: .28rem; }
+
+:where(.dashboard) :where(input:not([type="checkbox"]), select) {
+  min-block-size: 2.35rem;
+  min-inline-size: 0;
+  border: 1px solid var(--control-border);
+  border-radius: .45rem;
+  color: inherit;
+  background: var(--inset);
+  padding: .35rem .6rem;
+}
+.checkbox { display: inline-flex; align-items: center; gap: .5rem; min-inline-size: 0; overflow-wrap: anywhere; }
+.checkbox input { flex: none; accent-color: var(--accent); inline-size: 1.1rem; block-size: 1.1rem; margin: 0; }
+.button {
+  min-block-size: 2.3rem;
+  border-radius: .45rem;
+  border: 1px solid transparent;
+  padding: .3rem .65rem;
+  font-weight: 600;
+  font-size: .9rem;
+  overflow-wrap: anywhere;
+}
+.button.primary { background: var(--action); color: #122436; }
+.button.secondary, .button.danger { background: transparent; border-color: var(--border); color: var(--action); }
+.button.danger { color: #ffb9b0; }
+.button.primary:hover { background: #e0f6ff; }
+.button.secondary:hover, .button.danger:hover { border-color: currentColor; }
+.button:disabled, .button[aria-disabled="true"] { opacity: .55; cursor: default; }
+
+.dashboard dialog {
+  inline-size: min(29rem, calc(100% - 1.5rem));
+  max-block-size: calc(100% - 1.5rem);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: inherit;
+  background: var(--panel);
+}
+.dashboard dialog::backdrop { background: rgb(4 7 11 / 75%); }
+.editor { display: grid; gap: .95rem; padding: 1.1rem; }
+.editor fieldset { display: grid; gap: .85rem; padding: 0; margin: 0; border: 0; min-inline-size: 0; }
+.editor :where(label:not(.checkbox)) { display: grid; gap: .32rem; }
+.editor :where(select, input:not([type="checkbox"])) { inline-size: 100%; }
+.dialog-heading h2 { font-size: 1.3rem; }
+.dialog-actions { justify-content: end; }
+.notice, .device { padding: .55rem .7rem; border-radius: .45rem; border: 1px solid var(--border); background: var(--inset); overflow-wrap: anywhere; }
+.notice { color: #ffe1b8; }
+.device a, .message-link { color: var(--action); }
+
+/* Строка сообщения одинакова по структуре на обеих страницах. Фиксированный размер изображений
+   удерживает размеры строки при загрузке значков, аватаров, эмодзи и бейджей. */
+.messages { margin: 0; padding: 0; list-style: none; }
+.message { min-inline-size: 0; padding: .42rem .6rem; overflow-wrap: anywhere; }
+.message-header { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; }
+.provider { color: var(--muted, #dcefff); border: 1px solid currentColor; border-radius: 99px; padding-inline: .42rem; font-size: .75em; }
+/* Примесь светлого текста сохраняет различимость имени на обеих тёмных подложках. */
+.author {
+  font-weight: 700;
+  color: #eff4fb;
+  color: color-mix(in srgb, var(--author-color, #eff4fb) 25%, #eff4fb);
+}
+.message-text { white-space: pre-wrap; color: var(--chat-text-color, inherit); font-size: var(--chat-text-size, 1rem); }
+.message-text .message-link { color: var(--chat-text-color, var(--action)); }
+.message-text, .author {
+  -webkit-text-stroke-width: var(--chat-outline-width, 0px);
+  -webkit-text-stroke-color: var(--chat-outline-color, transparent);
+  paint-order: stroke fill;
+}
+.provider-icon, .avatar, .badge, .emote { object-fit: contain; vertical-align: middle; }
+.provider-icon { flex: none; inline-size: 1.3em; block-size: 1.3em; }
+.avatar { border-radius: 50%; inline-size: 1.35em; block-size: 1.35em; }
+.badge { inline-size: 1em; block-size: 1em; }
+.badge-label { font-size: .85em; }
+.emote { inline-size: 1.4em; block-size: 1.4em; }
+.dashboard .message { border-block-end: 1px solid var(--border); background: var(--chat-message-background, transparent); }
+.dashboard .message-text { margin-block-start: .12rem; }
+
+/* Прозрачный холст OBS держит последние строки у нижней границы кадра. */
+.overlay, .overlay body { background: transparent; }
+.overlay-feed {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: end;
+  overflow: hidden;
+  padding: .35rem;
+  color: #fff;
+  background: var(--chat-surface, transparent);
+  opacity: var(--chat-opacity, 1);
+}
+.overlay .messages { inline-size: 100%; }
+/* Высокая строка ограничена кадром, чтобы имя и площадка последней реплики оставались видимыми. */
+.overlay .message {
+  display: flex;
+  flex-direction: column;
+  max-block-size: calc(100vh - .7rem);
+  overflow: hidden;
+  background: var(--chat-message-background, rgb(12 18 27 / 77%));
+  border-radius: .48rem;
+  margin-block-start: .26rem;
+}
+.overlay .message-header { flex: none; max-block-size: 50vh; overflow: hidden; }
+.overlay .message-text { min-block-size: 0; overflow: hidden; }
+/* Половина толщины контура выходит за границы глифа. Отступ сохраняет её у края строки. */
+.overlay .message-header, .overlay .message-text { padding: calc(var(--chat-outline-width, 0px) / 2); }
+
+@media (max-width: 47rem) {
+  .settings-grid { grid-template-columns: minmax(0, 1fr); }
+  .settings-grid { gap: 1.35rem; }
+  .feed-scroll { block-size: min(47vh, 28rem); }
+}
