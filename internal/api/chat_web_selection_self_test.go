@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GregoryGost/gost-restreamer/internal/api"
 	"github.com/GregoryGost/gost-restreamer/internal/core"
 )
 
@@ -67,21 +68,27 @@ func (*selectableChatFeed) Discover(context.Context, core.ChatSource, core.ChatC
 // TestChatBroadcastSelectionAcceptsCurrentPublicChoice проверяет чтение и принятие актуального
 // набора через публичный API и привязку читателя к выбранному эфиру.
 func TestChatBroadcastSelectionAcceptsCurrentPublicChoice(t *testing.T) {
-	// ctx ограничивает подготовку, опрос GET и ожидание читателя. cancel освобождает таймер.
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	// fixture размещает тестовый поток и конфигурацию в изолированной SQLite.
-	fixture := newAPIAcceptanceFixture(t, nil)
-	// stream, profile, group и destination образуют реальные доказательства публикации для Manager.
+	// phaseTimeout ограничивает записи при подготовке, ожидание вариантов и работу с читателем по отдельности.
+	const phaseTimeout = 15 * time.Second
+	// fixture связывает тестовый API и доменный сервис с временной SQLite.
+	// Функция меняет в config срок одного запроса, чтобы учесть замедление SQLite под -race.
+	fixture := newAPIAcceptanceFixture(t, func(config *api.Config) {
+		config.Limits.OperationTimeout = 5 * time.Second
+	})
+	// stream задаёт поток, для которого тест публикует выход. profile хранит параметры кодирования.
+	// group связывает профиль с потоком, destination задаёт выход для публикации и привязки источника чата.
 	stream, profile, group, destination := apiAcceptanceSeedConfiguration(t, fixture)
+	// setupCtx ограничивает записи аккаунта и источника. cancelSetup освобождает таймер после этих записей.
+	setupCtx, cancelSetup := context.WithTimeout(t.Context(), phaseTimeout)
+	defer cancelSetup()
 	// account хранит подтверждённый синтетический ключ, err относится к записи аккаунта.
-	account, err := fixture.service.CreateChatAccount(ctx, core.ChatAccount{Provider: core.ChatYouTube},
+	account, err := fixture.service.CreateChatAccount(setupCtx, core.ChatAccount{Provider: core.ChatYouTube},
 		core.ChatCredentialBundle{YouTube: &core.YouTubeChatCredentials{APIKey: "synthetic-selection-key"}}, "selection-initial")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// source связывает локальное назначение с синтетическим обнаружением, err сообщает об отказе создания.
-	source, err := fixture.service.CreateChatSource(ctx, core.ChatSource{
+	source, err := fixture.service.CreateChatSource(setupCtx, core.ChatSource{
 		DestinationID: destination.ID, AccountID: account.Account.ID, Enabled: true,
 		Provider: core.ChatYouTube, ChannelHint: "UCsynthetic",
 		Options: core.ChatOptions{Version: 1, YouTube: &core.YouTubeChatOptions{}},
@@ -93,10 +100,11 @@ func TestChatBroadcastSelectionAcceptsCurrentPublicChoice(t *testing.T) {
 	previousRevision := source.Revision
 	// Обновление источника до обнаружения разводит значения его ревизии и поколения набора.
 	source.Name = "Источник с обновлённой ревизией"
-	source, err = fixture.service.UpdateChatSource(ctx, source, previousRevision)
+	source, err = fixture.service.UpdateChatSource(setupCtx, source, previousRevision)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cancelSetup()
 	// feed передаёт подтверждённое чтение после явного выбора одного видео.
 	feed := &selectableChatFeed{acceptanceChatFeed{ready: make(chan acceptanceChatReader, 1)}}
 	// handler принимает публичные запросы и разрешает их в точную текущую Session.
@@ -107,6 +115,9 @@ func TestChatBroadcastSelectionAcceptsCurrentPublicChoice(t *testing.T) {
 	// path адресует выбор одного источника, query указывает на текущую Session.
 	path := "/chat-sources/" + string(source.ID) + "/broadcast-selection"
 	query := path + "?session_id=" + string(sessionID)
+	// choicesCtx ограничивает ожидание вариантов после публикации выхода. cancelChoices освобождает таймер.
+	choicesCtx, cancelChoices := context.WithTimeout(t.Context(), phaseTimeout)
+	defer cancelChoices()
 	// tick ограничивает частоту ожидания публикации найденных вариантов.
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
@@ -114,8 +125,10 @@ func TestChatBroadcastSelectionAcceptsCurrentPublicChoice(t *testing.T) {
 	var choices map[string]any
 	for choices == nil {
 		// request пробует прочитать текущий набор, response фиксирует состояние этого чтения.
-		request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1"+query, nil)
+		request := httptest.NewRequestWithContext(choicesCtx, http.MethodGet, api.Prefix+query, nil)
 		response := httptest.NewRecorder()
+		// startedAt отмечает начало отдельного HTTP-запроса для диагностики его срока.
+		startedAt := time.Now()
 		handler.ServeHTTP(response, request)
 		switch response.Code {
 		case http.StatusOK:
@@ -127,13 +140,16 @@ func TestChatBroadcastSelectionAcceptsCurrentPublicChoice(t *testing.T) {
 		case http.StatusConflict:
 			select {
 			case <-tick.C:
-			case <-ctx.Done():
-				t.Fatal("HTTP не дождался текущего набора эфиров", ctx.Err())
+			case <-choicesCtx.Done():
+				t.Fatalf("Варианты не появились за %s, контекст ожидания %v, последний ответ HTTP %d %s",
+					phaseTimeout, choicesCtx.Err(), response.Code, response.Body)
 			}
 		default:
-			t.Fatalf("Чтение вариантов: статус=%d, тело=%s", response.Code, response.Body)
+			t.Fatalf("Чтение вариантов вернуло HTTP %d за %s, лимит запроса %s, контекст ожидания %v, ответ %s",
+				response.Code, time.Since(startedAt), fixture.limits.OperationTimeout, choicesCtx.Err(), response.Body)
 		}
 	}
+	cancelChoices()
 	// broadcasts содержит открытые элементы набора. ok подтверждает наличие массива.
 	broadcasts, ok := choices["broadcasts"].([]any)
 	if !ok || len(broadcasts) != 2 || choices["session_id"] != string(sessionID) || choices["source_id"] != string(source.ID) {
@@ -167,7 +183,7 @@ func TestChatBroadcastSelectionAcceptsCurrentPublicChoice(t *testing.T) {
 	revision, revisionIsNumber := choices["source_revision"].(json.Number)
 	// generation сохраняет исходную лексему поколения. generationIsNumber подтверждает число в JSON.
 	generation, generationIsNumber := choices["discovery_generation"].(json.Number)
-	// generationValue проверяет диапазон поколения. err сообщает о недопустимой лексеме.
+	// generationValue содержит разобранный номер поколения. err сообщает о неверной записи числа или выходе за диапазон uint64.
 	generationValue, err := strconv.ParseUint(generation.String(), 10, 64)
 	if !revisionIsNumber || revision.String() != strconv.FormatUint(source.Revision, 10) ||
 		!generationIsNumber || err != nil || generationValue == 0 || generationValue == source.Revision {
@@ -188,6 +204,10 @@ func TestChatBroadcastSelectionAcceptsCurrentPublicChoice(t *testing.T) {
 	if accepted.Body.Len() != 0 {
 		t.Fatalf("Успешный выбор вернул неожиданное тело: %s", accepted.Body)
 	}
+	// readerCtx ограничивает ожидание читателя после успешного выбора и проверку его сообщений.
+	// cancelReader освобождает таймер после проверки.
+	readerCtx, cancelReader := context.WithTimeout(t.Context(), phaseTimeout)
+	defer cancelReader()
 	select {
 	case reader := <-feed.ready:
 		// reader предоставляет порт принятого канала. message принимается только для выбранной беседы.
@@ -199,15 +219,15 @@ func TestChatBroadcastSelectionAcceptsCurrentPublicChoice(t *testing.T) {
 		wrongChannel := message
 		wrongChannel.ChannelID = "internal-first-chat"
 		// err содержит результат попытки передать сообщение из другой беседы.
-		if err := reader.sink.Message(ctx, reader.token, wrongChannel); !errors.Is(err, core.ErrInvalid) {
+		if err := reader.sink.Message(readerCtx, reader.token, wrongChannel); !errors.Is(err, core.ErrInvalid) {
 			t.Fatalf("Читатель должен отклонять сообщения другого эфира: %v", err)
 		}
 		// err сообщает об отказе приёма сообщения после выбора.
-		if err := reader.sink.Message(ctx, reader.token, message); err != nil {
+		if err := reader.sink.Message(readerCtx, reader.token, message); err != nil {
 			t.Fatalf("Читатель не принимает сообщения выбранного видео: %v", err)
 		}
-	case <-ctx.Done():
-		t.Fatal("После выбора не открылся подтверждённый читатель", ctx.Err())
+	case <-readerCtx.Done():
+		t.Fatalf("Подтверждённый читатель не открылся за %s после выбора, контекст читателя %v", phaseTimeout, readerCtx.Err())
 	}
 	apiAcceptanceRequest(t, handler, http.MethodPost, path, selectedBody, http.StatusConflict)
 }
